@@ -372,7 +372,6 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
               inputMode="url"
               spellCheck={false}
               value={current.baseUrl}
-              placeholder="例如：https://jbbt.cc"
               aria-invalid={Boolean(urlError[current.id])}
               aria-describedby={urlError[current.id] ? `url-error-${current.id}` : undefined}
               onBlur={() => setUrlError((value) => ({ ...value, [current.id]: validateBaseUrl(current.baseUrl) }))}
