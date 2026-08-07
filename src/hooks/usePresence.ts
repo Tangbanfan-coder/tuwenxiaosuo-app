@@ -7,16 +7,18 @@ export function usePresence(open: boolean, onClose: () => void, exitDurationMs: 
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
   const startedRef = useRef(false)
+  const wasOpenRef = useRef(open)
 
   useEffect(() => {
     if (open) {
+      wasOpenRef.current = true
       window.clearTimeout(timerRef.current)
       startedRef.current = false
       setClosing(false)
       setPresent(true)
       return
     }
-    if (startedRef.current) return
+    if (!wasOpenRef.current || startedRef.current) return
     startedRef.current = true
     setClosing(true)
     timerRef.current = window.setTimeout(() => {

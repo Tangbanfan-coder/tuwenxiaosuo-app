@@ -497,7 +497,7 @@ label {
 .project-list { flex: 1; min-height: 0; padding: 10px; overflow-y: auto; }
 .project-list-item-row { display: flex; align-items: stretch; gap: 4px; }
 .project-list-item-row + .project-list-item-row { margin-top: 3px; }
-.project-rename-form { width: 100%; min-height: 68px; display: flex; align-items: center; gap: 4px; padding: 10px; border: 1px solid #4d493d; border-radius: 10px; background: #292820; }
+.project-rename-form { width: 100%; min-height: 68px; display: flex; align-items: center; gap: 4px; padding: 10px; border: 1px solid #4d493d; border-radius: 10px; background: transparent; }
 .project-rename-form input { min-width: 0; flex: 1; height: 40px; padding: 0 10px; border: 1px solid #55523f; border-radius: 7px; background: #191917; color: #f0eee6; font-size: 13px; }
 .project-rename-form .icon-button { width: 40px; height: 40px; flex: none; }
 .project-list-item { width: 100%; min-height: 68px; display: flex; align-items: center; gap: 12px; padding: 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: #aaa79e; text-align: left; }
