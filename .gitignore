@@ -1,0 +1,44 @@
+# Dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+key.properties
+google-services.json
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local product/design working files
+.agents/
+.impeccable/
+PRODUCT.md
+
+# Android local configuration and generated output
+android/.gradle/
+android/.idea/
+android/local.properties
+android/**/build/
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+android/capacitor-cordova-android-plugins/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+*.apk
+*.aab
