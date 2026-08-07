@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { BookPlus, Check, Plus, Trash2, X } from 'lucide-react'
 import { getThemePreset } from '../domain/themes'
 import type { StoryProject } from '../domain/models'
+import { usePresence } from '../hooks/usePresence'
 
 interface Props {
   open: boolean
@@ -28,6 +29,7 @@ export default function ProjectDrawer({
   const [creating, setCreating] = useState(false)
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState(false)
+  const { present, closing } = usePresence(open, onClose, 180)
 
   useEffect(() => {
     if (!open) return
@@ -40,7 +42,7 @@ export default function ProjectDrawer({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose, open])
 
-  if (!open) return null
+  if (!present) return null
   async function create() {
     const nextTitle = title.trim()
     if (!nextTitle || busy) return
@@ -56,7 +58,7 @@ export default function ProjectDrawer({
 
   return (
     <div
-      className="drawer-backdrop"
+      className={`drawer-backdrop${closing ? ' closing' : ''}`}
       role="presentation"
       onMouseDown={(event) => {
         if (event.currentTarget === event.target) onClose()

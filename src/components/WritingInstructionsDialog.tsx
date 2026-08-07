@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Save, X } from 'lucide-react'
+import { usePresence } from '../hooks/usePresence'
 
 interface Props {
   open: boolean
@@ -16,6 +17,7 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [draft, setDraft] = useState(value)
   const [saving, setSaving] = useState(false)
+  const { present, closing } = usePresence(open, onClose, 180)
   const normalizedValue = value.trim()
   const isDirty = useMemo(() => draft.trim() !== normalizedValue, [draft, normalizedValue])
 
@@ -26,7 +28,7 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
     window.requestAnimationFrame(() => textareaRef.current?.focus())
   }, [open, value])
 
-  if (!open) return null
+  if (!present) return null
 
   function close() {
     if (saving) return
@@ -71,7 +73,7 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
   }
 
   return (
-    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
+    <div className={`dialog-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) close()
     }}>
       <section

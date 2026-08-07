@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { ImagePlus, LoaderCircle, Upload, X } from 'lucide-react'
+import { Check, ChevronDown, ImagePlus, LoaderCircle, Upload, X } from 'lucide-react'
 import type { CharacterAsset, ReferenceStyleMode } from '../domain/models'
+import { usePresence } from '../hooks/usePresence'
 
 interface Props {
   open: boolean
@@ -30,6 +31,9 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [referenceStyleMode, setReferenceStyleMode] = useState<ReferenceStyleMode>('project')
+  const [characterMenuOpen, setCharacterMenuOpen] = useState(false)
+  const characterSelectRef = useRef<HTMLDivElement>(null)
+  const { present, closing } = usePresence(open, onClose, 180)
 
   useEffect(() => {
     if (!open) return
@@ -40,13 +44,23 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
     setFileName('')
     setError('')
     setReferenceStyleMode('project')
+    setCharacterMenuOpen(false)
     window.requestAnimationFrame(() => closeButtonRef.current?.focus())
   }, [characters, open])
 
-  if (!open) return null
+  useEffect(() => {
+    if (!characterMenuOpen) return
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (!characterSelectRef.current?.contains(event.target as Node)) setCharacterMenuOpen(false)
+    }
+    document.addEventListener('click', handleDocumentClick)
+    return () => document.removeEventListener('click', handleDocumentClick)
+  }, [characterMenuOpen])
+
+  if (!present) return null
 
   return (
-    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
+    <div className={`dialog-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target && !saving) onClose()
     }}>
       <section className="reference-dialog" role="dialog" aria-modal="true" aria-labelledby="reference-dialog-title">
@@ -59,12 +73,47 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
         </header>
         <div className="reference-dialog-body">
           {characters.length ? (
-            <label className="field">
+            <div className="field">
               <span>指定角色</span>
-              <select value={characterId} onChange={(event) => setCharacterId(event.target.value)}>
-                {characters.map((character) => <option key={character.id} value={character.id}>{character.name} · {character.role}</option>)}
-              </select>
-            </label>
+              <div ref={characterSelectRef} className="theme-select character-select">
+                <button
+                  className="theme-select-trigger"
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded={characterMenuOpen}
+                  onClick={() => setCharacterMenuOpen((value) => !value)}
+                >
+                  <span className="theme-select-copy">
+                    <strong>{(characters.find((character) => character.id === characterId)?.name ?? '请选择角色')}</strong>
+                    <small>{characters.find((character) => character.id === characterId)?.role ?? '参考图将绑定到这个角色'}</small>
+                  </span>
+                  <ChevronDown size={17} aria-hidden="true" className={characterMenuOpen ? 'rotate-180' : undefined} />
+                </button>
+                {characterMenuOpen && (
+                  <div className="theme-select-menu character-select-menu" role="listbox" aria-label="选择角色">
+                    {characters.map((character) => {
+                      const selected = character.id === characterId
+                      return (
+                        <button
+                          key={character.id}
+                          className="theme-select-option"
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          onClick={() => {
+                            setCharacterId(character.id)
+                            setCharacterMenuOpen(false)
+                          }}
+                        >
+                          <span><strong>{character.name}</strong><small>{character.role}</small></span>
+                          {selected && <Check size={15} aria-hidden="true" />}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
           ) : (
             <div className="reference-character-setup">
               <label className="field">

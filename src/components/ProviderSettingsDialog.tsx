@@ -5,6 +5,7 @@ import { browserTransport } from '../providers/browserTransport'
 import { listOpenAiModels } from '../providers/openAiCompatible'
 import { secretStore } from '../providers/secretStore'
 import type { ModelSummary, ProviderConfig, ProviderSettings, ProviderSlot } from '../providers/types'
+import { usePresence } from '../hooks/usePresence'
 
 interface Props {
   open: boolean
@@ -46,6 +47,7 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
   const dialogRef = useRef<HTMLElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const providerSelectRef = useRef<HTMLDivElement>(null)
+  const { present, closing } = usePresence(open, onClose, 180)
   const [activeSlot, setActiveSlot] = useState<ProviderSlot>('text')
   const [draft, setDraft] = useState(settings)
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
@@ -110,7 +112,7 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
     return currentModels.filter((model) => model.id.toLocaleLowerCase().includes(query))
   }, [currentModels, modelQuery])
 
-  if (!open) return null
+  if (!present) return null
 
   function updateCurrent(patch: Partial<ProviderConfig>) {
     setDraft((value) => {
@@ -281,7 +283,7 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
   const preset = activeSlot === 'image' ? applyPreset('image', 'jbb') : null
 
   return (
-    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
+    <div className={`dialog-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) void close()
     }}>
       <section

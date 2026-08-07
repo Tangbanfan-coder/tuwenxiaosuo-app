@@ -12,6 +12,13 @@ export const DEFAULT_ILLUSTRATION_STYLE_ID: IllustrationStylePresetId = 'realist
 
 export const ILLUSTRATION_STYLE_PRESETS: readonly IllustrationStylePreset[] = [
   {
+    id: 'unconstrained',
+    label: '自由发挥',
+    description: '不加画风约束，让模型自行发挥',
+    visualPrompt: '',
+    negativePrompt: '避免画面文字、水印、低清晰度。',
+  },
+  {
     id: 'realistic-cinematic',
     label: '写实电影感',
     description: '真实材质、自然光影与镜头叙事',

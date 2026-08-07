@@ -4,6 +4,7 @@ import { ILLUSTRATION_STYLE_PRESETS, getIllustrationStylePreset } from '../domai
 import { THEME_PRESETS, getThemePreset } from '../domain/themes'
 import type { AppearanceMode, IllustrationStylePresetId, ThemePresetId } from '../domain/models'
 import type { ProviderConfig, ProviderSettings, ProviderSlot } from '../providers/types'
+import { usePresence } from '../hooks/usePresence'
 
 interface Props {
   open: boolean
@@ -50,6 +51,7 @@ export default function SettingsDrawer({
   const [openSelect, setOpenSelect] = useState<'theme' | 'style' | null>(null)
   const [customStyleEditorOpen, setCustomStyleEditorOpen] = useState(false)
   const [customStylePrompt, setCustomStylePrompt] = useState(activeCustomStylePrompt)
+  const { present, closing } = usePresence(open, onClose, 180)
 
   const themeMenuOpen = openSelect === 'theme'
   const styleMenuOpen = openSelect === 'style'
@@ -96,10 +98,10 @@ export default function SettingsDrawer({
     setCustomStylePrompt(activeCustomStylePrompt)
   }, [activeCustomStylePrompt])
 
-  if (!open) return null
+  if (!present) return null
 
   return (
-    <div className="settings-backdrop" role="presentation" onMouseDown={(event) => {
+    <div className={`settings-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) onClose()
     }}>
       <aside className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title">

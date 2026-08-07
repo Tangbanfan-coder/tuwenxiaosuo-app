@@ -15,6 +15,7 @@
     "@capacitor/android": "^8.5.0",
     "@capacitor/core": "^8.5.0",
     "@capacitor/filesystem": "^8.1.2",
+    "@capgo/capacitor-file-sharer": "^8.1.8",
     "dexie": "^4.4.4",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",

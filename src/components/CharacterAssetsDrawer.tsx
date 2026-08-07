@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { CheckCircle2, ImagePlus, LoaderCircle, RefreshCw, UserRound, X } from 'lucide-react'
 import type { CharacterAsset, ReferenceStyleMode } from '../domain/models'
 import { resolveImageSource } from '../providers/imageAssetStore'
+import { usePresence } from '../hooks/usePresence'
 
 interface Props {
   open: boolean
@@ -16,6 +17,7 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const [feedbackCharacterId, setFeedbackCharacterId] = useState<string>()
   const [feedback, setFeedback] = useState('')
+  const { present, closing } = usePresence(open, onClose, 180)
 
   useEffect(() => {
     if (!open) return
@@ -27,10 +29,10 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose, open])
 
-  if (!open) return null
+  if (!present) return null
 
   return (
-    <div className="asset-backdrop" role="presentation" onMouseDown={(event) => {
+    <div className={`asset-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) onClose()
     }}>
       <aside className="asset-drawer" role="dialog" aria-modal="true" aria-labelledby="character-assets-title">

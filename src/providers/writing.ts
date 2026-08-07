@@ -170,7 +170,7 @@ function buildProjectContext(workspace: ProjectWorkspace) {
     characters,
     projectStyle: {
       name: illustrationStyle.label,
-      prompt: illustrationStyle.visualPrompt,
+      prompt: illustrationStyle.visualPrompt || undefined,
     },
     recentMessages,
   })

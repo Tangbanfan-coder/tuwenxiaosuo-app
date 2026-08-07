@@ -86,13 +86,15 @@ export function buildCharacterPortraitPrompt(character: CharacterAsset, style?: 
   const preserveReferenceStyle = character.continuity.referenceStyleMode === 'reference' && Boolean(character.continuity.referenceImageUrl)
   const styleRule = preserveReferenceStyle
     ? '保留上一张参考图自身的绘制或摄影风格，不要将角色转换为项目统一画风。'
-    : `统一使用项目画风：${resolvedStyle.visualPrompt}`
+    : resolvedStyle.visualPrompt
+      ? `统一使用项目画风：${resolvedStyle.visualPrompt}`
+      : ''
+  const styleLine = styleRule ? `\n画风规则：${styleRule}` : ''
   return `为小说角色生成一张全新原创的定妆照。单人，正面或轻微三分之二侧面，半身到全身，背景简洁，不含文字和水印。
 角色：${character.name}（${character.role}）
 年龄与体型：${character.identity.ageAndBuild || '按剧情合理设计'}
 必须保持的身份特征：${character.identity.fixedTraits.join('、') || '面部特征清晰且可复用'}
 默认外貌：${character.appearance.defaultLook || '按剧情合理设计'}
-服装：${character.appearance.wardrobe || '符合角色身份'}
-画风规则：${styleRule}
+服装：${character.appearance.wardrobe || '符合角色身份'}${styleLine}
 避免：多人、复杂背景、画面文字、遮挡面部、角色身份漂移；${resolvedStyle.negativePrompt}${refinement}`
 }
