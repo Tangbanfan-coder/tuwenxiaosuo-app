@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Check, ChevronDown, Eye, EyeOff, LoaderCircle, PlugZap, Plus, Save, Search, Trash2, X } from 'lucide-react'
-import { applyPreset, createProviderConfig } from '../providers/config'
+import { createProviderConfig } from '../providers/config'
 import { browserTransport } from '../providers/browserTransport'
 import { listOpenAiModels } from '../providers/openAiCompatible'
 import { secretStore } from '../providers/secretStore'
@@ -280,8 +280,6 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
     switchSlot(slot === 'text' ? 'image' : 'text')
   }
 
-  const preset = activeSlot === 'image' ? applyPreset('image', 'jbb') : null
-
   return (
     <div className={`dialog-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) void close()
@@ -362,14 +360,6 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
               <button type="button" onClick={removeCurrentProvider} disabled={providers.length <= 1}><Trash2 size={16} />删除</button>
             </div>
           </div>
-
-          {preset && (
-            <div className="preset-row">
-              <span>快速填写</span>
-              <button type="button" onClick={() => updateCurrent({ name: preset.name, baseUrl: preset.baseUrl, model: preset.model, protocol: preset.protocol })}>JBB Image</button>
-              <button type="button" onClick={() => updateCurrent({ name: '自定义图片接口', baseUrl: '', model: '' })}>清空为自定义</button>
-            </div>
-          )}
 
           <label className="field">
             <span>显示名称</span>
