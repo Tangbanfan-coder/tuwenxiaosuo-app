@@ -117,6 +117,7 @@ export default function ProjectDrawer({
                     value={renameTitle}
                     aria-label={`重命名作品 ${project.title}`}
                     onChange={(event) => setRenameTitle(event.target.value)}
+                    onFocus={(event) => event.target.select()}
                     onKeyDown={(event) => {
                       if (event.key !== 'Escape') return
                       event.stopPropagation()
