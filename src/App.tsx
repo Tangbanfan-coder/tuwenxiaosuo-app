@@ -39,6 +39,7 @@ import {
   listReadyLocalIllustrations,
   loadProjectWorkspace,
   markProjectOpened,
+  renameProject,
   setCharacterPortraitFailed,
   setCharacterPortraitGenerating,
   setCharacterPortraitReady,
@@ -249,8 +250,14 @@ export default function App() {
     setProjectMenuOpen(false)
   }
 
-  async function handleDeleteProject(projectId: string) {
-    const project = projects.find((item) => item.id === projectId)
+  async function handleRenameProject(projectId: string, title: string) {
+    const normalizedTitle = await renameProject(projectId, title)
+    setProjects((current) => current.map((project) => project.id === projectId ? { ...project, title: normalizedTitle, updatedAt: Date.now() } : project))
+    setWorkspace((current) => current?.project.id === projectId ? { ...current, project: { ...current.project, title: normalizedTitle } } : current)
+    setToastMessage('作品已重命名')
+  }
+
+  async function handleDeleteProject(projectId: string) {    const project = projects.find((item) => item.id === projectId)
     if (!project || !window.confirm(`确定删除作品“${project.title}”吗？正文、角色和插画都会被删除，且无法撤销。`)) return
     const deletingActive = workspace?.project.id === projectId
     await deleteProject(projectId)
@@ -707,6 +714,7 @@ export default function App() {
         }}
         onCreate={handleCreateProject}
         onDelete={handleDeleteProject}
+        onRename={handleRenameProject}
       />
 
       <SettingsDrawer

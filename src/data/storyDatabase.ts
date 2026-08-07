@@ -117,6 +117,17 @@ export async function createProject(title: string) {
   return project
 }
 
+export async function renameProject(projectId: string, title: string) {
+  const normalizedTitle = title.trim()
+  if (!normalizedTitle) throw new Error('请填写作品名称')
+  if (normalizedTitle.length > 60) throw new Error('作品名称不能超过 60 个字')
+  const now = Date.now()
+  await storyDatabase.transaction('rw', [storyDatabase.projects], async () => {
+    await storyDatabase.projects.update(projectId, { title: normalizedTitle, updatedAt: now })
+  })
+  return normalizedTitle
+}
+
 export async function createCharacterDraft(projectId: string, name: string, role: string) {
   const normalizedName = name.trim()
   if (!normalizedName) throw new Error('请填写角色名称')

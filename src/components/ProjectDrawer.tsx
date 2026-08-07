@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { BookPlus, Check, Plus, Trash2, X } from 'lucide-react'
+import { BookPlus, Check, LoaderCircle, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { getThemePreset } from '../domain/themes'
 import type { StoryProject } from '../domain/models'
 import { usePresence } from '../hooks/usePresence'
@@ -12,6 +12,7 @@ interface Props {
   onSelect: (projectId: string) => Promise<void>
   onCreate: (title: string) => Promise<void>
   onDelete: (projectId: string) => Promise<void>
+  onRename: (projectId: string, title: string) => Promise<void>
 }
 
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric' })
@@ -24,11 +25,15 @@ export default function ProjectDrawer({
   onSelect,
   onCreate,
   onDelete,
+  onRename,
 }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const [creating, setCreating] = useState(false)
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState(false)
+  const [renamingId, setRenamingId] = useState<string>()
+  const [renameTitle, setRenameTitle] = useState('')
+  const [renameBusy, setRenameBusy] = useState(false)
   const { present, closing } = usePresence(open, onClose, 180)
 
   useEffect(() => {
@@ -56,6 +61,23 @@ export default function ProjectDrawer({
     }
   }
 
+  function startRename(project: StoryProject) {
+    setRenamingId(project.id)
+    setRenameTitle(project.title)
+  }
+
+  async function submitRename(projectId: string) {
+    const nextTitle = renameTitle.trim()
+    if (!nextTitle || renameBusy) return
+    setRenameBusy(true)
+    try {
+      await onRename(projectId, nextTitle)
+      setRenamingId(undefined)
+    } finally {
+      setRenameBusy(false)
+    }
+  }
+
   return (
     <div
       className={`drawer-backdrop${closing ? ' closing' : ''}`}
@@ -79,6 +101,37 @@ export default function ProjectDrawer({
           {projects.map((project) => {
             const theme = getThemePreset(project.themeId)
             const isActive = project.id === activeProjectId
+            if (renamingId === project.id) {
+              return (
+                <form
+                  key={project.id}
+                  className="project-rename-form"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void submitRename(project.id)
+                  }}
+                >
+                  <input
+                    autoFocus
+                    maxLength={60}
+                    value={renameTitle}
+                    aria-label={`重命名作品 ${project.title}`}
+                    onChange={(event) => setRenameTitle(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Escape') return
+                      event.stopPropagation()
+                      setRenamingId(undefined)
+                    }}
+                  />
+                  <button className="icon-button" type="submit" aria-label="保存新名称" disabled={!renameTitle.trim() || renameBusy}>
+                    {renameBusy ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}
+                  </button>
+                  <button className="icon-button" type="button" aria-label="取消重命名" onClick={() => setRenamingId(undefined)}>
+                    <X size={17} />
+                  </button>
+                </form>
+              )
+            }
             return (
               <div key={project.id} className="project-list-item-row">
                 <button
@@ -93,6 +146,14 @@ export default function ProjectDrawer({
                     <small>{theme.label} · {dateFormatter.format(project.updatedAt)}</small>
                   </span>
                   {isActive && <Check size={17} aria-label="当前作品" />}
+                </button>
+                <button
+                  className="project-rename-button"
+                  type="button"
+                  aria-label={`重命名作品 ${project.title}`}
+                  onClick={() => startRename(project)}
+                >
+                  <Pencil size={15} aria-hidden="true" />
                 </button>
                 <button
                   className="project-delete-button"
