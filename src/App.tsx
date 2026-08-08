@@ -52,6 +52,7 @@ import {
   updateIllustrationStyle,
   updateProjectTheme,
   updateWritingInstructions,
+  updateWritingStructure,
 } from './data/storyDatabase'
 import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
 import type { AppearanceMode, CharacterAsset, ContextBudget, ConversationMessage, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, StoryProject, ThemePresetId } from './domain/models'
@@ -790,11 +791,21 @@ export default function App() {
         open={writingInstructionsOpen}
         projectTitle={workspace.project.title}
         value={workspace.project.writingInstructions ?? ''}
+        textProvider={providerSettings.text}
         onClose={() => {
           setWritingInstructionsOpen(false)
           setAppSettingsOpen(true)
         }}
         onSave={handleWritingInstructionsSave}
+        onSaveStructure={async (structureJson) => {
+          try {
+            await updateWritingStructure(workspace.project.id, structureJson ?? '')
+            showToast(structureJson ? '分层结构已保存' : '已恢复为原文携带')
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : '分层结构保存失败', 'error')
+            throw error
+          }
+        }}
       />
 
       <ProviderSettingsDialog

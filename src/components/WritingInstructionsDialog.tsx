@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Save, X } from 'lucide-react'
+import { ChevronDown, LoaderCircle, RefreshCw, Save, Sparkles, X } from 'lucide-react'
 import { usePresence } from '../hooks/usePresence'
 import ConfirmDialog from './ConfirmDialog'
+import { structureWritingInstructions } from '../providers/writing'
+import { browserTransport } from '../providers/browserTransport'
+import type { ProviderConfig } from '../providers/types'
+import type { WritingInstructionsStructure } from '../domain/models'
 
 interface Props {
   open: boolean
@@ -9,16 +13,26 @@ interface Props {
   value: string
   onClose: () => void
   onSave: (value: string) => Promise<void>
+  onSaveStructure: (structureJson: string | null) => Promise<void>
+  textProvider?: ProviderConfig
 }
 
 const MAX_LENGTH = 50_000
+const STRUCTURE_THRESHOLD = 800
 
-export default function WritingInstructionsDialog({ open, projectTitle, value, onClose, onSave }: Props) {
+type Phase = 'edit' | 'structuring' | 'review'
+
+export default function WritingInstructionsDialog({ open, projectTitle, value, onClose, onSave, onSaveStructure, textProvider }: Props) {
   const dialogRef = useRef<HTMLElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [draft, setDraft] = useState(value)
   const [saving, setSaving] = useState(false)
   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
+  const [phase, setPhase] = useState<Phase>('edit')
+  const [structure, setStructure] = useState<WritingInstructionsStructure>()
+  const [structureError, setStructureError] = useState('')
+  const [existingStructure, setExistingStructure] = useState<WritingInstructionsStructure>()
+  const [expandedSection, setExpandedSection] = useState<number>()
   const { present, closing } = usePresence(open, onClose, 180)
   const normalizedValue = value.trim()
   const isDirty = useMemo(() => draft.trim() !== normalizedValue, [draft, normalizedValue])
@@ -27,13 +41,34 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
     if (!open) return
     setDraft(value)
     setSaving(false)
+    setPhase('edit')
+    setStructureError('')
+    setStructure(undefined)
+    setExpandedSection(undefined)
+    try {
+      const parsed = value ? JSON.parse(value) : undefined
+      setExistingStructure(parsed && typeof parsed === 'object' && typeof (parsed as WritingInstructionsStructure).core === 'string'
+        ? parsed as WritingInstructionsStructure
+        : undefined)
+    } catch {
+      setExistingStructure(undefined)
+    }
     window.requestAnimationFrame(() => textareaRef.current?.focus())
   }, [open, value])
+
+  useEffect(() => {
+    if (phase !== 'structuring' || !structure) return
+    setExpandedSection(undefined)
+  }, [phase, structure])
 
   if (!present) return null
 
   function close() {
     if (saving) return
+    if (phase !== 'edit') {
+      onClose()
+      return
+    }
     if (isDirty) {
       setConfirmDiscardOpen(true)
       return
@@ -41,14 +76,62 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
     onClose()
   }
 
+  async function structureDraft() {
+    if (!textProvider) {
+      setStructureError('请先在模型服务中配置文本模型，再使用自动整理。')
+      setPhase('edit')
+      return
+    }
+    setPhase('structuring')
+    setStructureError('')
+    try {
+      const result = await structureWritingInstructions(draft, textProvider, browserTransport)
+      setStructure(result)
+      setPhase('review')
+    } catch (error) {
+      setStructureError(error instanceof Error ? error.message : '整理失败，请重试')
+      setPhase('edit')
+    }
+  }
+
   async function save() {
     if (saving) return
     setSaving(true)
     try {
       await onSave(draft)
-      onClose()
+      if (draft.trim().length > STRUCTURE_THRESHOLD && (isDirty || !existingStructure)) {
+        await structureDraft()
+      } else {
+        onClose()
+      }
     } catch {
       // The parent reports the specific save error without closing the editor.
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function confirmStructure() {
+    if (!structure || saving) return
+    setSaving(true)
+    try {
+      await onSaveStructure(JSON.stringify(structure))
+      onClose()
+    } catch {
+      setStructureError('结构化版本保存失败，请重试')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function skipStructure() {
+    if (saving) return
+    setSaving(true)
+    try {
+      await onSaveStructure(null)
+      onClose()
+    } catch {
+      setStructureError('无法清除旧的结构化版本，请重试')
     } finally {
       setSaving(false)
     }
@@ -63,7 +146,7 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
     if (event.key !== 'Tab' || !dialogRef.current) return
 
     const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
     ))
     if (!focusable.length) return
     const first = focusable[0]
@@ -92,37 +175,120 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
       >
         <header className="dialog-header">
           <div>
-            <h2 id="writing-instructions-title">长期创作设定</h2>
+            <h2 id="writing-instructions-title">{phase === 'edit' ? '长期创作设定' : '整理为分层结构'}</h2>
             <p id="writing-instructions-description">仅用于《{projectTitle}》</p>
           </div>
           <button className="icon-button" type="button" aria-label="关闭长期创作设定" onClick={close}><X size={20} /></button>
         </header>
 
-        <form className="writing-instructions-form" onSubmit={(event) => {
-          event.preventDefault()
-          void save()
-        }}>
-          <label htmlFor="project-writing-instructions">每轮默认遵循的写作规则</label>
-          <textarea
-            ref={textareaRef}
-            id="project-writing-instructions"
-            rows={9}
-            maxLength={MAX_LENGTH}
-            value={draft}
-            placeholder="例如：使用第三人称有限视角；文风克制；避免网络用语；每章约两千字；不要替主角作出重大决定。"
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          <p>本轮输入提出不同要求时，以本轮输入为准。留空并保存即可清除长期设定。</p>
-          <footer className="dialog-footer">
-            <span>{draft.length}/{MAX_LENGTH}</span>
-            <div>
-              <button className="quiet-button" type="button" disabled={saving} onClick={close}>取消</button>
-              <button className="save-button" type="submit" disabled={saving || !isDirty}>
-                <Save size={17} />{saving ? '正在保存…' : '保存设定'}
-              </button>
+        {phase === 'edit' && (
+          <form className="writing-instructions-form" onSubmit={(event) => {
+            event.preventDefault()
+            void save()
+          }}>
+            <label htmlFor="project-writing-instructions">每轮默认遵循的写作规则</label>
+            <textarea
+              ref={textareaRef}
+              id="project-writing-instructions"
+              rows={9}
+              maxLength={MAX_LENGTH}
+              value={draft}
+              placeholder="例如：使用第三人称有限视角；文风克制；避免网络用语；每章约两千字；不要替主角作出重大决定。"
+              onChange={(event) => setDraft(event.target.value)}
+            />
+            <p>本轮输入提出不同要求时，以本轮输入为准。留空并保存即可清除长期设定。</p>
+            {existingStructure && (
+              <div className="structure-status">
+                <Sparkles size={15} />
+                已整理为分层结构：{existingStructure.sections.length} 个分类、{existingStructure.styleSamples.length} 个风格范例
+                {isDirty && <em>（原文已修改，需重新整理）</em>}
+              </div>
+            )}
+            {structureError && <p className="field-error">{structureError}</p>}
+            <footer className="dialog-footer">
+              <span>{draft.length}/{MAX_LENGTH}</span>
+              <div>
+                <button className="quiet-button" type="button" disabled={saving} onClick={close}>取消</button>
+                {draft.trim().length > STRUCTURE_THRESHOLD && (
+                  <button className="quiet-button structure-button" type="button" disabled={saving} onClick={() => void structureDraft()}>
+                    <Sparkles size={15} />整理结构
+                  </button>
+                )}
+                <button className="save-button" type="submit" disabled={saving || !isDirty}>
+                  <Save size={17} />{saving ? '正在保存…' : '保存设定'}
+                </button>
+              </div>
+            </footer>
+          </form>
+        )}
+
+        {phase === 'structuring' && (
+          <div className="structuring-panel" aria-live="polite">
+            <LoaderCircle className="spin" size={26} />
+            <h3>正在把设定整理为分层结构…</h3>
+            <p>提取每轮携带的核心规则、按场景加载的分类设定和风格范例。</p>
+          </div>
+        )}
+
+        {phase === 'review' && structure && (
+          <div className="structure-review">
+            <label htmlFor="structure-core">核心规则（每轮固定携带，建议精简到 2000 字内）</label>
+            <textarea
+              id="structure-core"
+              rows={5}
+              value={structure.core}
+              onChange={(event) => setStructure((current) => current ? { ...current, core: event.target.value } : current)}
+            />
+
+            <div className="structure-subheading">分类设定（按当前场景选择加载）</div>
+            <div className="structure-section-list">
+              {structure.sections.map((section, index) => (
+                <div key={section.id} className="structure-section">
+                  <button
+                    type="button"
+                    aria-expanded={expandedSection === index}
+                    onClick={() => setExpandedSection((current) => current === index ? undefined : index)}
+                  >
+                    <span><strong>{section.title}</strong><em>优先级 {section.priority} · {section.tags.join('、')}</em></span>
+                    <ChevronDown size={16} className={expandedSection === index ? 'rotate-180' : undefined} />
+                  </button>
+                  {expandedSection === index && <p>{section.content}</p>}
+                </div>
+              ))}
             </div>
-          </footer>
-        </form>
+
+            {structure.styleSamples.length > 0 && (
+              <>
+                <div className="structure-subheading">风格范例（按场景类型选择）</div>
+                <div className="structure-sample-list">
+                  {structure.styleSamples.map((sample, index) => (
+                    <div key={index} className="structure-sample">
+                      <strong>{sample.sceneType}</strong>
+                      <p>{sample.content}</p>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {structureError && <p className="field-error">{structureError}</p>}
+
+            <footer className="dialog-footer">
+              <span>AI 整理结果不会替换你的原文</span>
+              <div>
+                <button className="quiet-button" type="button" disabled={saving} onClick={() => void structureDraft()}>
+                  <RefreshCw size={15} />重新整理
+                </button>
+                <button className="quiet-button" type="button" disabled={saving} onClick={() => void skipStructure()}>
+                  跳过整理
+                </button>
+                <button className="save-button" type="button" disabled={saving} onClick={() => void confirmStructure()}>
+                  <Save size={17} />{saving ? '正在保存…' : '确认保存'}
+                </button>
+              </div>
+            </footer>
+          </div>
+        )}
       </section>
       <ConfirmDialog
         open={confirmDiscardOpen}

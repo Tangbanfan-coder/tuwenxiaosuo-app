@@ -268,6 +268,13 @@ export async function updateWritingInstructions(projectId: string, writingInstru
   })
 }
 
+export async function updateWritingStructure(projectId: string, writingStructure: string) {
+  await storyDatabase.projects.update(projectId, {
+    writingStructure,
+    updatedAt: Date.now(),
+  })
+}
+
 export async function loadProjectScenes(projectId: string) {
   return storyDatabase.scenes.where('projectId').equals(projectId).sortBy('order')
 }

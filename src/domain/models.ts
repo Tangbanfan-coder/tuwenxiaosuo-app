@@ -4,6 +4,25 @@ export type IllustrationStylePresetId = 'unconstrained' | 'realistic-cinematic' 
 export type ReferenceStyleMode = 'project' | 'reference'
 export type ContextBudget = 'standard' | 'long' | 'full'
 
+export interface WritingInstructionSection {
+  id: string
+  title: string
+  content: string
+  tags: string[]
+  priority: number
+}
+
+export interface WritingStyleSample {
+  sceneType: string
+  content: string
+}
+
+export interface WritingInstructionsStructure {
+  core: string
+  sections: WritingInstructionSection[]
+  styleSamples: WritingStyleSample[]
+}
+
 export interface StoryProject {
   id: string
   title: string
@@ -11,6 +30,7 @@ export interface StoryProject {
   activeChapterId?: string
   autoIllustrate: boolean
   writingInstructions?: string
+  writingStructure?: string
   contextBudget?: ContextBudget
   createdAt: number
   updatedAt: number

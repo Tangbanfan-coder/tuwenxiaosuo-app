@@ -1,4 +1,4 @@
-import type { ContextBudget, ProjectWorkspace, SceneNotes, VisualPlan, WritingCharacterPlan, WritingTurnResult } from '../domain/models'
+import type { ContextBudget, ProjectWorkspace, SceneNotes, VisualPlan, WritingCharacterPlan, WritingInstructionsStructure, WritingTurnResult } from '../domain/models'
 import { resolveProjectIllustrationStyle } from '../domain/illustrationStyles'
 import { loadProjectScenes, type StoredScene } from '../data/storyDatabase'
 import { heuristicModelContextTokens, lookupModelLimit } from './modelLimits'
@@ -303,6 +303,52 @@ function takeLeading(value: string, maxCharacters: number) {
   return value.length > maxCharacters ? value.slice(0, maxCharacters) : value
 }
 
+function parseWritingStructure(project: ProjectWorkspace['project']): WritingInstructionsStructure | undefined {
+  if (!project.writingStructure) return undefined
+  try {
+    const parsed = JSON.parse(project.writingStructure) as WritingInstructionsStructure
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.core !== 'string') return undefined
+    return parsed
+  } catch {
+    return undefined
+  }
+}
+
+function selectInstructionSections(structure: WritingInstructionsStructure | undefined, latestScene: StoredScene | undefined, userRequest: string, limit: number) {
+  if (!structure || !structure.sections.length) return []
+  const sceneEntities = new Set(
+    latestScene
+      ? [latestScene.notes.location, latestScene.notes.povCharacter, ...latestScene.notes.charactersPresent]
+        .filter((value): value is string => Boolean(value)).map(normalizeText)
+      : [],
+  )
+  const requestText = normalizeText(userRequest)
+  const scored = structure.sections
+    .map((section) => {
+      const text = normalizeText([section.title, section.content, ...section.tags].join(' '))
+      const entityHits = Array.from(sceneEntities).filter((entity) => entity.length >= 2 && text.includes(entity)).length
+      const requestHits = Array.from(requestText ? Array.from(new Set<string>(requestText.match(/[\u4e00-\u9fa5]{2,4}/g) ?? [])) : []).filter((gram) => text.includes(gram)).length
+      return { section, score: entityHits * 3 + requestHits * 2 + section.priority }
+    })
+    .sort((left, right) => right.score - left.score)
+    .slice(0, limit)
+  return scored.map((item) => item.section)
+}
+
+function selectStyleSamples(structure: WritingInstructionsStructure | undefined, userRequest: string, limit: number) {
+  if (!structure || !structure.styleSamples.length) return []
+  const requestText = normalizeText(userRequest)
+  const scored = structure.styleSamples
+    .map((sample) => {
+      const text = normalizeText(sample.sceneType)
+      const hits = Array.from(new Set<string>(requestText.match(/[\u4e00-\u9fa5]{2,4}/g) ?? [])).filter((gram) => text.includes(gram)).length
+      return { sample, score: hits }
+    })
+    .sort((left, right) => right.score - left.score)
+  const ranked = scored.length ? scored : structure.styleSamples.map((sample) => ({ sample, score: 0 }))
+  return ranked.slice(0, limit).map((item) => item.sample)
+}
+
 function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[], inputBudget: number, userRequest: string) {
   const illustrationStyle = resolveProjectIllustrationStyle(workspace.style)
   const chapter = workspace.chapters.find((item) => item.id === workspace.project.activeChapterId) ?? workspace.chapters[0]
@@ -310,17 +356,41 @@ function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[],
 
   const sections: Array<{ label: string; text: string; priority: number; keepOrder: 'tail' | 'head'; locked?: boolean }> = []
 
+  const latestScene = scenes.length ? scenes[scenes.length - 1] : undefined
+
   const writingInstructions = workspace.project.writingInstructions?.trim()
+  const structure = parseWritingStructure(workspace.project)
   const illustrationLine = `插画画风：${illustrationStyle.label}${illustrationStyle.visualPrompt ? `（${illustrationStyle.visualPrompt}）` : ''}`
   const rulesBudget = Math.min(CORE_RULES_MAX_CHARS, Math.floor(totalBudget * 0.2))
   let rulesTruncated = false
-  const instructionsFull = writingInstructions ? `长期创作设定：\n${writingInstructions}` : ''
+  const coreRules = structure?.core || writingInstructions || ''
+  const instructionsFull = coreRules ? `长期创作设定（核心规则）：\n${coreRules}` : ''
   let instructionsText = [instructionsFull, illustrationLine].filter(Boolean).join('\n')
   if (instructionsText.length > rulesBudget) {
     instructionsText = takeLeading(instructionsText, rulesBudget)
     rulesTruncated = true
   }
   sections.push({ label: '写作规则', text: instructionsText, priority: 100, keepOrder: 'head', locked: true })
+
+  const selectedSections = selectInstructionSections(structure, latestScene, userRequest, 3)
+  if (selectedSections.length) {
+    sections.push({
+      label: '相关设定（按当前场景选择）',
+      text: selectedSections.map((section) => `【${section.title}】\n${section.content}`).join('\n\n'),
+      priority: 80,
+      keepOrder: 'head',
+    })
+  }
+
+  const selectedSamples = selectStyleSamples(structure, userRequest, 2)
+  if (selectedSamples.length) {
+    sections.push({
+      label: '风格范例',
+      text: selectedSamples.map((sample) => `【${sample.sceneType}场景范例】\n${sample.content}`).join('\n\n'),
+      priority: 55,
+      keepOrder: 'head',
+    })
+  }
 
   const characters = workspace.characters.map((character) => ({
     name: character.name,
@@ -337,9 +407,7 @@ function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[],
     keepOrder: 'head',
   })
 
-  const latestScene = scenes.length ? scenes[scenes.length - 1] : undefined
-  const currentSceneText = latestScene
-    ? `当前场景：${[latestScene.notes.time, latestScene.notes.location, latestScene.notes.povCharacter ? `视角：${latestScene.notes.povCharacter}` : '']
+  const currentSceneText = latestScene    ? `当前场景：${[latestScene.notes.time, latestScene.notes.location, latestScene.notes.povCharacter ? `视角：${latestScene.notes.povCharacter}` : '']
         .filter(Boolean).join('，')}`
     : ''
   const workspaceText = [
@@ -580,6 +648,105 @@ function contentToString(content: unknown) {
     if (part && typeof part === 'object' && 'text' in part && typeof part.text === 'string') return part.text
     return ''
   }).join('')
+}
+
+const STRUCTURE_SYSTEM_PROMPT = `你是小说创作设定整理助手。用户会提供一份长篇创作设定（可能是零散粘贴的笔记），请把它整理成结构化形式，只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要在 JSON 外添加文字：
+{
+  "core": "每轮写作必须遵守的核心规则，浓缩原文中最高优先级的要求（叙事人称与视角、文风与语言限制、不可违背的世界规则、角色绝对设定、禁止事项、用户明确要求长期遵守的规则），不超过 2000 字",
+  "sections": [
+    {
+      "title": "分类标题，如：世界历史/魔法体系/国家与组织/人物档案/地点设定/物品设定/社会制度/剧情规划",
+      "content": "该分类下的完整设定，保留原文细节，不省略具体设定",
+      "tags": ["检索关键词，3-6 个"],
+      "priority": 1
+    }
+  ],
+  "style_samples": [
+    {
+      "scene_type": "打斗/感情/悬疑/日常/景物/对话 等场景类型",
+      "content": "能体现原文文风的原句片段，保留原措辞"
+    }
+  ]
+}
+要求：
+- core 必须覆盖原文中所有"必须/禁止/绝对/不要"类规则，但不能编造原文没有的规则；
+- sections 必须完整覆盖原文全部内容，信息不能丢失，可按内容自然拆分 2-8 个分类，priority 越大越重要（1-5）；
+- style_samples 从原文中挑选 2-4 段最能体现文风的片段；
+- 原文为空或过短时，core 可以是原文本身，sections 和 style_samples 可以为空数组。`
+
+export async function structureWritingInstructions(
+  source: string,
+  config: ProviderConfig,
+  transport: HttpTransport,
+): Promise<WritingInstructionsStructure> {
+  const baseUrl = normalizeBaseUrl(config.baseUrl)
+  if (!baseUrl) throw new Error('请先配置文本模型的 API URL')
+  if (!config.model.trim()) throw new Error('请先选择文本模型')
+
+  const request = {
+    url: `${baseUrl}/chat/completions`,
+    method: 'POST' as const,
+    headers: { 'Content-Type': 'application/json' },
+    auth: { kind: 'bearer' as const, secretRef: config.secretRef },
+    timeoutMs: 120_000,
+    body: JSON.stringify({
+      model: config.model,
+      stream: false,
+      ...(config.manualMaxOutputTokens ?? config.maxOutputTokens
+        ? { max_tokens: Math.min(config.manualMaxOutputTokens ?? config.maxOutputTokens ?? 16_384, 16_384) }
+        : {}),
+      messages: [
+        { role: 'system', content: STRUCTURE_SYSTEM_PROMPT },
+        { role: 'user', content: source },
+      ],
+    }),
+  }
+
+  const response = await transport.request<ChatCompletionResponse>(request)
+  const content = contentToString(response.data.choices?.[0]?.message?.content)
+  if (!content.trim()) throw new Error('文本模型没有返回整理结果')
+
+  let parsed: {
+    core?: unknown
+    sections?: unknown
+    style_samples?: unknown
+  }
+  try {
+    parsed = extractJson(content) as unknown as { core?: unknown; sections?: unknown; style_samples?: unknown }
+  } catch {
+    throw new Error('模型返回的整理结果无法解析，请重试')
+  }
+
+  const sections = Array.isArray(parsed.sections)
+    ? parsed.sections
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+      .map((item) => ({
+        id: `${createShortId()}`,
+        title: stringValue(item.title) || '未分类',
+        content: stringValue(item.content),
+        tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+        priority: typeof item.priority === 'number' ? Math.min(5, Math.max(1, Math.floor(item.priority))) : 1,
+      }))
+      .filter((section) => Boolean(section.content))
+    : []
+
+  const styleSamples = Array.isArray(parsed.style_samples)
+    ? parsed.style_samples
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+      .map((item) => ({
+        sceneType: stringValue(item.scene_type) || '日常',
+        content: stringValue(item.content),
+      }))
+      .filter((sample) => Boolean(sample.content))
+    : []
+
+  const core = stringValue(parsed.core) || source.slice(0, 2000)
+
+  return { core, sections, styleSamples }
+}
+
+function createShortId() {
+  return Math.random().toString(36).slice(2, 10)
 }
 
 export async function generateWritingTurn(
