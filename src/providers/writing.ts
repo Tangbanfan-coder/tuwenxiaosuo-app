@@ -265,37 +265,63 @@ const CONTEXT_BUDGET_RATIOS: Record<ContextBudget, number> = {
   full: 0.95,
 }
 
-const CONTEXT_OUTPUT_RESERVE_TOKENS = 16_000
+const DEFAULT_OUTPUT_RESERVE_TOKENS = 16_000
 const CONTEXT_SAFETY_MARGIN_TOKENS = 8_000
+const REQUEST_OVERHEAD_TOKENS = 2_000
 const CHARS_PER_TOKEN = 1.2
+const CORE_RULES_MAX_CHARS = 10_000
 
-const UNKNOWN_MODEL_CONTEXT_TOKENS = 64_000
+const UNKNOWN_MODEL_CONTEXT_TOKENS = 32_000
 
 function modelContextTokens(modelId: string) {
   const id = modelId.toLocaleLowerCase()
-  if (id.includes('gemini')) return 1_000_000
-  if (id.includes('claude')) return 200_000
-  if (id.includes('gpt-4') || id.includes('gpt-4o') || id.includes('o1') || id.includes('o3') || id.includes('o4')) return 128_000
-  if (id.includes('gpt-3.5')) return 16_000
-  if (id.includes('deepseek')) return 128_000
-  if (id.includes('qwen') || id.includes('qwq')) return 128_000
-  if (id.includes('glm') || id.includes('chatglm')) return 128_000
+  if (id.includes('gemini')) {
+    if (id.includes('1.0') || id.includes('gemini-pro-v1')) return 32_000
+    return 1_000_000
+  }
+  if (id.includes('claude')) {
+    if (/claude[\s-]?[12][.\s-]/.test(id)) return 100_000
+    return 200_000
+  }
+  if (id.includes('gpt-4')) {
+    if (id.includes('32k')) return 32_000
+    if (id.includes('4o') || id.includes('turbo') || id.includes('1106') || id.includes('0125')) return 128_000
+    if (id.includes('0613') || id.includes('0314') || id.includes('base')) return 8_000
+    return 8_000
+  }
+  if (id.includes('o1') || id.includes('o3') || id.includes('o4')) return 128_000
+  if (id.includes('gpt-3.5')) return 8_000
+  if (id.includes('deepseek')) return 64_000
+  if (id.includes('qwen') || id.includes('qwq')) {
+    if (id.includes('qwen3') || id.includes('qwq')) return 128_000
+    return 32_000
+  }
+  if (id.includes('glm') || id.includes('chatglm')) {
+    if (id.includes('glm-4') || id.includes('glm4')) return 128_000
+    return 32_000
+  }
   if (id.includes('moonshot') || id.includes('kimi')) return 128_000
   if (id.includes('ernie') || id.includes('文心')) return 128_000
   if (id.includes('minimax')) return 128_000
   if (id.includes('yi-')) return 32_000
   if (id.includes('llama-3.1') || id.includes('llama-3.3')) return 128_000
-  if (id.includes('llama-3') || id.includes('llama-2')) return 8_000
+  if (id.includes('llama-3')) return 8_000
+  if (id.includes('llama-2')) return 4_000
   if (id.includes('mistral') || id.includes('mixtral')) return 32_000
   return UNKNOWN_MODEL_CONTEXT_TOKENS
 }
 
-function inputBudgetCharacters(config: ProviderConfig, budget: ContextBudget) {
-  const windowTokens = config.contextLength ?? modelContextTokens(config.model)
-  const availableTokens = Math.max(4_000, windowTokens - CONTEXT_OUTPUT_RESERVE_TOKENS - CONTEXT_SAFETY_MARGIN_TOKENS)
+function outputReserveTokens(config: ProviderConfig) {
+  return config.manualMaxOutputTokens ?? config.maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS
+}
+
+function inputBudgetCharacters(config: ProviderConfig, budget: ContextBudget, userRequest: string) {
+  const windowTokens = config.manualContextLength ?? config.contextLength ?? modelContextTokens(config.model)
+  const reserveTokens = outputReserveTokens(config)
+  const requestTokens = REQUEST_OVERHEAD_TOKENS + Math.ceil((SYSTEM_PROMPT.length + userRequest.length) / CHARS_PER_TOKEN)
+  const availableTokens = Math.max(2_000, windowTokens - reserveTokens - CONTEXT_SAFETY_MARGIN_TOKENS - requestTokens)
   const targetTokens = Math.floor(availableTokens * CONTEXT_BUDGET_RATIOS[budget])
-  const serializationReserve = Math.floor(targetTokens * CHARS_PER_TOKEN * 0.85)
-  return serializationReserve
+  return Math.floor(targetTokens * CHARS_PER_TOKEN * 0.85)
 }
 
 function normalizeText(value: string) {
@@ -318,10 +344,15 @@ function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[],
   const sections: Array<{ label: string; text: string; priority: number; keepOrder: 'tail' | 'head'; locked?: boolean }> = []
 
   const writingInstructions = workspace.project.writingInstructions?.trim()
-  const instructionsText = [
-    writingInstructions ? `长期创作设定：\n${writingInstructions}` : '',
-    `插画画风：${illustrationStyle.label}${illustrationStyle.visualPrompt ? `（${illustrationStyle.visualPrompt}）` : ''}`,
-  ].filter(Boolean).join('\n')
+  const illustrationLine = `插画画风：${illustrationStyle.label}${illustrationStyle.visualPrompt ? `（${illustrationStyle.visualPrompt}）` : ''}`
+  const rulesBudget = Math.min(CORE_RULES_MAX_CHARS, Math.floor(totalBudget * 0.2))
+  let rulesTruncated = false
+  const instructionsFull = writingInstructions ? `长期创作设定：\n${writingInstructions}` : ''
+  let instructionsText = [instructionsFull, illustrationLine].filter(Boolean).join('\n')
+  if (instructionsText.length > rulesBudget) {
+    instructionsText = takeLeading(instructionsText, rulesBudget)
+    rulesTruncated = true
+  }
   sections.push({ label: '写作规则', text: instructionsText, priority: 100, keepOrder: 'head', locked: true })
 
   const characters = workspace.characters.map((character) => ({
@@ -368,7 +399,7 @@ function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[],
     .join('\n')
   sections.push({ label: '章节提要', text: summariesText, priority: 45, keepOrder: 'tail' })
 
-  const retrievedText = retrieveRelevantScenes(scenes, latestScene, userRequest, Math.floor(totalBudget * 0.15))
+  const retrievedText = retrieveRelevantScenes(scenes, latestScene, userRequest, workspace.chapters, Math.floor(totalBudget * 0.15))
   if (retrievedText) sections.push({ label: '检索出的相关历史片段', text: retrievedText, priority: 50, keepOrder: 'tail' })
 
   const recentMessagesText = buildRecentMessages(workspace, chapter?.id, Math.floor(totalBudget * 0.12))
@@ -393,13 +424,16 @@ function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[],
     section.text = kept
   }
 
-  return JSON.stringify({
-    projectTitle: workspace.project.title,
-    currentChapter: chapter ? { order: chapter.order, title: chapter.title } : undefined,
-    sections: sections
-      .filter((section) => section.text.trim())
-      .map((section) => ({ [section.label]: section.text })),
-  })
+  return {
+    context: JSON.stringify({
+      projectTitle: workspace.project.title,
+      currentChapter: chapter ? { order: chapter.order, title: chapter.title } : undefined,
+      sections: sections
+        .filter((section) => section.text.trim())
+        .map((section) => ({ [section.label]: section.text })),
+    }),
+    rulesTruncated,
+  }
 }
 
 function buildCoreMemory(scenes: StoredScene[], characters: ProjectWorkspace['characters']) {
@@ -408,6 +442,7 @@ function buildCoreMemory(scenes: StoredScene[], characters: ProjectWorkspace['ch
   const stateByKey = new Map<string, string>()
   const knowledgeByCharacter = new Map<string, string[]>()
   const clues = new Map<string, boolean>()
+  const threads = new Map<string, string>()
   const relationships: string[] = []
 
   for (const scene of scenes) {
@@ -438,6 +473,10 @@ function buildCoreMemory(scenes: StoredScene[], characters: ProjectWorkspace['ch
       }
     }
     relationships.push(...notes.relationshipChanges)
+    for (const thread of notes.unresolvedThreads) {
+      if (!thread.trim()) continue
+      threads.set(normalizeText(thread), thread)
+    }
   }
 
   const relevantNames = new Set(characters.map((character) => normalizeText(character.name)))
@@ -459,6 +498,9 @@ function buildCoreMemory(scenes: StoredScene[], characters: ProjectWorkspace['ch
     .filter(([, resolved]) => !resolved)
     .map(([text]) => text)
   if (unresolvedClues.length) lines.push(`未回收伏笔：${unresolvedClues.join('；')}`)
+
+  const openThreads = Array.from(threads.values()).slice(-20)
+  if (openThreads.length) lines.push(`未解决情节线：${openThreads.join('；')}`)
 
   if (relationships.length) lines.push(`关系变化：${relationships.slice(-20).join('；')}`)
 
@@ -496,7 +538,7 @@ function buildRecentMessages(workspace: ProjectWorkspace, currentChapterId: stri
   return lines.reverse().join('\n\n')
 }
 
-function retrieveRelevantScenes(scenes: StoredScene[], currentScene: StoredScene | undefined, userRequest: string, budgetCharacters: number) {
+function retrieveRelevantScenes(scenes: StoredScene[], currentScene: StoredScene | undefined, userRequest: string, chapters: ProjectWorkspace['chapters'], budgetCharacters: number) {
   if (!currentScene || scenes.length <= 1) return ''
   const queryEntities = new Set(
     [
@@ -505,16 +547,28 @@ function retrieveRelevantScenes(scenes: StoredScene[], currentScene: StoredScene
       ...currentScene.notes.charactersPresent,
     ].filter((value): value is string => Boolean(value)).map(normalizeText),
   )
-  const requestKeywords = userRequest
-    .replace(/[^\u4e00-\u9fa5A-Za-z0-9]+/g, ' ')
-    .split(/\s+/)
-    .filter((word) => word.length >= 2)
+  const knownEntities = new Set<string>()
+  for (const scene of scenes) {
+    const notes = scene.notes
+    for (const value of [notes.povCharacter, notes.location, ...notes.charactersPresent]) {
+      if (value) knownEntities.add(normalizeText(value))
+    }
+  }
   const requestText = normalizeText(userRequest)
+  const requestGrams = new Set<string>()
+  for (let index = 0; index < requestText.length - 1; index++) {
+    requestGrams.add(requestText.slice(index, index + 2))
+    if (index < requestText.length - 2) requestGrams.add(requestText.slice(index, index + 3))
+  }
+  const requestedChapterOrder = /第([一二三四五六七八九十百零〇0-9]+)章/.exec(userRequest)
+  const requestedChapterId = requestedChapterOrder
+    ? chapters[Number(requestedChapterOrder[1]) - 1]?.id
+    : undefined
 
   const scored = scenes
     .map((scene, index) => {
       const notes = scene.notes
-      const haystack = normalizeText([
+      const sceneText = normalizeText([
         notes.povCharacter,
         notes.location,
         ...notes.charactersPresent,
@@ -526,10 +580,12 @@ function retrieveRelevantScenes(scenes: StoredScene[], currentScene: StoredScene
         notes.location,
         ...notes.charactersPresent,
       ].filter((value): value is string => Boolean(value)).filter((value) => queryEntities.has(normalizeText(value))).length
-      const requestHits = requestText ? requestKeywords.filter((word) => haystack.includes(normalizeText(word))).length : 0
+      const requestHits = Array.from(requestGrams).filter((gram) => sceneText.includes(gram)).length
+      const mentionedEntityHits = Array.from(knownEntities).filter((entity) => entity.length >= 2 && requestText.includes(entity) && sceneText.includes(entity)).length
       const timeProximity = Math.max(0, 8 - Math.abs(scenes.length - 1 - index))
       const unresolvedBias = notes.unresolvedThreads.length ? 1 : 0
-      return { scene, score: entityHits * 4 + requestHits * 3 + timeProximity * 2 + unresolvedBias }
+      const chapterBias = requestedChapterId && scene.chapterId === requestedChapterId ? 6 : 0
+      return { scene, score: entityHits * 4 + requestHits + mentionedEntityHits * 5 + chapterBias + timeProximity * 2 + unresolvedBias }
     })
     .filter((item) => item.scene !== currentScene && item.score > 0)
     .sort((left, right) => right.score - left.score)
@@ -565,12 +621,17 @@ export async function generateWritingTurn(
   config: ProviderConfig,
   transport: HttpTransport,
   onDelta?: (delta: string) => void,
+  onWarning?: (message: string) => void,
 ) {
   const baseUrl = normalizeBaseUrl(config.baseUrl)
   if (!baseUrl) throw new Error('请先配置文本模型的 API URL')
   if (!config.model.trim()) throw new Error('请先选择文本模型')
 
   const scenes = await loadProjectScenes(workspace.project.id)
+  const { context, rulesTruncated } = buildProjectContext(workspace, scenes, inputBudgetCharacters(config, workspace.project.contextBudget ?? 'standard', userRequest), userRequest)
+  if (rulesTruncated && onWarning) {
+    onWarning('长期创作设定超过核心预算，仅携带了前半部分。请在“长期创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
+  }
 
   const request = {
     url: `${baseUrl}/chat/completions`,
@@ -581,10 +642,12 @@ export async function generateWritingTurn(
     body: JSON.stringify({
       model: config.model,
       stream: true,
-      ...(config.maxOutputTokens ? { max_tokens: config.maxOutputTokens } : {}),
+      ...(config.manualMaxOutputTokens ?? config.maxOutputTokens
+        ? { max_tokens: config.manualMaxOutputTokens ?? config.maxOutputTokens }
+        : {}),
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'system', content: `当前作品资料：${buildProjectContext(workspace, scenes, inputBudgetCharacters(config, workspace.project.contextBudget ?? 'standard'), userRequest)}` },
+        { role: 'system', content: `当前作品资料：${context}` },
         { role: 'user', content: userRequest },
       ],
     }),

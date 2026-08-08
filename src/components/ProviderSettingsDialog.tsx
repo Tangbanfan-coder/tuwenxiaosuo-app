@@ -458,8 +458,10 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
                 {visibleModels.map((model) => (
                   <button key={model.id} type="button" role="option" aria-selected={current.model === model.id} onClick={() => updateCurrent({
                     model: model.id,
-                    contextLength: model.contextLength ?? current.contextLength,
-                    maxOutputTokens: model.maxOutputTokens ?? current.maxOutputTokens,
+                    contextLength: model.contextLength,
+                    maxOutputTokens: model.maxOutputTokens,
+                    manualContextLength: current.manualContextLength,
+                    manualMaxOutputTokens: current.manualMaxOutputTokens,
                   })}>
                     <span><strong>{model.id}</strong>{model.ownedBy && <small>{model.ownedBy}</small>}</span>
                     {current.model === model.id && <Check size={17} />}

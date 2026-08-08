@@ -554,7 +554,7 @@ export default function App() {
       await refreshProjects()
       const result = await generateWritingTurn(workspace, text, textProvider, browserTransport, (delta) => {
         setStreamingText((current) => current + delta)
-      })
+      }, (message) => showToast(message, 'error'))
       await completeWritingTurn(
         workspace.project.id,
         userMessageId,

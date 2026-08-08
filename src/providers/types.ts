@@ -12,6 +12,8 @@ export interface ProviderConfig {
   secretRef: SecretRef
   contextLength?: number
   maxOutputTokens?: number
+  manualContextLength?: number
+  manualMaxOutputTokens?: number
 }
 
 export interface ProviderSettings {

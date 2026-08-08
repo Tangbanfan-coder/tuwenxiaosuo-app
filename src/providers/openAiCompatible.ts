@@ -7,7 +7,6 @@ interface ModelsResponse {
     context_length?: unknown
     inputTokenLimit?: unknown
     outputTokenLimit?: unknown
-    max_tokens?: unknown
   }>
 }
 
@@ -59,9 +58,7 @@ export async function listOpenAiModels(
         .map((model) => ({
           id: model.id,
           ownedBy: typeof model.owned_by === 'string' ? model.owned_by : undefined,
-          contextLength: positiveNumber(model.context_length)
-            ?? positiveNumber(model.inputTokenLimit)
-            ?? positiveNumber(model.max_tokens),
+          contextLength: positiveNumber(model.context_length) ?? positiveNumber(model.inputTokenLimit),
           maxOutputTokens: positiveNumber(model.outputTokenLimit),
         }))
       return { models, baseUrl: candidate }
