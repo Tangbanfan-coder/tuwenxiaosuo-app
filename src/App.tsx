@@ -47,6 +47,7 @@ import {
   setIllustrationGenerating,
   setIllustrationReady,
   updateAutoIllustrate,
+  updateCharacterProfile,
   updateCharacterReferenceStyleMode,
   updateContextBudget,
   updateIllustrationStyle,
@@ -457,6 +458,17 @@ export default function App() {
     showToast(referenceStyleMode === 'project' ? '该角色会统一为作品画风' : '该角色会保留参考图画风')
   }
 
+  async function handleUpdateCharacterProfile(characterId: string, profile: { ageAndBuild: string; fixedTraits: string[]; defaultLook: string; wardrobe: string }) {
+    if (!workspace) return
+    try {
+      await updateCharacterProfile(characterId, profile)
+      await refreshWorkspace(workspace.project.id)
+      showToast('角色档案已更新')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '角色档案保存失败', 'error')
+    }
+  }
+
   async function generateIllustration(illustration: IllustrationAsset, sourceWorkspace: ProjectWorkspace) {
     await setIllustrationGenerating(illustration.id)
     await refreshWorkspace(sourceWorkspace.project.id)
@@ -828,6 +840,7 @@ export default function App() {
         onGenerate={requestCharacterPortrait}
         onConfirm={confirmCharacter}
         onReferenceStyleModeChange={handleReferenceStyleModeChange}
+        onUpdateProfile={handleUpdateCharacterProfile}
       />
       <ReferenceImageDialog
         open={referenceImageOpen}

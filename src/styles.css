@@ -710,6 +710,16 @@ label {
 
 .character-asset { overflow: hidden; border: 1px solid #3e3d37; border-radius: 11px; background: #20201d; }
 .character-asset + .character-asset { margin-top: 14px; }
+
+.character-profile-editor { display: grid; gap: 8px; padding: 11px; border: 1px solid #3f3f39; border-radius: 9px; background: #161614; }
+.character-profile-editor label { display: grid; gap: 4px; }
+.character-profile-editor label span { color: #8f8c84; font-size: 11px; }
+.character-profile-editor input { height: 38px; padding: 0 10px; border: 1px solid #484740; border-radius: 7px; outline: 0; background: #11110f; color: #efede7; font-size: 12px; }
+.character-profile-editor input:focus { border-color: #9e8c5e; box-shadow: 0 0 0 2px rgba(215, 193, 141, 0.12); }
+.profile-editor-hint { margin: 0; color: #7d7a72; font-size: 11px; line-height: 1.6; }
+.profile-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.edit-profile-button { align-self: flex-start; display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid #3f3f39; border-radius: 7px; background: transparent; color: #8f8c84; font-size: 11px; }
+.edit-profile-button:hover { border-color: #55523f; color: #d7c18d; }
 .portrait-frame { min-height: 250px; display: grid; place-items: center; overflow: hidden; border-bottom: 1px solid #3b3a34; background: #151513; }
 .portrait-frame img { width: 100%; height: 310px; display: block; object-fit: cover; object-position: center top; }
 .portrait-state { display: grid; justify-items: center; gap: 10px; color: #8f8c84; font-size: 12px; }
@@ -1030,6 +1040,10 @@ label {
 .app-shell[data-appearance="light"] .writing-instructions-form .dialog-footer > span { color: #697069; }
 
 .app-shell[data-appearance="light"] .character-asset { border-color: #d5d8d1; background: #ffffff; }
+.app-shell[data-appearance="light"] .character-profile-editor { border-color: #d5d8d2; background: #f8f9f6; }
+.app-shell[data-appearance="light"] .character-profile-editor input { border-color: #c4c8c1; background: #ffffff; color: #232723; }
+.app-shell[data-appearance="light"] .edit-profile-button { border-color: #d5d8d2; color: #737a72; }
+.app-shell[data-appearance="light"] .edit-profile-button:hover { border-color: #c4c8c1; color: #8a7c52; }
 .app-shell[data-appearance="light"] .portrait-frame { border-color: #d9dbd5; background: #f2f3ef; }
 .app-shell[data-appearance="light"] .portrait-state,
 .app-shell[data-appearance="light"] .character-copy dt { color: #747b74; }

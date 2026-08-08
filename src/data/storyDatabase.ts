@@ -570,6 +570,38 @@ export async function updateCharacterReferenceStyleMode(characterId: string, ref
   })
 }
 
+export async function updateCharacterProfile(
+  characterId: string,
+  profile: {
+    ageAndBuild?: string
+    fixedTraits?: string[]
+    defaultLook?: string
+    wardrobe?: string
+  },
+) {
+  const character = await storyDatabase.characters.get(characterId)
+  if (!character) throw new Error('角色资产不存在')
+  const normalized = {
+    ageAndBuild: profile.ageAndBuild?.trim() ?? '',
+    fixedTraits: (profile.fixedTraits ?? []).map((trait) => trait.trim()).filter(Boolean),
+    defaultLook: profile.defaultLook?.trim() ?? '',
+    wardrobe: profile.wardrobe?.trim() ?? '',
+  }
+  await storyDatabase.characters.update(characterId, {
+    identity: {
+      ...character.identity,
+      ageAndBuild: normalized.ageAndBuild,
+      fixedTraits: normalized.fixedTraits,
+    },
+    appearance: {
+      ...character.appearance,
+      defaultLook: normalized.defaultLook,
+      wardrobe: normalized.wardrobe,
+    },
+    updatedAt: Date.now(),
+  })
+}
+
 export async function setCharacterPortraitFailed(characterId: string, message: string) {
   await storyDatabase.characters.update(characterId, {
     portraitStatus: 'failed',

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { CheckCircle2, ImagePlus, LoaderCircle, RefreshCw, UserRound, X } from 'lucide-react'
+import { CheckCircle2, ImagePlus, LoaderCircle, Pencil, RefreshCw, Save, UserRound, X } from 'lucide-react'
 import type { CharacterAsset, ReferenceStyleMode } from '../domain/models'
 import { resolveImageSource } from '../providers/imageAssetStore'
 import { usePresence } from '../hooks/usePresence'
@@ -11,12 +11,23 @@ interface Props {
   onGenerate: (characterId: string, feedback?: string) => Promise<void>
   onConfirm: (characterId: string) => Promise<void>
   onReferenceStyleModeChange: (characterId: string, referenceStyleMode: ReferenceStyleMode) => Promise<void>
+  onUpdateProfile: (characterId: string, profile: { ageAndBuild: string; fixedTraits: string[]; defaultLook: string; wardrobe: string }) => Promise<void>
 }
 
-export default function CharacterAssetsDrawer({ open, characters, onClose, onGenerate, onConfirm, onReferenceStyleModeChange }: Props) {
+interface ProfileDraft {
+  ageAndBuild: string
+  fixedTraitsText: string
+  defaultLook: string
+  wardrobe: string
+}
+
+export default function CharacterAssetsDrawer({ open, characters, onClose, onGenerate, onConfirm, onReferenceStyleModeChange, onUpdateProfile }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const [feedbackCharacterId, setFeedbackCharacterId] = useState<string>()
   const [feedback, setFeedback] = useState('')
+  const [editingCharacterId, setEditingCharacterId] = useState<string>()
+  const [profileDraft, setProfileDraft] = useState<ProfileDraft>()
+  const [savingProfile, setSavingProfile] = useState(false)
   const { present, closing } = usePresence(open, onClose, 180)
 
   useEffect(() => {
@@ -30,6 +41,33 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
   }, [onClose, open])
 
   if (!present) return null
+
+  function startEditing(character: CharacterAsset) {
+    setEditingCharacterId(character.id)
+    setProfileDraft({
+      ageAndBuild: character.identity.ageAndBuild ?? '',
+      fixedTraitsText: character.identity.fixedTraits.join('、'),
+      defaultLook: character.appearance.defaultLook ?? '',
+      wardrobe: character.appearance.wardrobe ?? '',
+    })
+  }
+
+  async function saveProfile(characterId: string) {
+    if (!profileDraft || savingProfile) return
+    setSavingProfile(true)
+    try {
+      await onUpdateProfile(characterId, {
+        ageAndBuild: profileDraft.ageAndBuild,
+        fixedTraits: profileDraft.fixedTraitsText.split(/[、,，]/).map((trait) => trait.trim()).filter(Boolean),
+        defaultLook: profileDraft.defaultLook,
+        wardrobe: profileDraft.wardrobe,
+      })
+      setEditingCharacterId(undefined)
+      setProfileDraft(undefined)
+    } finally {
+      setSavingProfile(false)
+    }
+  }
 
   return (
     <div className={`asset-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
@@ -66,11 +104,53 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
 
                 <div className="character-copy">
                   <header><div><h3>{character.name}</h3><p>{character.role}</p></div><span className={`asset-status ${status}`}>{statusLabel(status)}</span></header>
-                  <dl>
-                    <div><dt>身份锚点</dt><dd>{character.identity.ageAndBuild || '待补充'}</dd></div>
-                    <div><dt>固定特征</dt><dd>{character.identity.fixedTraits.join('、') || '待补充'}</dd></div>
-                    <div><dt>当前服装</dt><dd>{character.appearance.wardrobe || '待补充'}</dd></div>
-                  </dl>
+                  {editingCharacterId === character.id && profileDraft ? (
+                    <form className="character-profile-editor" onSubmit={(event) => {
+                      event.preventDefault()
+                      void saveProfile(character.id)
+                    }}>
+                      <label>
+                        <span>身份锚点</span>
+                        <input value={profileDraft.ageAndBuild} placeholder="年龄感与体型" onChange={(event) => setProfileDraft({ ...profileDraft, ageAndBuild: event.target.value })} />
+                      </label>
+                      <label>
+                        <span>固定特征</span>
+                        <input value={profileDraft.fixedTraitsText} placeholder="用顿号分隔，例如：左耳垂痣、深棕色卷发" onChange={(event) => setProfileDraft({ ...profileDraft, fixedTraitsText: event.target.value })} />
+                      </label>
+                      <label>
+                        <span>默认外貌</span>
+                        <input value={profileDraft.defaultLook} placeholder="发型、五官与常态气质" onChange={(event) => setProfileDraft({ ...profileDraft, defaultLook: event.target.value })} />
+                      </label>
+                      <label>
+                        <span>当前服装</span>
+                        <input value={profileDraft.wardrobe} placeholder="按剧情描述服装" onChange={(event) => setProfileDraft({ ...profileDraft, wardrobe: event.target.value })} />
+                      </label>
+                      <p className="profile-editor-hint">修改会用于之后的定妆照与剧情插画；已有参考图时，人脸仍以参考图为准。</p>
+                      <div className="profile-editor-actions">
+                        <button className="quiet-button" type="button" disabled={savingProfile} onClick={() => {
+                          setEditingCharacterId(undefined)
+                          setProfileDraft(undefined)
+                        }}>取消</button>
+                        <button className="confirm-asset-button" type="submit" disabled={savingProfile}>
+                          {savingProfile ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}保存档案
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <dl>
+                      <div><dt>身份锚点</dt><dd>{character.identity.ageAndBuild || '待补充'}</dd></div>
+                      <div><dt>固定特征</dt><dd>{character.identity.fixedTraits.join('、') || '待补充'}</dd></div>
+                      <div><dt>当前服装</dt><dd>{character.appearance.wardrobe || '待补充'}</dd></div>
+                    </dl>
+                  )}
+                  <button
+                    className="edit-profile-button"
+                    type="button"
+                    aria-label={`编辑角色 ${character.name} 的档案`}
+                    onClick={() => editingCharacterId === character.id ? undefined : startEditing(character)}
+                  >
+                    <Pencil size={14} />编辑档案
+                  </button>
                   {status === 'failed' && <p className="asset-error" role="alert">{character.portraitError}</p>}
 
                   {(character.continuity.referenceImageUrl || character.continuity.localUri) && (
