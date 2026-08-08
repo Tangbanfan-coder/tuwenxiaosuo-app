@@ -255,10 +255,42 @@ export function explicitlyRequestsNewChapter(userRequest: string) {
   return explicitNewChapterPatterns.some((pattern) => pattern.test(normalized))
 }
 
-const CONTEXT_BUDGETS: Record<ContextBudget, number> = {
-  standard: 80_000,
-  long: 150_000,
-  full: 300_000,
+const CONTEXT_BUDGET_RATIOS: Record<ContextBudget, number> = {
+  standard: 0.55,
+  long: 0.75,
+  full: 0.95,
+}
+
+const CONTEXT_OUTPUT_RESERVE_TOKENS = 16_000
+const CONTEXT_SAFETY_MARGIN_TOKENS = 8_000
+const CHARS_PER_TOKEN = 1.2
+
+const UNKNOWN_MODEL_CONTEXT_TOKENS = 64_000
+
+function modelContextTokens(modelId: string) {
+  const id = modelId.toLocaleLowerCase()
+  if (id.includes('gemini')) return 1_000_000
+  if (id.includes('claude')) return 200_000
+  if (id.includes('gpt-4') || id.includes('gpt-4o') || id.includes('o1') || id.includes('o3') || id.includes('o4')) return 128_000
+  if (id.includes('gpt-3.5')) return 16_000
+  if (id.includes('deepseek')) return 128_000
+  if (id.includes('qwen') || id.includes('qwq')) return 128_000
+  if (id.includes('glm') || id.includes('chatglm')) return 128_000
+  if (id.includes('moonshot') || id.includes('kimi')) return 128_000
+  if (id.includes('ernie') || id.includes('文心')) return 128_000
+  if (id.includes('minimax')) return 128_000
+  if (id.includes('yi-')) return 32_000
+  if (id.includes('llama-3.1') || id.includes('llama-3.3')) return 128_000
+  if (id.includes('llama-3') || id.includes('llama-2')) return 8_000
+  if (id.includes('mistral') || id.includes('mixtral')) return 32_000
+  return UNKNOWN_MODEL_CONTEXT_TOKENS
+}
+
+function inputBudgetCharacters(modelId: string, budget: ContextBudget) {
+  const windowTokens = modelContextTokens(modelId)
+  const availableTokens = Math.max(4_000, windowTokens - CONTEXT_OUTPUT_RESERVE_TOKENS - CONTEXT_SAFETY_MARGIN_TOKENS)
+  const targetTokens = Math.floor(availableTokens * CONTEXT_BUDGET_RATIOS[budget])
+  return Math.floor(targetTokens * CHARS_PER_TOKEN)
 }
 
 function normalizeText(value: string) {
@@ -273,12 +305,19 @@ function takeLeading(value: string, maxCharacters: number) {
   return value.length > maxCharacters ? value.slice(0, maxCharacters) : value
 }
 
-function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[], budget: ContextBudget = 'standard') {
+function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[], inputBudget: number) {
   const illustrationStyle = resolveProjectIllustrationStyle(workspace.style)
   const chapter = workspace.chapters.find((item) => item.id === workspace.project.activeChapterId) ?? workspace.chapters[0]
-  const totalBudget = CONTEXT_BUDGETS[budget]
+  const totalBudget = inputBudget
 
-  const sections: Array<{ label: string; text: string; weight: number; keepOrder: 'tail' | 'head' }> = []
+  const sections: Array<{ label: string; text: string; weight: number; keepOrder: 'tail' | 'head'; locked?: boolean }> = []
+
+  const writingInstructions = workspace.project.writingInstructions?.trim()
+  const instructionsText = [
+    writingInstructions ? `长期创作设定：\n${writingInstructions}` : '',
+    `插画画风：${illustrationStyle.label}${illustrationStyle.visualPrompt ? `（${illustrationStyle.visualPrompt}）` : ''}`,
+  ].filter(Boolean).join('\n')
+  sections.push({ label: '写作规则', text: instructionsText, weight: 0.08, keepOrder: 'head', locked: true })
 
   const characters = workspace.characters.map((character) => ({
     name: character.name,
@@ -331,18 +370,11 @@ function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[],
   const recentMessagesText = buildRecentMessages(workspace, totalBudget * 0.15)
   if (recentMessagesText) sections.push({ label: '近期对话', text: recentMessagesText, weight: 0.15, keepOrder: 'tail' })
 
-  const writingInstructions = workspace.project.writingInstructions?.trim()
-  const instructionsText = [
-    writingInstructions ? `长期创作设定：\n${writingInstructions}` : '',
-    `插画画风：${illustrationStyle.label}${illustrationStyle.visualPrompt ? `（${illustrationStyle.visualPrompt}）` : ''}`,
-  ].filter(Boolean).join('\n')
-  sections.push({ label: '写作规则', text: instructionsText, weight: 0.08, keepOrder: 'head' })
-
-  let used = sections.reduce((sum, section) => sum + section.text.length, 0)
   const candidates = sections
-    .map((section, index) => ({ section, index }))
-    .sort((left, right) => left.section.weight - right.section.weight)
-  for (const { section } of candidates) {
+    .filter((section) => !section.locked)
+    .sort((left, right) => left.weight - right.weight)
+  let used = sections.reduce((sum, section) => sum + section.text.length, 0)
+  for (const section of candidates) {
     if (used <= totalBudget) break
     const sectionBudget = Math.floor(totalBudget * section.weight)
     if (section.text.length <= sectionBudget) continue
@@ -497,7 +529,7 @@ export async function generateWritingTurn(
       stream: true,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'system', content: `当前作品资料：${buildProjectContext(workspace, scenes, workspace.project.contextBudget ?? 'standard')}` },
+        { role: 'system', content: `当前作品资料：${buildProjectContext(workspace, scenes, inputBudgetCharacters(config.model, workspace.project.contextBudget ?? 'standard'))}` },
         { role: 'user', content: userRequest },
       ],
     }),

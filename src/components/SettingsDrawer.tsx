@@ -138,9 +138,9 @@ export default function SettingsDrawer({
             <div className="control-heading settings-subheading"><ScrollText size={17} /><span>写作上下文</span></div>
             <div className="context-budget-choice" role="radiogroup" aria-label="写作上下文长度">
               {([
-                ['standard', '标准', '约 5 万字'],
-                ['long', '长', '约 12 万字'],
-                ['full', '完整', '不截断'],
+                ['standard', '标准', '窗口的 55%'],
+                ['long', '长', '窗口的 75%'],
+                ['full', '完整', '窗口的 95%'],
               ] as const).map(([value, label, hint]) => (
                 <button
                   key={value}
@@ -154,7 +154,7 @@ export default function SettingsDrawer({
                 </button>
               ))}
             </div>
-            <p className="settings-help">每轮会携带近期对话和当前章尾文。越长越不易忘记旧剧情，但更费 token。</p>
+            <p className="settings-help">按已识别模型的上下文窗口自动换算（输出与安全预留后按比例使用）。越长越不易忘记旧剧情，但更费 token。</p>
 
             <div className="control-heading settings-subheading"><Palette size={17} /><span>作品氛围</span></div>            <div ref={themeSelectRef} className="theme-select">
               <button
