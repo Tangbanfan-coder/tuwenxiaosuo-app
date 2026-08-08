@@ -740,6 +740,7 @@ label {
 
 .secret-input { display: flex; align-items: center; }
 .secret-input input { min-width: 0; flex: 1; padding: 0 11px; border: 0; outline: 0; background: transparent; color: #efede7; }
+.secret-input input[type="password"] { -webkit-text-security: disc; color: #6f6d66; }
 .secret-input button { width: 44px; height: 44px; flex: none; display: grid; place-items: center; border: 0; background: transparent; color: #99968e; }
 .secret-input button:hover { color: #f0eee6; }
 
@@ -916,6 +917,8 @@ label {
 .app-shell[data-appearance="light"] .field > select,
 .app-shell[data-appearance="light"] .secret-input,
 .app-shell[data-appearance="light"] .portrait-feedback textarea { border-color: #c4c8c1; background: #ffffff; color: #232723; }
+.app-shell[data-appearance="light"] .secret-input input { color: #232723; }
+.app-shell[data-appearance="light"] .secret-input input[type="password"] { color: #9a9b97; }
 .app-shell[data-appearance="light"] .theme-select-trigger,
 .app-shell[data-appearance="light"] .theme-select-menu { border-color: #c4c8c1; background: #ffffff; }
 .app-shell[data-appearance="light"] .theme-select-trigger { color: #343934; }

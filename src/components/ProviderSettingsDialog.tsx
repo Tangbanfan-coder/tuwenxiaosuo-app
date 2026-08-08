@@ -417,7 +417,7 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
                 }}
               />
               <button type="button" aria-label={showKey ? '隐藏 API Key' : '显示 API Key'} onClick={() => setShowKey((value) => !value)}>
-                {showKey ? <EyeOff size={18} /> : <Eye size={18} />}
+                {showKey ? <Eye size={18} /> : <EyeOff size={18} />}
               </button>
             </div>
           </div>
