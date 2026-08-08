@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+﻿import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { ChevronDown, LoaderCircle, RefreshCw, Save, Sparkles, X } from 'lucide-react'
 import { usePresence } from '../hooks/usePresence'
 import ConfirmDialog from './ConfirmDialog'
@@ -11,6 +11,7 @@ interface Props {
   open: boolean
   projectTitle: string
   value: string
+  structure?: string
   onClose: () => void
   onSave: (value: string) => Promise<void>
   onSaveStructure: (structureJson: string | null) => Promise<void>
@@ -18,18 +19,17 @@ interface Props {
 }
 
 const MAX_LENGTH = 50_000
-const STRUCTURE_THRESHOLD = 800
 
 type Phase = 'edit' | 'structuring' | 'review'
 
-export default function WritingInstructionsDialog({ open, projectTitle, value, onClose, onSave, onSaveStructure, textProvider }: Props) {
+export default function WritingInstructionsDialog({ open, projectTitle, value, structure, onClose, onSave, onSaveStructure, textProvider }: Props) {
   const dialogRef = useRef<HTMLElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [draft, setDraft] = useState(value)
   const [saving, setSaving] = useState(false)
   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
   const [phase, setPhase] = useState<Phase>('edit')
-  const [structure, setStructure] = useState<WritingInstructionsStructure>()
+  const [structuredResult, setStructuredResult] = useState<WritingInstructionsStructure>()
   const [structureError, setStructureError] = useState('')
   const [existingStructure, setExistingStructure] = useState<WritingInstructionsStructure>()
   const [expandedSection, setExpandedSection] = useState<number>()
@@ -43,10 +43,10 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
     setSaving(false)
     setPhase('edit')
     setStructureError('')
-    setStructure(undefined)
+    setStructuredResult(undefined)
     setExpandedSection(undefined)
     try {
-      const parsed = value ? JSON.parse(value) : undefined
+      const parsed = structure ? JSON.parse(structure) : undefined
       setExistingStructure(parsed && typeof parsed === 'object' && typeof (parsed as WritingInstructionsStructure).core === 'string'
         ? parsed as WritingInstructionsStructure
         : undefined)
@@ -54,12 +54,13 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
       setExistingStructure(undefined)
     }
     window.requestAnimationFrame(() => textareaRef.current?.focus())
-  }, [open, value])
+    // 仅依赖 open：外部保存原文会触发 value/structure 变化，此时不应重置编辑或整理状态。
+  }, [open])
 
   useEffect(() => {
-    if (phase !== 'structuring' || !structure) return
+    if (phase !== 'structuring' || !structuredResult) return
     setExpandedSection(undefined)
-  }, [phase, structure])
+  }, [phase, structuredResult])
 
   if (!present) return null
 
@@ -85,8 +86,11 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
     setPhase('structuring')
     setStructureError('')
     try {
+      if (isDirty) {
+        await onSave(draft)
+      }
       const result = await structureWritingInstructions(draft, textProvider, browserTransport)
-      setStructure(result)
+      setStructuredResult(result)
       setPhase('review')
     } catch (error) {
       setStructureError(error instanceof Error ? error.message : '整理失败，请重试')
@@ -99,11 +103,7 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
     setSaving(true)
     try {
       await onSave(draft)
-      if (draft.trim().length > STRUCTURE_THRESHOLD && (isDirty || !existingStructure)) {
-        await structureDraft()
-      } else {
-        onClose()
-      }
+      onClose()
     } catch {
       // The parent reports the specific save error without closing the editor.
     } finally {
@@ -209,7 +209,7 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
               <span>{draft.length}/{MAX_LENGTH}</span>
               <div>
                 <button className="quiet-button" type="button" disabled={saving} onClick={close}>取消</button>
-                {draft.trim().length > STRUCTURE_THRESHOLD && (
+                {draft.trim().length > 200 && (
                   <button className="quiet-button structure-button" type="button" disabled={saving} onClick={() => void structureDraft()}>
                     <Sparkles size={15} />整理结构
                   </button>
@@ -230,19 +230,19 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
           </div>
         )}
 
-        {phase === 'review' && structure && (
+        {phase === 'review' && structuredResult && (
           <div className="structure-review">
             <label htmlFor="structure-core">核心规则（每轮固定携带，建议精简到 2000 字内）</label>
             <textarea
               id="structure-core"
               rows={5}
-              value={structure.core}
-              onChange={(event) => setStructure((current) => current ? { ...current, core: event.target.value } : current)}
+              value={structuredResult.core}
+              onChange={(event) => setStructuredResult((current) => current ? { ...current, core: event.target.value } : current)}
             />
 
             <div className="structure-subheading">分类设定（按当前场景选择加载）</div>
             <div className="structure-section-list">
-              {structure.sections.map((section, index) => (
+              {structuredResult.sections.map((section, index) => (
                 <div key={section.id} className="structure-section">
                   <button
                     type="button"
@@ -252,22 +252,34 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
                     <span><strong>{section.title}</strong><em>优先级 {section.priority} · {section.tags.join('、')}</em></span>
                     <ChevronDown size={16} className={expandedSection === index ? 'rotate-180' : undefined} />
                   </button>
-                  {expandedSection === index && <p>{section.content}</p>}
+                  {expandedSection === index && (
+                    <div className="structure-section-editor">
+                      <textarea
+                        value={section.content}
+                        aria-label={`编辑分类 ${section.title} 的内容`}
+                        onChange={(event) => setStructuredResult((current) => current ? { ...current, sections: current.sections.map((item, itemIndex) => itemIndex === index
+                            ? { ...item, content: event.target.value }
+                            : item),
+                        } : current)}
+                      />
+                      <button type="button" onClick={() => setStructuredResult((current) => current ? { ...current, sections: current.sections.filter((_, itemIndex) => itemIndex !== index),
+                      } : current)}>删除该分类</button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
 
-            {structure.styleSamples.length > 0 && (
+            {structuredResult.styleSamples.length > 0 && (
               <>
                 <div className="structure-subheading">风格范例（按场景类型选择）</div>
                 <div className="structure-sample-list">
-                  {structure.styleSamples.map((sample, index) => (
+                  {structuredResult.styleSamples.map((sample, index) => (
                     <div key={index} className="structure-sample">
                       <strong>{sample.sceneType}</strong>
                       <p>{sample.content}</p>
                     </div>
-                  ))}
-                </div>
+                  ))}                </div>
               </>
             )}
 

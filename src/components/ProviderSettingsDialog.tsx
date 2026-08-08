@@ -440,7 +440,11 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
             <input
               value={current.model}
               placeholder={activeSlot === 'image' ? 'gpt-image-2' : 'model-id'}
-              onChange={(event) => updateCurrent({ model: event.target.value })}
+              onChange={(event) => updateCurrent({
+                model: event.target.value,
+                contextLength: undefined,
+                maxOutputTokens: undefined,
+              })}
             />
           </label>
 

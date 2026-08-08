@@ -66,6 +66,21 @@ describe('上下文预算', () => {
       .rejects.toThrow(/上下文窗口/)
   })
 
+  it('核心规则超过预算时阻止生成，不静默继续', async () => {
+    const hugeInstructions = '必须遵守的核心规则。'.repeat(2_000)
+    const workspace = {
+      ...emptyWorkspace(),
+      project: { ...emptyWorkspace().project, writingInstructions: hugeInstructions },
+    }
+    const smallWindow: ProviderConfig = {
+      ...textProvider,
+      manualContextLength: 64_000,
+      manualMaxOutputTokens: 1_000,
+    }
+    await expect(generateWritingTurn(workspace, '继续写', smallWindow, noopTransport))
+      .rejects.toThrow(/核心预算/)
+  })
+
   it('正常窗口下不抛错', async () => {
     const normal: ProviderConfig = {
       ...textProvider,

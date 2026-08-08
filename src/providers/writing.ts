@@ -1,6 +1,6 @@
-import type { ContextBudget, ProjectWorkspace, SceneNotes, VisualPlan, WritingCharacterPlan, WritingInstructionsStructure, WritingTurnResult } from '../domain/models'
+import type { ContextBudget, ProjectWorkspace, SceneNotes, VisualPlan, WritingCharacterPlan, WritingInstructionsStructure, WritingStyleSample, WritingTurnResult } from '../domain/models'
 import { resolveProjectIllustrationStyle } from '../domain/illustrationStyles'
-import { loadProjectScenes, type StoredScene } from '../data/storyDatabase'
+import { loadProjectScenes, hashText, type StoredScene } from '../data/storyDatabase'
 import { heuristicModelContextTokens, lookupModelLimit } from './modelLimits'
 import type { HttpTransport, ProviderConfig } from './types'
 import { normalizeBaseUrl } from './openAiCompatible'
@@ -318,8 +318,11 @@ function takeLeading(value: string, maxCharacters: number) {
 export function parseWritingStructure(project: ProjectWorkspace['project']): WritingInstructionsStructure | undefined {
   if (!project.writingStructure) return undefined
   try {
-    const parsed = JSON.parse(project.writingStructure) as WritingInstructionsStructure
+    const parsed = JSON.parse(project.writingStructure) as WritingInstructionsStructure & { sourceHash?: unknown }
     if (!parsed || typeof parsed !== 'object' || typeof parsed.core !== 'string') return undefined
+    if (typeof parsed.sourceHash === 'string' && parsed.sourceHash !== hashText(project.writingInstructions ?? '')) {
+      return undefined
+    }
     return {
       core: parsed.core,
       sections: Array.isArray(parsed.sections)
@@ -685,13 +688,13 @@ function contentToString(content: unknown) {
   }).join('')
 }
 
-const STRUCTURE_SYSTEM_PROMPT = `你是小说创作设定整理助手。用户会提供一份长篇创作设定（可能是零散粘贴的笔记），请把它整理成结构化形式，只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要在 JSON 外添加文字：
+const STRUCTURE_CHUNK_PROMPT = `你是小说创作设定整理助手。用户会提供一篇长设定的一部分片段，请只从这个片段中提取结构化信息，只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要在 JSON 外添加文字：
 {
-  "core": "每轮写作必须遵守的核心规则，浓缩原文中最高优先级的要求（叙事人称与视角、文风与语言限制、不可违背的世界规则、角色绝对设定、禁止事项、用户明确要求长期遵守的规则），不超过 2000 字",
+  "core_fragments": ["本片段中属于核心规则的条目，如：必须/禁止/绝对/不要 类要求，每条一句话"],
   "sections": [
     {
       "title": "分类标题，如：世界历史/魔法体系/国家与组织/人物档案/地点设定/物品设定/社会制度/剧情规划",
-      "content": "该分类下的完整设定，保留原文细节，不省略具体设定",
+      "content": "本片段中该分类下的设定内容，保留细节",
       "tags": ["检索关键词，3-6 个"],
       "priority": 1
     }
@@ -699,15 +702,68 @@ const STRUCTURE_SYSTEM_PROMPT = `你是小说创作设定整理助手。用户�
   "style_samples": [
     {
       "scene_type": "打斗/感情/悬疑/日常/景物/对话 等场景类型",
-      "content": "能体现原文文风的原句片段，保留原措辞"
+      "content": "本片段中能体现文风的原句片段"
     }
   ]
 }
-要求：
-- core 必须覆盖原文中所有"必须/禁止/绝对/不要"类规则，但不能编造原文没有的规则；
-- sections 必须完整覆盖原文全部内容，信息不能丢失，可按内容自然拆分 2-8 个分类，priority 越大越重要（1-5）；
-- style_samples 从原文中挑选 2-4 段最能体现文风的片段；
-- 原文为空或过短时，core 可以是原文本身，sections 和 style_samples 可以为空数组。`
+要求：只提取片段中真实存在的内容，不要编造；sections 的 content 不得省略片段中的具体设定；没有对应内容时返回空数组。`
+
+const STRUCTURE_CHUNK_SIZE = 8_000
+const STRUCTURE_CORE_LIMIT = 2_000
+
+function mergeStructureChunks(chunks: Array<{ coreFragments: string[]; sections: Array<{ title: string; content: string; tags: string[]; priority: number }>; styleSamples: Array<{ sceneType: string; content: string }> }>): WritingInstructionsStructure {
+  const coreLines: string[] = []
+  const seenCore = new Set<string>()
+  const sectionsByTitle = new Map<string, { title: string; content: string; tags: string[]; priority: number }>()
+  const styleSamples: WritingStyleSample[] = []
+  const seenSamples = new Set<string>()
+
+  for (const chunk of chunks) {
+    for (const fragment of chunk.coreFragments) {
+      const key = normalizeText(fragment)
+      if (!fragment.trim() || seenCore.has(key)) continue
+      seenCore.add(key)
+      coreLines.push(fragment.trim())
+    }
+    for (const section of chunk.sections) {
+      if (!section.content?.trim()) continue
+      const existing = sectionsByTitle.get(section.title)
+      if (existing) {
+        existing.content = `${existing.content}\n${section.content.trim()}`
+        existing.priority = Math.max(existing.priority, section.priority ?? 1)
+        for (const tag of section.tags ?? []) {
+          if (typeof tag === 'string' && !existing.tags.includes(tag)) existing.tags.push(tag)
+        }
+      } else {
+        sectionsByTitle.set(section.title, {
+          title: section.title || '未分类',
+          content: section.content.trim(),
+          tags: Array.isArray(section.tags) ? section.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+          priority: typeof section.priority === 'number' ? Math.min(5, Math.max(1, Math.floor(section.priority))) : 1,
+        })
+      }
+    }
+    for (const sample of chunk.styleSamples) {
+      if (!sample.content?.trim()) continue
+      const key = normalizeText(sample.content)
+      if (seenSamples.has(key)) continue
+      seenSamples.add(key)
+      styleSamples.push({ sceneType: sample.sceneType || '日常', content: sample.content.trim() })
+    }
+  }
+
+  return {
+    core: coreLines.join('\n').slice(0, STRUCTURE_CORE_LIMIT),
+    sections: Array.from(sectionsByTitle.values()).map((section) => ({
+      id: createShortId(),
+      title: section.title,
+      content: section.content,
+      tags: section.tags.slice(0, 8),
+      priority: section.priority,
+    })),
+    styleSamples: styleSamples.slice(0, 4),
+  }
+}
 
 export async function structureWritingInstructions(
   source: string,
@@ -718,66 +774,71 @@ export async function structureWritingInstructions(
   if (!baseUrl) throw new Error('请先配置文本模型的 API URL')
   if (!config.model.trim()) throw new Error('请先选择文本模型')
 
-  const request = {
-    url: `${baseUrl}/chat/completions`,
-    method: 'POST' as const,
-    headers: { 'Content-Type': 'application/json' },
-    auth: { kind: 'bearer' as const, secretRef: config.secretRef },
-    timeoutMs: 120_000,
-    body: JSON.stringify({
-      model: config.model,
-      stream: false,
-      ...(config.manualMaxOutputTokens ?? config.maxOutputTokens
-        ? { max_tokens: Math.min(config.manualMaxOutputTokens ?? config.maxOutputTokens ?? 16_384, 16_384) }
-        : {}),
-      messages: [
-        { role: 'system', content: STRUCTURE_SYSTEM_PROMPT },
-        { role: 'user', content: source },
-      ],
-    }),
+  const windowTokens = effectiveWindowTokens(config)
+  const maxOutput = Math.min(maxOutputForRequest(config, windowTokens), 4_096)
+  const chunkSize = Math.max(2_000, Math.floor((windowTokens - 4_000) * 0.9 * CHARS_PER_TOKEN * 0.5))
+
+  const chunks: string[] = []
+  for (let index = 0; index < source.length; index += chunkSize) {
+    chunks.push(source.slice(index, index + chunkSize))
   }
 
-  const response = await transport.request<ChatCompletionResponse>(request)
-  const content = contentToString(response.data.choices?.[0]?.message?.content)
-  if (!content.trim()) throw new Error('文本模型没有返回整理结果')
+  const results: Array<{ coreFragments: string[]; sections: Array<{ title: string; content: string; tags: string[]; priority: number }>; styleSamples: Array<{ sceneType: string; content: string }> }> = []
 
-  let parsed: {
-    core?: unknown
-    sections?: unknown
-    style_samples?: unknown
+  for (const chunk of chunks) {
+    const request = {
+      url: `${baseUrl}/chat/completions`,
+      method: 'POST' as const,
+      headers: { 'Content-Type': 'application/json' },
+      auth: { kind: 'bearer' as const, secretRef: config.secretRef },
+      timeoutMs: 120_000,
+      body: JSON.stringify({
+        model: config.model,
+        stream: false,
+        ...(config.manualMaxOutputTokens ?? config.maxOutputTokens ? { max_tokens: maxOutput } : {}),
+        messages: [
+          { role: 'system', content: STRUCTURE_CHUNK_PROMPT },
+          { role: 'user', content: chunk },
+        ],
+      }),
+    }
+    const response = await transport.request<ChatCompletionResponse>(request)
+    const content = contentToString(response.data.choices?.[0]?.message?.content)
+    if (!content.trim()) continue
+
+    let parsed: { core_fragments?: unknown; sections?: unknown; style_samples?: unknown }
+    try {
+      parsed = extractJson(content) as unknown as { core_fragments?: unknown; sections?: unknown; style_samples?: unknown }
+    } catch {
+      continue
+    }
+
+    results.push({
+      coreFragments: Array.isArray(parsed.core_fragments)
+        ? parsed.core_fragments.filter((item): item is string => typeof item === 'string')
+        : [],
+      sections: Array.isArray(parsed.sections)
+        ? parsed.sections
+          .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+          .map((item) => ({
+            title: stringValue(item.title) || '未分类',
+            content: stringValue(item.content),
+            tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+            priority: typeof item.priority === 'number' ? Math.floor(item.priority) : 1,
+          }))
+          .filter((section) => Boolean(section.content))
+        : [],
+      styleSamples: Array.isArray(parsed.style_samples)
+        ? parsed.style_samples
+          .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+          .map((item) => ({ sceneType: stringValue(item.scene_type) || '日常', content: stringValue(item.content) }))
+          .filter((sample) => Boolean(sample.content))
+        : [],
+    })
   }
-  try {
-    parsed = extractJson(content) as unknown as { core?: unknown; sections?: unknown; style_samples?: unknown }
-  } catch {
-    throw new Error('模型返回的整理结果无法解析，请重试')
-  }
 
-  const sections = Array.isArray(parsed.sections)
-    ? parsed.sections
-      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-      .map((item) => ({
-        id: `${createShortId()}`,
-        title: stringValue(item.title) || '未分类',
-        content: stringValue(item.content),
-        tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : [],
-        priority: typeof item.priority === 'number' ? Math.min(5, Math.max(1, Math.floor(item.priority))) : 1,
-      }))
-      .filter((section) => Boolean(section.content))
-    : []
-
-  const styleSamples = Array.isArray(parsed.style_samples)
-    ? parsed.style_samples
-      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-      .map((item) => ({
-        sceneType: stringValue(item.scene_type) || '日常',
-        content: stringValue(item.content),
-      }))
-      .filter((sample) => Boolean(sample.content))
-    : []
-
-  const core = stringValue(parsed.core) || source.slice(0, 2000)
-
-  return { core, sections, styleSamples }
+  if (!results.length) throw new Error('文本模型没有返回可用的整理结果，请重试')
+  return mergeStructureChunks(results)
 }
 
 function createShortId() {
@@ -798,11 +859,30 @@ export async function generateWritingTurn(
 
   const scenes = await loadProjectScenes(workspace.project.id)
   const { context, rulesTruncated } = buildProjectContext(workspace, scenes, inputBudgetCharacters(config, workspace.project.contextBudget ?? 'standard', userRequest), userRequest)
-  if (rulesTruncated && onWarning) {
-    onWarning('长期创作设定超过核心预算，仅携带了前半部分。请在“长期创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
+  if (rulesTruncated) {
+    throw new Error('长期创作设定超过核心预算，本轮已阻止生成。请在“长期创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
   }
 
   const maxOutput = maxOutputForRequest(config, effectiveWindowTokens(config))
+
+  const body = JSON.stringify({
+    model: config.model,
+    stream: true,
+    ...(config.manualMaxOutputTokens ?? config.maxOutputTokens
+      ? { max_tokens: maxOutput }
+      : {}),
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: `当前作品资料：${context}` },
+      { role: 'user', content: userRequest },
+    ],
+  })
+
+  const windowTokens = effectiveWindowTokens(config)
+  const estimatedInputTokens = Math.ceil(body.length / CHARS_PER_TOKEN)
+  if (estimatedInputTokens > windowTokens - maxOutput - CONTEXT_SAFETY_MARGIN_TOKENS) {
+    throw new Error('最终请求的输入仍超过模型上下文窗口（序列化后硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
+  }
 
   const request = {
     url: `${baseUrl}/chat/completions`,
@@ -810,18 +890,7 @@ export async function generateWritingTurn(
     headers: { 'Content-Type': 'application/json' },
     auth: { kind: 'bearer' as const, secretRef: config.secretRef },
     timeoutMs: 120_000,
-    body: JSON.stringify({
-      model: config.model,
-      stream: true,
-      ...(config.manualMaxOutputTokens ?? config.maxOutputTokens
-        ? { max_tokens: maxOutput }
-        : {}),
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'system', content: `当前作品资料：${context}` },
-        { role: 'user', content: userRequest },
-      ],
-    }),
+    body,
   }
 
   let content: string

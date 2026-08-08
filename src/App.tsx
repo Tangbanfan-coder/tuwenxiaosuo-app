@@ -791,6 +791,7 @@ export default function App() {
         open={writingInstructionsOpen}
         projectTitle={workspace.project.title}
         value={workspace.project.writingInstructions ?? ''}
+        structure={workspace.project.writingStructure}
         textProvider={providerSettings.text}
         onClose={() => {
           setWritingInstructionsOpen(false)

@@ -117,6 +117,7 @@ export function refreshModelLimits(): Promise<void> {
     }
 
     const checkOnline = async () => {
+      let checked = false
       try {
         let etag = ''
         try {
@@ -134,7 +135,12 @@ export function refreshModelLimits(): Promise<void> {
           })
           if (response.status === 200) {
             const payload = await response.json() as LimitsPayload
-            if (Array.isArray(payload.models) && payload.models.length) {
+            const valid = Array.isArray(payload.models) && payload.models.length
+              && payload.models.every((model) =>
+                typeof model.m === 'string' && model.m.trim()
+                && typeof model.c === 'number' && Number.isFinite(model.c) && model.c > 0
+                && (model.o === undefined || (typeof model.o === 'number' && Number.isFinite(model.o) && model.o > 0)))
+            if (valid) {
               runtimeModels = payload.models
               localStorage.setItem(CACHE_KEY, JSON.stringify({
                 etag: response.headers.get('etag') ?? '',
@@ -142,12 +148,19 @@ export function refreshModelLimits(): Promise<void> {
               }))
             }
           }
+          checked = response.status === 200 || response.status === 304
         } finally {
           window.clearTimeout(timeout)
-          localStorage.setItem(CHECKED_KEY, String(Date.now()))
         }
       } catch {
-        // Offline or blocked: keep cached/embedded limits.
+        // Network failure: do not mark as checked so the next launch retries.
+      }
+      if (checked) {
+        try {
+          localStorage.setItem(CHECKED_KEY, String(Date.now()))
+        } catch {
+          // Storage unavailable.
+        }
       }
     }
 

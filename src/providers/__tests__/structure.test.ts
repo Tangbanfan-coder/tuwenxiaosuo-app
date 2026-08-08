@@ -50,7 +50,7 @@ function makeWorkspace(overrides: Partial<ProjectWorkspace['project']> = {}): Pr
 }
 
 describe('长期创作设定三层结构', () => {
-  it('原文更新后旧结构必须失效', async () => {
+  it('原文更新后旧结构必须失效（含 sourceHash 绑定）', async () => {
     await updateWritingInstructions('project-1', '原文第一版')
     await updateWritingStructure('project-1', JSON.stringify({
       core: '旧核心规则',
@@ -65,6 +65,24 @@ describe('长期创作设定三层结构', () => {
 
     const after = await loadProjectWorkspace('project-1')
     expect(after?.project.writingStructure).toBeFalsy()
+  })
+
+  it('绕过对话框直接改原文时，旧结构的 sourceHash 不匹配即失效', async () => {
+    await updateWritingInstructions('project-1', '原文第一版')
+    await updateWritingStructure('project-1', JSON.stringify({
+      core: '旧核心规则',
+      sections: [],
+      styleSamples: [],
+    }))
+
+    await storyDatabase.projects.update('project-1', { writingInstructions: '被外部直接改过的原文' })
+    const project = await loadProjectWorkspace('project-1')
+    expect(project?.project.writingStructure).toBeTruthy()
+
+    const result = buildProjectContext(project!, [], 50_000, '继续写')
+    expect(result.context).toContain('被外部直接改过的原文')
+    expect(result.context).not.toContain('旧核心规则')
+    expect(parseWritingStructure(project!.project)).toBeUndefined()
   })
 
   it('新结构保存后下一轮立即生效（数据库层）', async () => {
@@ -124,7 +142,7 @@ describe('长期创作设定三层结构', () => {
     expect(parsed?.styleSamples).toHaveLength(0)
   })
 
-  it('核心规则超过预算时截断但标记 rulesTruncated（不静默）', async () => {
+  it('核心规则超过预算时截断并阻止（不静默继续）', async () => {
     const hugeCore = '核心规则。'.repeat(3_000)
     const workspace = makeWorkspace({
       writingInstructions: hugeCore,
