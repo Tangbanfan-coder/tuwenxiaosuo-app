@@ -1,8 +1,8 @@
 ﻿import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { ChevronDown, LoaderCircle, RefreshCw, Save, Sparkles, X } from 'lucide-react'
+import { ChevronDown, LoaderCircle, Plus, RefreshCw, Save, Sparkles, Trash2, X } from 'lucide-react'
 import { usePresence } from '../hooks/usePresence'
 import ConfirmDialog from './ConfirmDialog'
-import { structureWritingInstructions } from '../providers/writing'
+import { parseWritingStructureJson, structureWritingInstructions, WRITING_STRUCTURE_CORE_LIMIT } from '../providers/writing'
 import { browserTransport } from '../providers/browserTransport'
 import type { ProviderConfig } from '../providers/types'
 import type { WritingInstructionsStructure } from '../domain/models'
@@ -45,20 +45,13 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
     setStructureError('')
     setStructuredResult(undefined)
     setExpandedSection(undefined)
-    try {
-      const parsed = structure ? JSON.parse(structure) : undefined
-      setExistingStructure(parsed && typeof parsed === 'object' && typeof (parsed as WritingInstructionsStructure).core === 'string'
-        ? parsed as WritingInstructionsStructure
-        : undefined)
-    } catch {
-      setExistingStructure(undefined)
-    }
+    setExistingStructure(parseWritingStructureJson(structure))
     window.requestAnimationFrame(() => textareaRef.current?.focus())
     // 仅依赖 open：外部保存原文会触发 value/structure 变化，此时不应重置编辑或整理状态。
   }, [open])
 
   useEffect(() => {
-    if (phase !== 'structuring' || !structuredResult) return
+    if (phase !== 'review' || !structuredResult) return
     setExpandedSection(undefined)
   }, [phase, structuredResult])
 
@@ -112,16 +105,34 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
   }
 
   async function confirmStructure() {
-    if (!structure || saving) return
+    if (!structuredResult || saving) return
+    if (structuredResult.core.length > WRITING_STRUCTURE_CORE_LIMIT) {
+      setStructureError(`核心规则超过 ${WRITING_STRUCTURE_CORE_LIMIT} 字，请精简后再确认保存。分类设定不会受此限制。`)
+      return
+    }
     setSaving(true)
     try {
-      await onSaveStructure(JSON.stringify(structure))
+      await onSaveStructure(JSON.stringify(structuredResult))
       onClose()
     } catch {
       setStructureError('结构化版本保存失败，请重试')
     } finally {
       setSaving(false)
     }
+  }
+
+  function updateSection(index: number, patch: Partial<WritingInstructionsStructure['sections'][number]>) {
+    setStructuredResult((current) => current ? {
+      ...current,
+      sections: current.sections.map((section, sectionIndex) => sectionIndex === index ? { ...section, ...patch } : section),
+    } : current)
+  }
+
+  function updateStyleSample(index: number, patch: Partial<WritingInstructionsStructure['styleSamples'][number]>) {
+    setStructuredResult((current) => current ? {
+      ...current,
+      styleSamples: current.styleSamples.map((sample, sampleIndex) => sampleIndex === index ? { ...sample, ...patch } : sample),
+    } : current)
   }
 
   async function skipStructure() {
@@ -232,7 +243,12 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
 
         {phase === 'review' && structuredResult && (
           <div className="structure-review">
-            <label htmlFor="structure-core">核心规则（每轮固定携带，建议精简到 2000 字内）</label>
+            <div className="structure-core-heading">
+              <label htmlFor="structure-core">核心规则（每轮固定携带）</label>
+              <span className={structuredResult.core.length > WRITING_STRUCTURE_CORE_LIMIT ? 'over-limit' : undefined}>
+                {structuredResult.core.length}/{WRITING_STRUCTURE_CORE_LIMIT}
+              </span>
+            </div>
             <textarea
               id="structure-core"
               rows={5}
@@ -254,34 +270,80 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
                   </button>
                   {expandedSection === index && (
                     <div className="structure-section-editor">
-                      <textarea
-                        value={section.content}
-                        aria-label={`编辑分类 ${section.title} 的内容`}
-                        onChange={(event) => setStructuredResult((current) => current ? { ...current, sections: current.sections.map((item, itemIndex) => itemIndex === index
-                            ? { ...item, content: event.target.value }
-                            : item),
-                        } : current)}
-                      />
-                      <button type="button" onClick={() => setStructuredResult((current) => current ? { ...current, sections: current.sections.filter((_, itemIndex) => itemIndex !== index),
-                      } : current)}>删除该分类</button>
+                      <div className="structure-editor-row">
+                        <label>
+                          <span>分类标题</span>
+                          <input value={section.title} onChange={(event) => updateSection(index, { title: event.target.value })} />
+                        </label>
+                        <label className="structure-priority-field">
+                          <span>优先级</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={5}
+                            value={section.priority}
+                            onChange={(event) => updateSection(index, {
+                              priority: Math.min(5, Math.max(1, Math.floor(Number(event.target.value) || 1))),
+                            })}
+                          />
+                        </label>
+                      </div>
+                      <label>
+                        <span>检索标签（用逗号分隔）</span>
+                        <input
+                          value={section.tags.join('，')}
+                          onChange={(event) => updateSection(index, {
+                            tags: event.target.value.split(/[,，、]/).map((tag) => tag.trim()).filter(Boolean),
+                          })}
+                        />
+                      </label>
+                      <label>
+                        <span>分类内容</span>
+                        <textarea value={section.content} onChange={(event) => updateSection(index, { content: event.target.value })} />
+                      </label>
+                      <button className="structure-delete-button" type="button" onClick={() => setStructuredResult((current) => current ? {
+                        ...current,
+                        sections: current.sections.filter((_, sectionIndex) => sectionIndex !== index),
+                      } : current)}><Trash2 size={14} />删除分类</button>
                     </div>
                   )}
                 </div>
               ))}
             </div>
+            <button className="structure-add-button" type="button" onClick={() => setStructuredResult((current) => current ? {
+              ...current,
+              sections: [...current.sections, {
+                id: `section-${Date.now()}-${current.sections.length}`,
+                title: '新分类',
+                content: '',
+                tags: [],
+                priority: 1,
+              }],
+            } : current)}><Plus size={15} />新增分类</button>
 
-            {structuredResult.styleSamples.length > 0 && (
-              <>
-                <div className="structure-subheading">风格范例（按场景类型选择）</div>
-                <div className="structure-sample-list">
-                  {structuredResult.styleSamples.map((sample, index) => (
-                    <div key={index} className="structure-sample">
-                      <strong>{sample.sceneType}</strong>
-                      <p>{sample.content}</p>
-                    </div>
-                  ))}                </div>
-              </>
-            )}
+            <div className="structure-subheading">风格范例（按场景类型选择）</div>
+            <div className="structure-sample-list">
+              {structuredResult.styleSamples.map((sample, index) => (
+                <div key={index} className="structure-sample">
+                  <label>
+                    <span>场景类型</span>
+                    <input value={sample.sceneType} onChange={(event) => updateStyleSample(index, { sceneType: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>范例内容</span>
+                    <textarea value={sample.content} onChange={(event) => updateStyleSample(index, { content: event.target.value })} />
+                  </label>
+                  <button className="structure-delete-button" type="button" onClick={() => setStructuredResult((current) => current ? {
+                    ...current,
+                    styleSamples: current.styleSamples.filter((_, sampleIndex) => sampleIndex !== index),
+                  } : current)}><Trash2 size={14} />删除范例</button>
+                </div>
+              ))}
+            </div>
+            <button className="structure-add-button" type="button" onClick={() => setStructuredResult((current) => current ? {
+              ...current,
+              styleSamples: [...current.styleSamples, { sceneType: '日常', content: '' }],
+            } : current)}><Plus size={15} />新增风格范例</button>
 
             {structureError && <p className="field-error">{structureError}</p>}
 

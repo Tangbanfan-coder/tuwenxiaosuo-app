@@ -268,10 +268,12 @@ const CONTEXT_BUDGET_RATIOS: Record<ContextBudget, number> = {
 
 const DEFAULT_OUTPUT_RESERVE_TOKENS = 16_000
 const CONTEXT_SAFETY_MARGIN_TOKENS = 8_000
+const MIN_CONTEXT_SAFETY_MARGIN_TOKENS = 512
 const REQUEST_OVERHEAD_TOKENS = 2_000
 const CHARS_PER_TOKEN = 1.2
 const CORE_RULES_MAX_CHARS = 10_000
 const MIN_CONTEXT_TOKENS = 4_000
+const CONTEXT_SERIALIZATION_OVERHEAD_CHARS = 512
 
 function effectiveWindowTokens(config: ProviderConfig) {
   return config.manualContextLength
@@ -288,15 +290,27 @@ function maxOutputForRequest(config: ProviderConfig, windowTokens: number) {
   return Math.min(configured, Math.floor(windowTokens * 0.5))
 }
 
+function contextSafetyMarginTokens(windowTokens: number) {
+  return Math.min(
+    CONTEXT_SAFETY_MARGIN_TOKENS,
+    Math.max(MIN_CONTEXT_SAFETY_MARGIN_TOKENS, Math.floor(windowTokens * 0.1)),
+  )
+}
+
 function inputBudgetCharacters(config: ProviderConfig, budget: ContextBudget, userRequest: string) {
   const windowTokens = effectiveWindowTokens(config)
   const maxOutput = maxOutputForRequest(config, windowTokens)
-  const reserveTokens = Math.max(DEFAULT_OUTPUT_RESERVE_TOKENS, maxOutput)
+  const reserveTokens = maxOutput
+  const safetyMarginTokens = contextSafetyMarginTokens(windowTokens)
   const requestTokens = REQUEST_OVERHEAD_TOKENS + Math.ceil((SYSTEM_PROMPT.length + userRequest.length) / CHARS_PER_TOKEN)
-  const availableTokens = windowTokens - reserveTokens - CONTEXT_SAFETY_MARGIN_TOKENS - requestTokens
-  if (availableTokens < MIN_CONTEXT_TOKENS) {
+  const availableTokens = windowTokens - reserveTokens - safetyMarginTokens - requestTokens
+  const minimumContextTokens = Math.min(
+    MIN_CONTEXT_TOKENS,
+    Math.max(512, Math.floor(windowTokens * 0.15)),
+  )
+  if (availableTokens < minimumContextTokens) {
     throw new Error(
-      `当前请求已超过模型的上下文窗口：窗口 ${windowTokens.toLocaleString()} token，扣除输出预留 ${reserveTokens.toLocaleString()}、安全余量 ${CONTEXT_SAFETY_MARGIN_TOKENS.toLocaleString()} 和系统提示后所剩不足。请缩短本条输入或改用更大窗口的模型。`,
+      `当前请求已超过模型的上下文窗口：窗口 ${windowTokens.toLocaleString()} token，扣除输出预留 ${reserveTokens.toLocaleString()}、安全余量 ${safetyMarginTokens.toLocaleString()} 和系统提示后所剩不足。请缩短本条输入、降低最大输出或改用更大窗口的模型。`,
     )
   }
   const targetTokens = Math.floor(availableTokens * CONTEXT_BUDGET_RATIOS[budget])
@@ -315,14 +329,11 @@ function takeLeading(value: string, maxCharacters: number) {
   return value.length > maxCharacters ? value.slice(0, maxCharacters) : value
 }
 
-export function parseWritingStructure(project: ProjectWorkspace['project']): WritingInstructionsStructure | undefined {
-  if (!project.writingStructure) return undefined
+export function parseWritingStructureJson(value: string | undefined): (WritingInstructionsStructure & { sourceHash?: string }) | undefined {
+  if (!value) return undefined
   try {
-    const parsed = JSON.parse(project.writingStructure) as WritingInstructionsStructure & { sourceHash?: unknown }
+    const parsed = JSON.parse(value) as WritingInstructionsStructure & { sourceHash?: unknown }
     if (!parsed || typeof parsed !== 'object' || typeof parsed.core !== 'string') return undefined
-    if (typeof parsed.sourceHash === 'string' && parsed.sourceHash !== hashText(project.writingInstructions ?? '')) {
-      return undefined
-    }
     return {
       core: parsed.core,
       sections: Array.isArray(parsed.sections)
@@ -334,7 +345,9 @@ export function parseWritingStructure(project: ProjectWorkspace['project']): Wri
             title: typeof section.title === 'string' && section.title.trim() ? section.title : '未分类',
             content: section.content,
             tags: Array.isArray(section.tags) ? section.tags.filter((tag): tag is string => typeof tag === 'string') : [],
-            priority: typeof section.priority === 'number' && Number.isFinite(section.priority) ? section.priority : 1,
+            priority: typeof section.priority === 'number' && Number.isFinite(section.priority)
+              ? Math.min(5, Math.max(1, Math.floor(section.priority)))
+              : 1,
           }))
         : [],
       styleSamples: Array.isArray(parsed.styleSamples)
@@ -346,9 +359,21 @@ export function parseWritingStructure(project: ProjectWorkspace['project']): Wri
             content: sample.content,
           }))
         : [],
+      ...(typeof parsed.sourceHash === 'string' ? { sourceHash: parsed.sourceHash } : {}),
     }
   } catch {
     return undefined
+  }
+}
+
+export function parseWritingStructure(project: ProjectWorkspace['project']): WritingInstructionsStructure | undefined {
+  const parsed = parseWritingStructureJson(project.writingStructure)
+  if (!parsed) return undefined
+  if (parsed.sourceHash && parsed.sourceHash !== hashText(project.writingInstructions ?? '')) return undefined
+  return {
+    core: parsed.core,
+    sections: parsed.sections,
+    styleSamples: parsed.styleSamples,
   }
 }
 
@@ -390,7 +415,7 @@ function selectStyleSamples(structure: WritingInstructionsStructure | undefined,
 export function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[], inputBudget: number, userRequest: string) {
   const illustrationStyle = resolveProjectIllustrationStyle(workspace.style)
   const chapter = workspace.chapters.find((item) => item.id === workspace.project.activeChapterId) ?? workspace.chapters[0]
-  const totalBudget = inputBudget
+  const totalBudget = Math.max(0, inputBudget - CONTEXT_SERIALIZATION_OVERHEAD_CHARS)
 
   const sections: Array<{ label: string; text: string; priority: number; keepOrder: 'tail' | 'head'; locked?: boolean }> = []
 
@@ -399,7 +424,7 @@ export function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredS
   const writingInstructions = workspace.project.writingInstructions?.trim()
   const structure = parseWritingStructure(workspace.project)
   const illustrationLine = `插画画风：${illustrationStyle.label}${illustrationStyle.visualPrompt ? `（${illustrationStyle.visualPrompt}）` : ''}`
-  const rulesBudget = Math.min(CORE_RULES_MAX_CHARS, Math.floor(totalBudget * 0.2))
+  const rulesBudget = Math.min(CORE_RULES_MAX_CHARS, totalBudget)
   let rulesTruncated = false
   const coreRules = structure?.core || writingInstructions || ''
   const instructionsFull = coreRules ? `长期创作设定（核心规则）：\n${coreRules}` : ''
@@ -709,9 +734,73 @@ const STRUCTURE_CHUNK_PROMPT = `你是小说创作设定整理助手。用户会
 要求：只提取片段中真实存在的内容，不要编造；sections 的 content 不得省略片段中的具体设定；没有对应内容时返回空数组。`
 
 const STRUCTURE_CHUNK_SIZE = 8_000
-const STRUCTURE_CORE_LIMIT = 2_000
+export const WRITING_STRUCTURE_CORE_LIMIT = 2_000
+const STRUCTURE_CHUNK_RETRIES = 2
+const STRUCTURE_REQUEST_OVERHEAD_TOKENS = 512
 
-function mergeStructureChunks(chunks: Array<{ coreFragments: string[]; sections: Array<{ title: string; content: string; tags: string[]; priority: number }>; styleSamples: Array<{ sceneType: string; content: string }> }>): WritingInstructionsStructure {
+interface StructureChunkResult {
+  coreFragments: string[]
+  sections: Array<{ title: string; content: string; tags: string[]; priority: number }>
+  styleSamples: Array<{ sceneType: string; content: string }>
+}
+
+function splitStructureSource(source: string, maxCharacters: number) {
+  const chunks: string[] = []
+  let start = 0
+  while (start < source.length) {
+    let end = Math.min(source.length, start + maxCharacters)
+    if (end < source.length) {
+      const minimumBoundary = start + Math.floor(maxCharacters * 0.6)
+      let boundary = -1
+      let boundaryLength = 0
+      for (const separator of ['\n\n', '\n', '。', '！', '？']) {
+        const candidate = source.lastIndexOf(separator, end - 1)
+        if (candidate >= minimumBoundary && candidate > boundary) {
+          boundary = candidate
+          boundaryLength = separator.length
+        }
+      }
+      if (boundary >= minimumBoundary) end = boundary + boundaryLength
+    }
+    const chunk = source.slice(start, end).trim()
+    if (chunk) chunks.push(chunk)
+    if (end <= start) break
+    start = end
+  }
+  return chunks
+}
+
+function parseStructureChunk(content: string): StructureChunkResult {
+  const parsed = extractJson(content) as unknown as { core_fragments?: unknown; sections?: unknown; style_samples?: unknown }
+  const result: StructureChunkResult = {
+    coreFragments: Array.isArray(parsed.core_fragments)
+      ? parsed.core_fragments.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+      : [],
+    sections: Array.isArray(parsed.sections)
+      ? parsed.sections
+        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+        .map((item) => ({
+          title: stringValue(item.title) || '未分类',
+          content: stringValue(item.content),
+          tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+          priority: typeof item.priority === 'number' ? Math.min(5, Math.max(1, Math.floor(item.priority))) : 1,
+        }))
+        .filter((section) => Boolean(section.content))
+      : [],
+    styleSamples: Array.isArray(parsed.style_samples)
+      ? parsed.style_samples
+        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+        .map((item) => ({ sceneType: stringValue(item.scene_type) || '日常', content: stringValue(item.content) }))
+        .filter((sample) => Boolean(sample.content))
+      : [],
+  }
+  if (!result.coreFragments.length && !result.sections.length && !result.styleSamples.length) {
+    throw new Error('模型返回了空的结构化结果')
+  }
+  return result
+}
+
+function mergeStructureChunks(chunks: StructureChunkResult[]): WritingInstructionsStructure {
   const coreLines: string[] = []
   const seenCore = new Set<string>()
   const sectionsByTitle = new Map<string, { title: string; content: string; tags: string[]; priority: number }>()
@@ -753,7 +842,7 @@ function mergeStructureChunks(chunks: Array<{ coreFragments: string[]; sections:
   }
 
   return {
-    core: coreLines.join('\n').slice(0, STRUCTURE_CORE_LIMIT),
+    core: coreLines.join('\n'),
     sections: Array.from(sectionsByTitle.values()).map((section) => ({
       id: createShortId(),
       title: section.title,
@@ -776,68 +865,57 @@ export async function structureWritingInstructions(
 
   const windowTokens = effectiveWindowTokens(config)
   const maxOutput = Math.min(maxOutputForRequest(config, windowTokens), 4_096)
-  const chunkSize = Math.max(2_000, Math.floor((windowTokens - 4_000) * 0.9 * CHARS_PER_TOKEN * 0.5))
+  const safetyMarginTokens = contextSafetyMarginTokens(windowTokens)
+  const promptTokens = STRUCTURE_REQUEST_OVERHEAD_TOKENS + Math.ceil(STRUCTURE_CHUNK_PROMPT.length / CHARS_PER_TOKEN)
+  const availableChunkTokens = windowTokens - maxOutput - safetyMarginTokens - promptTokens
+  if (availableChunkTokens < 512) {
+    throw new Error('当前模型窗口不足以整理长期创作设定，请降低最大输出或改用更大窗口的模型。')
+  }
+  const chunkSize = Math.min(
+    STRUCTURE_CHUNK_SIZE,
+    Math.floor(availableChunkTokens * CHARS_PER_TOKEN * 0.85),
+  )
+  const chunks = splitStructureSource(source, chunkSize)
+  if (!chunks.length) throw new Error('长期创作设定为空，无法整理')
 
-  const chunks: string[] = []
-  for (let index = 0; index < source.length; index += chunkSize) {
-    chunks.push(source.slice(index, index + chunkSize))
+  const results: StructureChunkResult[] = []
+  for (let index = 0; index < chunks.length; index++) {
+    let result: StructureChunkResult | undefined
+    let lastError: unknown
+    for (let attempt = 0; attempt < STRUCTURE_CHUNK_RETRIES; attempt++) {
+      try {
+        const request = {
+          url: `${baseUrl}/chat/completions`,
+          method: 'POST' as const,
+          headers: { 'Content-Type': 'application/json' },
+          auth: { kind: 'bearer' as const, secretRef: config.secretRef },
+          timeoutMs: 120_000,
+          body: JSON.stringify({
+            model: config.model,
+            stream: false,
+            max_tokens: maxOutput,
+            messages: [
+              { role: 'system', content: STRUCTURE_CHUNK_PROMPT },
+              { role: 'user', content: chunks[index] },
+            ],
+          }),
+        }
+        const response = await transport.request<ChatCompletionResponse>(request)
+        const content = contentToString(response.data.choices?.[0]?.message?.content)
+        if (!content.trim()) throw new Error('模型没有返回内容')
+        result = parseStructureChunk(content)
+        break
+      } catch (error) {
+        lastError = error
+      }
+    }
+    if (!result) {
+      const reason = lastError instanceof Error ? lastError.message : '未知错误'
+      throw new Error(`第 ${index + 1}/${chunks.length} 段设定整理失败：${reason}`)
+    }
+    results.push(result)
   }
 
-  const results: Array<{ coreFragments: string[]; sections: Array<{ title: string; content: string; tags: string[]; priority: number }>; styleSamples: Array<{ sceneType: string; content: string }> }> = []
-
-  for (const chunk of chunks) {
-    const request = {
-      url: `${baseUrl}/chat/completions`,
-      method: 'POST' as const,
-      headers: { 'Content-Type': 'application/json' },
-      auth: { kind: 'bearer' as const, secretRef: config.secretRef },
-      timeoutMs: 120_000,
-      body: JSON.stringify({
-        model: config.model,
-        stream: false,
-        ...(config.manualMaxOutputTokens ?? config.maxOutputTokens ? { max_tokens: maxOutput } : {}),
-        messages: [
-          { role: 'system', content: STRUCTURE_CHUNK_PROMPT },
-          { role: 'user', content: chunk },
-        ],
-      }),
-    }
-    const response = await transport.request<ChatCompletionResponse>(request)
-    const content = contentToString(response.data.choices?.[0]?.message?.content)
-    if (!content.trim()) continue
-
-    let parsed: { core_fragments?: unknown; sections?: unknown; style_samples?: unknown }
-    try {
-      parsed = extractJson(content) as unknown as { core_fragments?: unknown; sections?: unknown; style_samples?: unknown }
-    } catch {
-      continue
-    }
-
-    results.push({
-      coreFragments: Array.isArray(parsed.core_fragments)
-        ? parsed.core_fragments.filter((item): item is string => typeof item === 'string')
-        : [],
-      sections: Array.isArray(parsed.sections)
-        ? parsed.sections
-          .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-          .map((item) => ({
-            title: stringValue(item.title) || '未分类',
-            content: stringValue(item.content),
-            tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : [],
-            priority: typeof item.priority === 'number' ? Math.floor(item.priority) : 1,
-          }))
-          .filter((section) => Boolean(section.content))
-        : [],
-      styleSamples: Array.isArray(parsed.style_samples)
-        ? parsed.style_samples
-          .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-          .map((item) => ({ sceneType: stringValue(item.scene_type) || '日常', content: stringValue(item.content) }))
-          .filter((sample) => Boolean(sample.content))
-        : [],
-    })
-  }
-
-  if (!results.length) throw new Error('文本模型没有返回可用的整理结果，请重试')
   return mergeStructureChunks(results)
 }
 
@@ -868,9 +946,7 @@ export async function generateWritingTurn(
   const body = JSON.stringify({
     model: config.model,
     stream: true,
-    ...(config.manualMaxOutputTokens ?? config.maxOutputTokens
-      ? { max_tokens: maxOutput }
-      : {}),
+    max_tokens: maxOutput,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'system', content: `当前作品资料：${context}` },
@@ -879,8 +955,9 @@ export async function generateWritingTurn(
   })
 
   const windowTokens = effectiveWindowTokens(config)
+  const safetyMarginTokens = contextSafetyMarginTokens(windowTokens)
   const estimatedInputTokens = Math.ceil(body.length / CHARS_PER_TOKEN)
-  if (estimatedInputTokens > windowTokens - maxOutput - CONTEXT_SAFETY_MARGIN_TOKENS) {
+  if (estimatedInputTokens > windowTokens - maxOutput - safetyMarginTokens) {
     throw new Error('最终请求的输入仍超过模型上下文窗口（序列化后硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
   }
 

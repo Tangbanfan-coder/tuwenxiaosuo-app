@@ -7,9 +7,10 @@ import {
   loadProjectWorkspace,
   listProjects,
 } from '../../data/storyDatabase'
-import { buildProjectContext, parseWritingStructure } from '../writing'
+import { buildProjectContext, parseWritingStructure, structureWritingInstructions } from '../writing'
 import type { StoredScene } from '../../data/storyDatabase'
 import type { ProjectWorkspace } from '../../domain/models'
+import type { HttpTransport, ProviderConfig, TransportRequest } from '../types'
 
 beforeEach(async () => {
   await Promise.all([
@@ -198,5 +199,76 @@ describe('长期创作设定三层结构', () => {
     await updateWritingStructure('project-1', JSON.stringify({ core: '新核心', sections: [], styleSamples: [] }))
     const projects = await listProjects()
     expect(projects[0]?.writingStructure).toBeTruthy()
+  })
+})
+
+const structureProvider: ProviderConfig = {
+  id: 'structure-test',
+  name: 'Structure Test',
+  baseUrl: 'https://example.test/v1',
+  model: 'test-model',
+  protocol: 'openai-compatible',
+  secretRef: 'provider:text',
+  manualContextLength: 128_000,
+  manualMaxOutputTokens: 4_096,
+}
+
+function structureResponse(content: string) {
+  return { choices: [{ message: { content } }] }
+}
+
+function createStructureTransport(handler: (request: TransportRequest) => string): HttpTransport {
+  return {
+    async request<T>(request: TransportRequest) {
+      return { status: 200, data: structureResponse(handler(request)) as T }
+    },
+    async stream() {
+      throw new Error('not used')
+    },
+  }
+}
+
+describe('长期设定分块整理', () => {
+  it('大窗口模型也会遵守每段最多 8000 字', async () => {
+    const chunks: string[] = []
+    const transport = createStructureTransport((request) => {
+      const body = JSON.parse(String(request.body)) as { messages: Array<{ content: string }> }
+      chunks.push(body.messages[1].content)
+      return JSON.stringify({
+        core_fragments: [],
+        sections: [{ title: '设定', content: `已提取第 ${chunks.length} 段`, tags: ['设定'], priority: 2 }],
+        style_samples: [],
+      })
+    })
+
+    await structureWritingInstructions('这是一段需要保留的设定。\n'.repeat(1_200), structureProvider, transport)
+
+    expect(chunks.length).toBeGreaterThan(1)
+    expect(chunks.every((chunk) => chunk.length <= 8_000)).toBe(true)
+  })
+
+  it('分块连续失败两次后终止整次整理', async () => {
+    let requests = 0
+    const transport = createStructureTransport(() => {
+      requests += 1
+      return '不是 JSON'
+    })
+
+    await expect(structureWritingInstructions('需要整理的长期设定。'.repeat(30), structureProvider, transport))
+      .rejects.toThrow(/第 1\/1 段设定整理失败/)
+    expect(requests).toBe(2)
+  })
+
+  it('合并时保留超过 2000 字的核心规则供用户人工精简', async () => {
+    const longCore = '必须遵守。'.repeat(500)
+    const transport = createStructureTransport(() => JSON.stringify({
+      core_fragments: [longCore],
+      sections: [],
+      style_samples: [],
+    }))
+
+    const result = await structureWritingInstructions('原始长期设定。'.repeat(30), structureProvider, transport)
+    expect(result.core).toBe(longCore)
+    expect(result.core.length).toBeGreaterThan(2_000)
   })
 })

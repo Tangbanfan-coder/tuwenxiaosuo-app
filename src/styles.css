@@ -522,7 +522,9 @@ label {
 .structuring-panel h3 { margin: 0; color: #f0eee6; font-size: 14px; }
 .structuring-panel p { margin: 0; font-size: 12px; }
 .structure-review { padding: 17px 19px 20px; overflow-y: auto; }
-.structure-review > label { display: block; margin-bottom: 7px; color: #aaa79f; font-size: 12px; }
+.structure-core-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 7px; color: #aaa79f; font-size: 12px; }
+.structure-core-heading span { color: #85827a; font-variant-numeric: tabular-nums; }
+.structure-core-heading span.over-limit { color: #e1877d; }
 .structure-review > textarea { width: 100%; min-height: 120px; padding: 11px; border: 1px solid #484740; border-radius: 8px; outline: 0; background: #11110f; color: #efede7; font-size: 13px; line-height: 1.6; }
 .structure-review > textarea:focus { border-color: #9e8c5e; box-shadow: 0 0 0 2px rgba(215, 193, 141, 0.12); }
 .structure-subheading { margin: 16px 0 8px; color: #cbc8be; font-size: 13px; font-weight: 600; }
@@ -533,18 +535,36 @@ label {
 .structure-section > button strong { font-size: 13px; }
 .structure-section > button em { overflow: hidden; color: #8f8c84; font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .structure-section > button svg { flex: none; color: #8f8c84; }
-.structure-section > p { margin: 0; padding: 0 12px 11px; color: #aaa79f; font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
+.structure-section-editor { display: grid; gap: 10px; padding: 2px 12px 12px; }
+.structure-editor-row { display: grid; grid-template-columns: minmax(0, 1fr) 84px; gap: 8px; }
+.structure-section-editor label,
+.structure-sample label { display: grid; gap: 5px; color: #8f8c84; font-size: 11px; }
+.structure-section-editor input,
+.structure-section-editor textarea,
+.structure-sample input,
+.structure-sample textarea { width: 100%; padding: 8px 9px; border: 1px solid #484740; border-radius: 6px; outline: 0; background: #11110f; color: #efede7; font-size: 12px; line-height: 1.55; }
+.structure-section-editor textarea,
+.structure-sample textarea { min-height: 92px; resize: vertical; }
+.structure-section-editor input:focus,
+.structure-section-editor textarea:focus,
+.structure-sample input:focus,
+.structure-sample textarea:focus { border-color: #9e8c5e; box-shadow: 0 0 0 2px rgba(215, 193, 141, 0.12); }
 .structure-sample-list { display: grid; gap: 6px; }
-.structure-sample { border: 1px solid #3a3a35; border-radius: 8px; padding: 10px 12px; background: #181815; }
-.structure-sample strong { color: #d7c18d; font-size: 12px; }
-.structure-sample p { margin: 5px 0 0; color: #aaa79f; font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
+.structure-sample { display: grid; gap: 10px; border: 1px solid #3a3a35; border-radius: 8px; padding: 10px 12px; background: #181815; }
+.structure-add-button,
+.structure-delete-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; margin-top: 8px; padding: 0 11px; border: 1px solid #484740; border-radius: 7px; background: transparent; color: #aaa79f; font-size: 11px; }
+.structure-add-button:hover { border-color: #77705d; color: #e3e0d5; }
+.structure-delete-button { justify-self: end; margin-top: 0; border-color: #61443f; color: #d88f84; }
+.structure-delete-button:hover { background: rgba(143, 66, 55, 0.14); }
 
 .app-shell[data-appearance="light"] .structure-section,
 .app-shell[data-appearance="light"] .structure-sample { border-color: #d5d8d2; background: #f8f9f6; }
 .app-shell[data-appearance="light"] .structure-section > button { color: #343934; }
-.app-shell[data-appearance="light"] .structure-section > p,
-.app-shell[data-appearance="light"] .structure-sample p { color: #555c55; }
-.app-shell[data-appearance="light"] .structure-sample strong { color: #8a7c52; }
+.app-shell[data-appearance="light"] .structure-section-editor input,
+.app-shell[data-appearance="light"] .structure-section-editor textarea,
+.app-shell[data-appearance="light"] .structure-sample input,
+.app-shell[data-appearance="light"] .structure-sample textarea { border-color: #c4c8c1; background: #ffffff; color: #232723; }
+.app-shell[data-appearance="light"] .structure-add-button { border-color: #c4c8c1; color: #555c55; }
 .app-shell[data-appearance="light"] .structure-review > textarea { border-color: #c4c8c1; background: #ffffff; color: #232723; }
 .app-shell[data-appearance="light"] .structure-status { color: #8a7c52; }
 .confirm-backdrop { display: grid; place-items: center; padding: 22px; }
