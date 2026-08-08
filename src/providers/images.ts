@@ -96,5 +96,6 @@ export function buildCharacterPortraitPrompt(character: CharacterAsset, style?: 
 必须保持的身份特征：${character.identity.fixedTraits.join('、') || '面部特征清晰且可复用'}
 默认外貌：${character.appearance.defaultLook || '按剧情合理设计'}
 服装：${character.appearance.wardrobe || '符合角色身份'}${styleLine}
+参考图仅用于确定角色的脸型和身份特征；忽略参考图中的服装、发型之外的配饰和场景，服装严格按上方“服装”描述绘制。
 避免：多人、复杂背景、画面文字、遮挡面部、角色身份漂移；${resolvedStyle.negativePrompt}${refinement}`
 }
