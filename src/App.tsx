@@ -57,6 +57,7 @@ import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
 import type { AppearanceMode, CharacterAsset, ContextBudget, ConversationMessage, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, StoryProject, ThemePresetId } from './domain/models'
 import { browserTransport } from './providers/browserTransport'
 import { loadProviderSettings, saveProviderSettings } from './providers/config'
+import { refreshModelLimits } from './providers/modelLimits'
 import { persistImageAsset, recoverPersistedImageAsset, resolveImageSource, saveImageToDevice } from './providers/imageAssetStore'
 import { usePresence } from './hooks/usePresence'
 import ConfirmDialog from './components/ConfirmDialog'
@@ -200,6 +201,7 @@ export default function App() {
     void (async () => {
       try {
         await initializeStoryDatabase()
+        void refreshModelLimits()
         const recovery = await recoverInterruptedImageTasks()
         const invalidLegacyImages = await auditLegacyLocalIllustrations()
         const availableProjects = await listProjects()

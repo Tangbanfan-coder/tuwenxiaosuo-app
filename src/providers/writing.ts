@@ -1,6 +1,7 @@
 import type { ContextBudget, ProjectWorkspace, SceneNotes, VisualPlan, WritingCharacterPlan, WritingTurnResult } from '../domain/models'
 import { resolveProjectIllustrationStyle } from '../domain/illustrationStyles'
 import { loadProjectScenes, type StoredScene } from '../data/storyDatabase'
+import { heuristicModelContextTokens, lookupModelLimit } from './modelLimits'
 import type { HttpTransport, ProviderConfig } from './types'
 import { normalizeBaseUrl } from './openAiCompatible'
 
@@ -271,52 +272,18 @@ const REQUEST_OVERHEAD_TOKENS = 2_000
 const CHARS_PER_TOKEN = 1.2
 const CORE_RULES_MAX_CHARS = 10_000
 
-const UNKNOWN_MODEL_CONTEXT_TOKENS = 32_000
-
-function modelContextTokens(modelId: string) {
-  const id = modelId.toLocaleLowerCase()
-  if (id.includes('gemini')) {
-    if (id.includes('1.0') || id.includes('gemini-pro-v1')) return 32_000
-    return 1_000_000
-  }
-  if (id.includes('claude')) {
-    if (/claude[\s-]?[12][.\s-]/.test(id)) return 100_000
-    return 200_000
-  }
-  if (id.includes('gpt-4')) {
-    if (id.includes('32k')) return 32_000
-    if (id.includes('4o') || id.includes('turbo') || id.includes('1106') || id.includes('0125')) return 128_000
-    if (id.includes('0613') || id.includes('0314') || id.includes('base')) return 8_000
-    return 8_000
-  }
-  if (id.includes('o1') || id.includes('o3') || id.includes('o4')) return 128_000
-  if (id.includes('gpt-3.5')) return 8_000
-  if (id.includes('deepseek')) return 64_000
-  if (id.includes('qwen') || id.includes('qwq')) {
-    if (id.includes('qwen3') || id.includes('qwq')) return 128_000
-    return 32_000
-  }
-  if (id.includes('glm') || id.includes('chatglm')) {
-    if (id.includes('glm-4') || id.includes('glm4')) return 128_000
-    return 32_000
-  }
-  if (id.includes('moonshot') || id.includes('kimi')) return 128_000
-  if (id.includes('ernie') || id.includes('文心')) return 128_000
-  if (id.includes('minimax')) return 128_000
-  if (id.includes('yi-')) return 32_000
-  if (id.includes('llama-3.1') || id.includes('llama-3.3')) return 128_000
-  if (id.includes('llama-3')) return 8_000
-  if (id.includes('llama-2')) return 4_000
-  if (id.includes('mistral') || id.includes('mixtral')) return 32_000
-  return UNKNOWN_MODEL_CONTEXT_TOKENS
-}
-
 function outputReserveTokens(config: ProviderConfig) {
-  return config.manualMaxOutputTokens ?? config.maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS
+  return config.manualMaxOutputTokens
+    ?? config.maxOutputTokens
+    ?? lookupModelLimit(config.model)?.output
+    ?? DEFAULT_OUTPUT_RESERVE_TOKENS
 }
 
 function inputBudgetCharacters(config: ProviderConfig, budget: ContextBudget, userRequest: string) {
-  const windowTokens = config.manualContextLength ?? config.contextLength ?? modelContextTokens(config.model)
+  const windowTokens = config.manualContextLength
+    ?? config.contextLength
+    ?? lookupModelLimit(config.model)?.context
+    ?? heuristicModelContextTokens(config.model)
   const reserveTokens = outputReserveTokens(config)
   const requestTokens = REQUEST_OVERHEAD_TOKENS + Math.ceil((SYSTEM_PROMPT.length + userRequest.length) / CHARS_PER_TOKEN)
   const availableTokens = Math.max(2_000, windowTokens - reserveTokens - CONTEXT_SAFETY_MARGIN_TOKENS - requestTokens)

@@ -510,6 +510,9 @@ label {
 .project-rename-button { width: 38px; min-height: 44px; align-self: center; flex: none; display: grid; place-items: center; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #8c8980; }
 .project-rename-button:hover { border-color: #4d493d; background: #292820; color: #d7c18d; }
 .context-budget-choice { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.model-limit-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.model-limit-hint { margin-top: -4px; }
+.model-limit-hint::before { content: "⚠ "; color: #d9a35a; }
 .confirm-backdrop { display: grid; place-items: center; padding: 22px; }
 .confirm-dialog { width: min(100%, 360px); overflow: hidden; border: 1px solid #41403a; border-radius: 12px; background: #1b1b18; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.58); animation: dialog-in 220ms cubic-bezier(0.16, 1, 0.3, 1); }
 .confirm-backdrop.closing .confirm-dialog { animation: dialog-out 180ms cubic-bezier(0.4, 0, 1, 1) forwards; }

@@ -3,6 +3,7 @@ import { Check, ChevronDown, Eye, EyeOff, LoaderCircle, PlugZap, Plus, Save, Sea
 import { createProviderConfig } from '../providers/config'
 import { browserTransport } from '../providers/browserTransport'
 import { listOpenAiModels } from '../providers/openAiCompatible'
+import { isModelKnown, lookupModelLimit } from '../providers/modelLimits'
 import { secretStore } from '../providers/secretStore'
 import type { ModelSummary, ProviderConfig, ProviderSettings, ProviderSlot } from '../providers/types'
 import { usePresence } from '../hooks/usePresence'
@@ -112,6 +113,18 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
     if (!query) return currentModels
     return currentModels.filter((model) => model.id.toLocaleLowerCase().includes(query))
   }, [currentModels, modelQuery])
+
+  const autoContextPlaceholder = useMemo(() => {
+    if (!current.model) return '自动识别'
+    const limit = lookupModelLimit(current.model)
+    return limit ? `${limit.context.toLocaleString()}（自动）` : '未识别（按 32K 保守）'
+  }, [current.model])
+
+  const modelUnknownWarning = useMemo(() => {
+    if (!current.model || current.manualContextLength) return undefined
+    if (isModelKnown(current.model)) return undefined
+    return `未能识别“${current.model}”的上下文窗口，将按 32K 保守估算；建议在上方手动填写窗口大小。`
+  }, [current.model, current.manualContextLength])
 
   if (!present) return null
 
@@ -430,6 +443,34 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
               onChange={(event) => updateCurrent({ model: event.target.value })}
             />
           </label>
+
+          <div className="model-limit-fields">
+            <label className="field">
+              <span>上下文窗口（tokens，留空自动识别）</span>
+              <input
+                inputMode="numeric"
+                value={current.manualContextLength ?? ''}
+                placeholder={autoContextPlaceholder}
+                onChange={(event) => {
+                  const value = event.target.value
+                  updateCurrent({ manualContextLength: value ? Math.max(0, Math.floor(Number(value))) || undefined : undefined })
+                }}
+              />
+            </label>
+            <label className="field">
+              <span>最大输出（tokens，留空用默认）</span>
+              <input
+                inputMode="numeric"
+                value={current.manualMaxOutputTokens ?? ''}
+                placeholder="16K"
+                onChange={(event) => {
+                  const value = event.target.value
+                  updateCurrent({ manualMaxOutputTokens: value ? Math.max(0, Math.floor(Number(value))) || undefined : undefined })
+                }}
+              />
+            </label>
+          </div>
+          {modelUnknownWarning && <p className="field-hint model-limit-hint">{modelUnknownWarning}</p>}
 
           <div className="connection-row">
             <button className="test-button" type="button" disabled={status.status === 'loading'} onClick={() => void testConnection()}>

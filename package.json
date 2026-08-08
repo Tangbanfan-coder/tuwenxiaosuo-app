@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:model-limits": "node scripts/build-model-limits.mjs",
     "preview": "vite preview",
-    "android:sync": "npm run build && cap sync android",
-    "android:open": "cap open android"
+    "android:sync": "npm run build && cap sync android"
   },
   "dependencies": {
     "@aparajita/capacitor-secure-storage": "^8.0.0",
