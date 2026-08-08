@@ -3,7 +3,7 @@ import { Check, ChevronDown, Eye, EyeOff, LoaderCircle, PlugZap, Plus, Save, Sea
 import { createProviderConfig } from '../providers/config'
 import { browserTransport } from '../providers/browserTransport'
 import { listOpenAiModels } from '../providers/openAiCompatible'
-import { isModelKnown, lookupModelLimit } from '../providers/modelLimits'
+import { isModelKnown, lookupModelLimit, withModelMetadata } from '../providers/modelLimits'
 import { secretStore } from '../providers/secretStore'
 import type { ModelSummary, ProviderConfig, ProviderSettings, ProviderSlot } from '../providers/types'
 import { usePresence } from '../hooks/usePresence'
@@ -498,9 +498,7 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
               <div className="model-list" role="listbox" aria-label="模型列表">
                 {visibleModels.map((model) => (
                   <button key={model.id} type="button" role="option" aria-selected={current.model === model.id} onClick={() => updateCurrent({
-                    model: model.id,
-                    contextLength: model.contextLength,
-                    maxOutputTokens: model.maxOutputTokens,
+                    ...withModelMetadata(current, model),
                     manualContextLength: current.manualContextLength,
                     manualMaxOutputTokens: current.manualMaxOutputTokens,
                   })}>

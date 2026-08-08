@@ -23,15 +23,24 @@ interface LimitsPayload {
 
 let runtimeModels: LimitEntry[] = embeddedLimits.models
 
+function stripVendorPrefix(modelId: string) {
+  const slash = modelId.indexOf('/')
+  return slash >= 0 ? modelId.slice(slash + 1) : modelId
+}
+
 function pickLimit(modelId: string): ModelLimit | undefined {
-  const normalized = modelId.toLocaleLowerCase()
-  const exact = runtimeModels.find((model) => model.m.toLocaleLowerCase() === normalized)
-  if (exact) return { context: exact.c, output: exact.o }
+  const variants = [modelId.toLocaleLowerCase(), stripVendorPrefix(modelId).toLocaleLowerCase()]
+  for (const normalized of variants) {
+    const exact = runtimeModels.find((model) => model.m.toLocaleLowerCase() === normalized)
+    if (exact) return { context: exact.c, output: exact.o }
+  }
   for (const model of runtimeModels) {
     const candidate = model.m.toLocaleLowerCase()
-    const exactMatch = normalized.startsWith(candidate) && (normalized[candidate.length] === undefined || /[:/\-._\s]/.test(normalized[candidate.length] ?? ''))
-    const reverseMatch = candidate.startsWith(normalized) && /[:/\-._\s]/.test(candidate[normalized.length] ?? '')
-    if (exactMatch || reverseMatch) return { context: model.c, output: model.o }
+    for (const normalized of variants) {
+      const exactMatch = normalized.startsWith(candidate) && (normalized[candidate.length] === undefined || /[:/\-._\s]/.test(normalized[candidate.length] ?? ''))
+      const reverseMatch = candidate.startsWith(normalized) && /[:/\-._\s]/.test(candidate[normalized.length] ?? '')
+      if (exactMatch || reverseMatch) return { context: model.c, output: model.o }
+    }
   }
   return undefined
 }
@@ -83,6 +92,15 @@ export function heuristicModelContextTokens(modelId: string) {
 
 export function isModelKnown(modelId: string) {
   return Boolean(lookupModelLimit(modelId) || heuristicModelContextTokens(modelId) !== UNKNOWN_MODEL_CONTEXT_TOKENS)
+}
+
+export function withModelMetadata<T extends { model: string }>(current: T, model: { id: string; contextLength?: number; maxOutputTokens?: number }): T {
+  return {
+    ...current,
+    model: model.id,
+    contextLength: model.contextLength,
+    maxOutputTokens: model.maxOutputTokens,
+  }
 }
 
 export function refreshModelLimits(): Promise<void> {

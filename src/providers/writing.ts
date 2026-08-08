@@ -271,22 +271,34 @@ const CONTEXT_SAFETY_MARGIN_TOKENS = 8_000
 const REQUEST_OVERHEAD_TOKENS = 2_000
 const CHARS_PER_TOKEN = 1.2
 const CORE_RULES_MAX_CHARS = 10_000
+const MIN_CONTEXT_TOKENS = 4_000
 
-function outputReserveTokens(config: ProviderConfig) {
-  return config.manualMaxOutputTokens
-    ?? config.maxOutputTokens
-    ?? lookupModelLimit(config.model)?.output
-    ?? DEFAULT_OUTPUT_RESERVE_TOKENS
-}
-
-function inputBudgetCharacters(config: ProviderConfig, budget: ContextBudget, userRequest: string) {
-  const windowTokens = config.manualContextLength
+function effectiveWindowTokens(config: ProviderConfig) {
+  return config.manualContextLength
     ?? config.contextLength
     ?? lookupModelLimit(config.model)?.context
     ?? heuristicModelContextTokens(config.model)
-  const reserveTokens = outputReserveTokens(config)
+}
+
+function maxOutputForRequest(config: ProviderConfig, windowTokens: number) {
+  const configured = config.manualMaxOutputTokens
+    ?? config.maxOutputTokens
+    ?? lookupModelLimit(config.model)?.output
+    ?? DEFAULT_OUTPUT_RESERVE_TOKENS
+  return Math.min(configured, Math.floor(windowTokens * 0.5))
+}
+
+function inputBudgetCharacters(config: ProviderConfig, budget: ContextBudget, userRequest: string) {
+  const windowTokens = effectiveWindowTokens(config)
+  const maxOutput = maxOutputForRequest(config, windowTokens)
+  const reserveTokens = Math.max(DEFAULT_OUTPUT_RESERVE_TOKENS, maxOutput)
   const requestTokens = REQUEST_OVERHEAD_TOKENS + Math.ceil((SYSTEM_PROMPT.length + userRequest.length) / CHARS_PER_TOKEN)
-  const availableTokens = Math.max(2_000, windowTokens - reserveTokens - CONTEXT_SAFETY_MARGIN_TOKENS - requestTokens)
+  const availableTokens = windowTokens - reserveTokens - CONTEXT_SAFETY_MARGIN_TOKENS - requestTokens
+  if (availableTokens < MIN_CONTEXT_TOKENS) {
+    throw new Error(
+      `当前请求已超过模型的上下文窗口：窗口 ${windowTokens.toLocaleString()} token，扣除输出预留 ${reserveTokens.toLocaleString()}、安全余量 ${CONTEXT_SAFETY_MARGIN_TOKENS.toLocaleString()} 和系统提示后所剩不足。请缩短本条输入或改用更大窗口的模型。`,
+    )
+  }
   const targetTokens = Math.floor(availableTokens * CONTEXT_BUDGET_RATIOS[budget])
   return Math.floor(targetTokens * CHARS_PER_TOKEN * 0.85)
 }
@@ -303,12 +315,35 @@ function takeLeading(value: string, maxCharacters: number) {
   return value.length > maxCharacters ? value.slice(0, maxCharacters) : value
 }
 
-function parseWritingStructure(project: ProjectWorkspace['project']): WritingInstructionsStructure | undefined {
+export function parseWritingStructure(project: ProjectWorkspace['project']): WritingInstructionsStructure | undefined {
   if (!project.writingStructure) return undefined
   try {
     const parsed = JSON.parse(project.writingStructure) as WritingInstructionsStructure
     if (!parsed || typeof parsed !== 'object' || typeof parsed.core !== 'string') return undefined
-    return parsed
+    return {
+      core: parsed.core,
+      sections: Array.isArray(parsed.sections)
+        ? parsed.sections
+          .filter((section): section is WritingInstructionsStructure['sections'][number] =>
+            Boolean(section && typeof section === 'object' && typeof section.content === 'string' && section.content.trim()))
+          .map((section) => ({
+            id: typeof section.id === 'string' && section.id ? section.id : createShortId(),
+            title: typeof section.title === 'string' && section.title.trim() ? section.title : '未分类',
+            content: section.content,
+            tags: Array.isArray(section.tags) ? section.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+            priority: typeof section.priority === 'number' && Number.isFinite(section.priority) ? section.priority : 1,
+          }))
+        : [],
+      styleSamples: Array.isArray(parsed.styleSamples)
+        ? parsed.styleSamples
+          .filter((sample): sample is WritingInstructionsStructure['styleSamples'][number] =>
+            Boolean(sample && typeof sample === 'object' && typeof sample.content === 'string' && sample.content.trim()))
+          .map((sample) => ({
+            sceneType: typeof sample.sceneType === 'string' && sample.sceneType.trim() ? sample.sceneType : '日常',
+            content: sample.content,
+          }))
+        : [],
+    }
   } catch {
     return undefined
   }
@@ -349,7 +384,7 @@ function selectStyleSamples(structure: WritingInstructionsStructure | undefined,
   return ranked.slice(0, limit).map((item) => item.sample)
 }
 
-function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[], inputBudget: number, userRequest: string) {
+export function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[], inputBudget: number, userRequest: string) {
   const illustrationStyle = resolveProjectIllustrationStyle(workspace.style)
   const chapter = workspace.chapters.find((item) => item.id === workspace.project.activeChapterId) ?? workspace.chapters[0]
   const totalBudget = inputBudget
@@ -767,6 +802,8 @@ export async function generateWritingTurn(
     onWarning('长期创作设定超过核心预算，仅携带了前半部分。请在“长期创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
   }
 
+  const maxOutput = maxOutputForRequest(config, effectiveWindowTokens(config))
+
   const request = {
     url: `${baseUrl}/chat/completions`,
     method: 'POST' as const,
@@ -777,7 +814,7 @@ export async function generateWritingTurn(
       model: config.model,
       stream: true,
       ...(config.manualMaxOutputTokens ?? config.maxOutputTokens
-        ? { max_tokens: config.manualMaxOutputTokens ?? config.maxOutputTokens }
+        ? { max_tokens: maxOutput }
         : {}),
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },

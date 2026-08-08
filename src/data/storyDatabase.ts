@@ -264,6 +264,7 @@ export async function updateWritingInstructions(projectId: string, writingInstru
   if (normalized.length > 50_000) throw new Error('长期创作设定不能超过 50000 个字')
   await storyDatabase.projects.update(projectId, {
     writingInstructions: normalized,
+    writingStructure: '',
     updatedAt: Date.now(),
   })
 }

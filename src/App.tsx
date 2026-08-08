@@ -800,6 +800,7 @@ export default function App() {
         onSaveStructure={async (structureJson) => {
           try {
             await updateWritingStructure(workspace.project.id, structureJson ?? '')
+            await refreshWorkspace(workspace.project.id)
             showToast(structureJson ? '分层结构已保存' : '已恢复为原文携带')
           } catch (error) {
             showToast(error instanceof Error ? error.message : '分层结构保存失败', 'error')

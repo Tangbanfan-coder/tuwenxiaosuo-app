@@ -1,0 +1,184 @@
+import 'fake-indexeddb/auto'
+import { describe, expect, it, beforeEach } from 'vitest'
+import {
+  storyDatabase,
+  updateWritingInstructions,
+  updateWritingStructure,
+  loadProjectWorkspace,
+  listProjects,
+} from '../../data/storyDatabase'
+import { buildProjectContext, parseWritingStructure } from '../writing'
+import type { StoredScene } from '../../data/storyDatabase'
+import type { ProjectWorkspace } from '../../domain/models'
+
+beforeEach(async () => {
+  await Promise.all([
+    storyDatabase.projects.clear(),
+    storyDatabase.scenes.clear(),
+    storyDatabase.chapters.clear(),
+    storyDatabase.messages.clear(),
+  ])
+  await storyDatabase.projects.add({
+    id: 'project-1',
+    title: '测试作品',
+    themeId: 'neutral',
+    autoIllustrate: false,
+    createdAt: 0,
+    updatedAt: 0,
+    lastOpenedAt: 0,
+  })
+})
+
+function makeWorkspace(overrides: Partial<ProjectWorkspace['project']> = {}): ProjectWorkspace {
+  return {
+    project: {
+      id: 'project-1',
+      title: '测试作品',
+      themeId: 'neutral',
+      autoIllustrate: false,
+      createdAt: 0,
+      updatedAt: 0,
+      lastOpenedAt: 0,
+      ...overrides,
+    },
+    messages: [],
+    chapters: [],
+    characters: [],
+    illustrations: [],
+    style: undefined,
+  }
+}
+
+describe('长期创作设定三层结构', () => {
+  it('原文更新后旧结构必须失效', async () => {
+    await updateWritingInstructions('project-1', '原文第一版')
+    await updateWritingStructure('project-1', JSON.stringify({
+      core: '旧核心规则',
+      sections: [],
+      styleSamples: [],
+    }))
+
+    const project = await loadProjectWorkspace('project-1')
+    expect(project?.project.writingStructure).toBeTruthy()
+
+    await updateWritingInstructions('project-1', '原文第二版，改了很多')
+
+    const after = await loadProjectWorkspace('project-1')
+    expect(after?.project.writingStructure).toBeFalsy()
+  })
+
+  it('新结构保存后下一轮立即生效（数据库层）', async () => {
+    await updateWritingInstructions('project-1', '核心设定：第三人称；禁止跳视角。分类：世界历史。')
+    const structureJson = JSON.stringify({
+      core: '每轮必须：第三人称有限视角；禁止跳视角。',
+      sections: [
+        { id: 's1', title: '世界历史', content: '北境曾是被遗忘的王国。', tags: ['北境', '历史'], priority: 5 },
+        { id: 's2', title: '魔法体系', content: '蓝火魔法来自海神。', tags: ['魔法'], priority: 3 },
+        { id: 's3', title: '皇城设定', content: '皇城的礼仪与阴谋。', tags: ['皇城'], priority: 3 },
+        { id: 's4', title: '天界设定', content: '天界的秩序与审判。', tags: ['天界'], priority: 1 },
+      ],
+      styleSamples: [
+        { sceneType: '景物', content: '风从冻土上刮过。' },
+      ],
+    })
+    await updateWritingStructure('project-1', structureJson)
+
+    const project = await loadProjectWorkspace('project-1')
+    const scenes: StoredScene[] = []
+    const context = buildProjectContext(
+      project!,
+      scenes,
+      50_000,
+      '继续写北境的场景',
+    )
+
+    expect(context.context).toContain('第三人称有限视角')
+    expect(context.context).toContain('北境曾是被遗忘的王国')
+    expect(context.context).not.toContain('天界的秩序与审判')
+    expect(context.rulesTruncated).toBe(false)
+  })
+
+  it('损坏或旧版本的结构 JSON 不能导致崩溃', async () => {
+    const withStructure = (structure: string) => makeWorkspace({
+      writingInstructions: '原文设定在这里',
+      writingStructure: structure,
+    })
+    for (const broken of ['not-json', '{"core": 123}', '{"sections": "oops"}']) {
+      expect(() => buildProjectContext(withStructure(broken), [], 50_000, '继续写')).not.toThrow()
+    }
+
+    const fallback = buildProjectContext(withStructure('not-json'), [], 50_000, '继续写')
+    expect(fallback.context).toContain('原文设定在这里')
+    expect(fallback.rulesTruncated).toBe(false)
+    expect(parseWritingStructure(withStructure('not-json').project)).toBeUndefined()
+
+    const partial = buildProjectContext(
+      withStructure('{"core": "可用核心规则", "sections": [{"title": "缺内容的分类"}], "styleSamples": [{"sceneType": "x"}]}'),
+      [],
+      50_000,
+      '继续写',
+    )
+    expect(partial.context).toContain('可用核心规则')
+    const parsed = parseWritingStructure(withStructure('{"core": "c", "sections": [{"title": "无内容"}], "styleSamples": [{"sceneType": "x"}]}').project)
+    expect(parsed?.sections).toHaveLength(0)
+    expect(parsed?.styleSamples).toHaveLength(0)
+  })
+
+  it('核心规则超过预算时截断但标记 rulesTruncated（不静默）', async () => {
+    const hugeCore = '核心规则。'.repeat(3_000)
+    const workspace = makeWorkspace({
+      writingInstructions: hugeCore,
+    })
+    const result = buildProjectContext(workspace, [], 2_000, '继续写')
+    expect(result.rulesTruncated).toBe(true)
+    expect(result.context.length).toBeLessThan(2_000)
+  })
+
+  it('损坏结构存在时不使用其内容，回退原文', async () => {
+    const workspace = makeWorkspace({
+      writingInstructions: '回退原文规则：禁止剧透结局。',
+      writingStructure: 'garbage{{{',
+    })
+    const result = buildProjectContext(workspace, [], 50_000, '继续写')
+    expect(result.context).toContain('禁止剧透结局')
+    expect(result.rulesTruncated).toBe(false)
+  })
+
+  it('结构化分类按当前场景选择，不全部携带', async () => {
+    const workspace = makeWorkspace({
+      writingInstructions: '设定原文',
+      writingStructure: JSON.stringify({
+        core: '核心规则：第三人称。',
+        sections: [
+          { id: 's1', title: '北境设定', content: '北境的冻土与蓝火。', tags: ['北境'], priority: 5 },
+          { id: 's2', title: '皇城设定', content: '皇城的礼仪与阴谋。', tags: ['皇城'], priority: 3 },
+          { id: 's3', title: '魔法体系', content: '蓝火魔法来自海神。', tags: ['魔法'], priority: 3 },
+          { id: 's4', title: '天界设定', content: '天界的秩序。', tags: ['天界'], priority: 1 },
+        ],
+        styleSamples: [],
+      }),
+    })
+    const scenes: StoredScene[] = [{
+      id: 'scene-1',
+      projectId: 'project-1',
+      order: 1,
+      createdAt: 1,
+      notes: {
+        time: undefined, location: '北境', povCharacter: '林昭', charactersPresent: ['林昭'],
+        events: [], stateChanges: [], relationshipChanges: [], knowledgeChanges: [],
+        cluesPlanted: [], cluesResolved: [], unresolvedThreads: [],
+      },
+      excerpt: '',
+    }]
+    const result = buildProjectContext(workspace, scenes, 50_000, '继续写北境的场景')
+    expect(result.context).toContain('北境的冻土与蓝火')
+    expect(result.context).not.toContain('天界的秩序')
+  })
+
+  it('列表刷新后结构立即可见（作品列表→工作区链路）', async () => {
+    await updateWritingInstructions('project-1', '设定')
+    await updateWritingStructure('project-1', JSON.stringify({ core: '新核心', sections: [], styleSamples: [] }))
+    const projects = await listProjects()
+    expect(projects[0]?.writingStructure).toBeTruthy()
+  })
+})
