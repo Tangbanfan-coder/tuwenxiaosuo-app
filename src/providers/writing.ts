@@ -62,7 +62,7 @@ const SYSTEM_PROMPT = `你是一名中文小说协作作者，同时负责给插
     "pov_character": "本场景视角人物",
     "characters_present": ["在场人物"],
     "events": ["发生的关键事件，按顺序"],
-    "state_changes": [{"character": "人物名", "state": "人物当前状态变化，如位置、伤势、目标、情绪"}],
+    "state_changes": [{"character": "人物名", "aspect": "状态方面（位置/伤势/目标/情绪/物品/能力等）", "state": "该方面当前状态"}],
     "relationship_changes": ["人物关系变化，如结盟、决裂、身份揭露"],
     "knowledge_changes": [{"character": "人物名", "now_knows": "该人物此刻新知道的信息"}],
     "clues_planted": ["本轮新埋设的伏笔或悬念"],
@@ -178,7 +178,11 @@ function normalizeSceneNotes(value: RawWritingResult['scene_notes']): SceneNotes
   const stateChanges = Array.isArray(notes.state_changes)
     ? notes.state_changes
       .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-      .map((item) => ({ character: stringValue(item.character), state: stringValue(item.state) }))
+      .map((item) => ({
+        character: stringValue(item.character),
+        aspect: stringValue(item.aspect ?? item.aspects ?? '其他'),
+        state: stringValue(item.state),
+      }))
       .filter((item) => Boolean(item.character && item.state))
     : []
   const knowledgeChanges = Array.isArray(notes.knowledge_changes)
@@ -286,11 +290,12 @@ function modelContextTokens(modelId: string) {
   return UNKNOWN_MODEL_CONTEXT_TOKENS
 }
 
-function inputBudgetCharacters(modelId: string, budget: ContextBudget) {
-  const windowTokens = modelContextTokens(modelId)
+function inputBudgetCharacters(config: ProviderConfig, budget: ContextBudget) {
+  const windowTokens = config.contextLength ?? modelContextTokens(config.model)
   const availableTokens = Math.max(4_000, windowTokens - CONTEXT_OUTPUT_RESERVE_TOKENS - CONTEXT_SAFETY_MARGIN_TOKENS)
   const targetTokens = Math.floor(availableTokens * CONTEXT_BUDGET_RATIOS[budget])
-  return Math.floor(targetTokens * CHARS_PER_TOKEN)
+  const serializationReserve = Math.floor(targetTokens * CHARS_PER_TOKEN * 0.85)
+  return serializationReserve
 }
 
 function normalizeText(value: string) {
@@ -305,19 +310,19 @@ function takeLeading(value: string, maxCharacters: number) {
   return value.length > maxCharacters ? value.slice(0, maxCharacters) : value
 }
 
-function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[], inputBudget: number) {
+function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[], inputBudget: number, userRequest: string) {
   const illustrationStyle = resolveProjectIllustrationStyle(workspace.style)
   const chapter = workspace.chapters.find((item) => item.id === workspace.project.activeChapterId) ?? workspace.chapters[0]
   const totalBudget = inputBudget
 
-  const sections: Array<{ label: string; text: string; weight: number; keepOrder: 'tail' | 'head'; locked?: boolean }> = []
+  const sections: Array<{ label: string; text: string; priority: number; keepOrder: 'tail' | 'head'; locked?: boolean }> = []
 
   const writingInstructions = workspace.project.writingInstructions?.trim()
   const instructionsText = [
     writingInstructions ? `长期创作设定：\n${writingInstructions}` : '',
     `插画画风：${illustrationStyle.label}${illustrationStyle.visualPrompt ? `（${illustrationStyle.visualPrompt}）` : ''}`,
   ].filter(Boolean).join('\n')
-  sections.push({ label: '写作规则', text: instructionsText, weight: 0.08, keepOrder: 'head', locked: true })
+  sections.push({ label: '写作规则', text: instructionsText, priority: 100, keepOrder: 'head', locked: true })
 
   const characters = workspace.characters.map((character) => ({
     name: character.name,
@@ -330,7 +335,7 @@ function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[],
   sections.push({
     label: '角色档案',
     text: JSON.stringify(characters, null, 0),
-    weight: 0.5,
+    priority: 70,
     keepOrder: 'head',
   })
 
@@ -343,16 +348,15 @@ function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[],
     `当前章节：${chapter ? `第${chapter.order}章 ${chapter.title}` : '（尚无章节）'}`,
     chapter?.summary ? `本章提要：${chapter.summary}` : '',
     currentSceneText,
-    chapter?.content ? `最近正文（当前章尾文）：\n${truncateTail(chapter.content, Math.floor(totalBudget * 0.4))}` : '',
+    chapter?.content ? `最近正文（当前章尾文）：\n${truncateTail(chapter.content, Math.floor(totalBudget * 0.35))}` : '',
   ].filter(Boolean).join('\n')
-  sections.push({ label: '当前工作区', text: workspaceText, weight: 0.45, keepOrder: 'head' })
+  sections.push({ label: '当前工作区', text: workspaceText, priority: 90, keepOrder: 'head' })
 
-  sections.push({
-    label: '人物状态、认知、伏笔与时间线',
-    text: buildStructuredMemory(scenes, workspace.characters, totalBudget * 0.25),
-    weight: 0.25,
-    keepOrder: 'head',
-  })
+  const coreMemory = buildCoreMemory(scenes, workspace.characters)
+  if (coreMemory.trim()) sections.push({ label: '核心状态', text: coreMemory, priority: 60, keepOrder: 'head' })
+
+  const timelineText = buildTimeline(scenes)
+  if (timelineText.trim()) sections.push({ label: '时间线', text: timelineText, priority: 40, keepOrder: 'tail' })
 
   const summariesText = workspace.chapters
     .slice()
@@ -362,95 +366,129 @@ function buildProjectContext(workspace: ProjectWorkspace, scenes: StoredScene[],
       return summary ? `第${item.order}章《${item.title}》：${summary}` : `第${item.order}章《${item.title}》（无提要）`
     })
     .join('\n')
-  sections.push({ label: '章节提要', text: summariesText, weight: 0.1, keepOrder: 'tail' })
+  sections.push({ label: '章节提要', text: summariesText, priority: 45, keepOrder: 'tail' })
 
-  const retrievedText = retrieveRelevantScenes(scenes, latestScene, totalBudget * 0.15)
-  if (retrievedText) sections.push({ label: '检索出的相关历史场景', text: retrievedText, weight: 0.15, keepOrder: 'tail' })
+  const retrievedText = retrieveRelevantScenes(scenes, latestScene, userRequest, Math.floor(totalBudget * 0.15))
+  if (retrievedText) sections.push({ label: '检索出的相关历史片段', text: retrievedText, priority: 50, keepOrder: 'tail' })
 
-  const recentMessagesText = buildRecentMessages(workspace, totalBudget * 0.15)
-  if (recentMessagesText) sections.push({ label: '近期对话', text: recentMessagesText, weight: 0.15, keepOrder: 'tail' })
+  const recentMessagesText = buildRecentMessages(workspace, chapter?.id, Math.floor(totalBudget * 0.12))
+  if (recentMessagesText) sections.push({ label: '近期对话', text: recentMessagesText, priority: 35, keepOrder: 'tail' })
 
-  const candidates = sections
+  const lockedLength = sections.reduce((sum, section) => sum + (section.locked ? section.text.length : 0), 0)
+  const flexible = sections
     .filter((section) => !section.locked)
-    .sort((left, right) => left.weight - right.weight)
-  let used = sections.reduce((sum, section) => sum + section.text.length, 0)
-  for (const section of candidates) {
-    if (used <= totalBudget) break
-    const sectionBudget = Math.floor(totalBudget * section.weight)
-    if (section.text.length <= sectionBudget) continue
-    const kept = section.keepOrder === 'head' ? takeLeading(section.text, sectionBudget) : truncateTail(section.text, sectionBudget)
-    used -= section.text.length - kept.length
+    .sort((left, right) => right.priority - left.priority)
+
+  let budgetLeft = Math.max(0, totalBudget - lockedLength)
+  const flexibleTotal = flexible.reduce((sum, section) => sum + section.text.length, 0)
+  for (const section of flexible) {
+    const remainingWeight = flexible.slice(flexible.indexOf(section)).reduce((sum, item) => sum + item.priority, 0)
+    if (budgetLeft <= 0) {
+      section.text = ''
+      continue
+    }
+    const allowance = Math.min(section.text.length, Math.floor(budgetLeft * (section.priority / remainingWeight)))
+    const kept = section.keepOrder === 'head' ? takeLeading(section.text, allowance) : truncateTail(section.text, allowance)
+    budgetLeft -= kept.length
     section.text = kept
   }
 
   return JSON.stringify({
     projectTitle: workspace.project.title,
     currentChapter: chapter ? { order: chapter.order, title: chapter.title } : undefined,
-    chapters: workspace.chapters.map((item) => ({ order: item.order, title: item.title })),
     sections: sections
       .filter((section) => section.text.trim())
       .map((section) => ({ [section.label]: section.text })),
   })
 }
 
-function buildStructuredMemory(scenes: StoredScene[], characters: ProjectWorkspace['characters'], budgetCharacters: number) {
+function buildCoreMemory(scenes: StoredScene[], characters: ProjectWorkspace['characters']) {
   const lines: string[] = []
 
-  const stateByCharacter = new Map<string, string>()
+  const stateByKey = new Map<string, string>()
   const knowledgeByCharacter = new Map<string, string[]>()
-  const clues = new Map<string, 'planted' | 'resolved'>()
-  const timeline: string[] = []
+  const clues = new Map<string, boolean>()
   const relationships: string[] = []
 
   for (const scene of scenes) {
     const notes = scene.notes
-    if (notes.time || notes.location || notes.events.length) {
-      timeline.push(`${notes.time || '某时'}@${notes.location || '某地'}：${notes.events.join('；')}`)
-    }
     for (const change of notes.stateChanges) {
-      if (change.character) stateByCharacter.set(change.character, change.state)
+      if (!change.character) continue
+      stateByKey.set(`${change.character}\u0000${change.aspect}`, change.state)
     }
     for (const change of notes.knowledgeChanges) {
       if (!change.character || !change.nowKnows) continue
+      const key = normalizeText(`${change.character}${change.nowKnows}`)
       const list = knowledgeByCharacter.get(change.character) ?? []
-      list.push(change.nowKnows)
-      knowledgeByCharacter.set(change.character, list)
+      if (!list.some((entry) => normalizeText(`${change.character}${entry}`) === key)) {
+        list.push(change.nowKnows)
+        knowledgeByCharacter.set(change.character, list)
+      }
     }
-    for (const clue of notes.cluesPlanted) if (clue.trim()) clues.set(normalizeText(clue), 'planted')
-    for (const clue of notes.cluesResolved) if (clue.trim()) clues.set(normalizeText(clue), 'resolved')
+    for (const clue of notes.cluesPlanted) if (clue.trim()) clues.set(normalizeText(clue), false)
+    for (const clue of notes.cluesResolved) {
+      const normalized = normalizeText(clue)
+      if (!normalized) continue
+      if (clues.has(normalized)) {
+        clues.set(normalized, true)
+      } else {
+        for (const [planted] of clues) {
+          if (normalized.includes(planted) || planted.includes(normalized)) clues.set(planted, true)
+        }
+      }
+    }
     relationships.push(...notes.relationshipChanges)
   }
 
-  const latestStates = Array.from(stateByCharacter.entries())
-    .filter(([character]) => characters.some((item) => item.name === character))
-    .map(([character, state]) => `${character}：${state}`)
+  const relevantNames = new Set(characters.map((character) => normalizeText(character.name)))
+  const latestStates = Array.from(stateByKey.entries())
+    .filter(([key]) => {
+      const character = key.slice(0, key.indexOf('\u0000'))
+      return relevantNames.has(normalizeText(character))
+        || Array.from(relevantNames).some((name) => normalizeText(character).includes(name) || name.includes(normalizeText(character)))
+    })
+    .map(([key, state]) => `${key.slice(0, key.indexOf('\u0000'))}（${key.slice(key.indexOf('\u0000') + 1)}）：${state}`)
   if (latestStates.length) lines.push(`人物当前状态：\n${latestStates.join('\n')}`)
 
   for (const [character, knowledge] of knowledgeByCharacter) {
-    lines.push(`认知（${character}）：${knowledge.join('；')}`)
+    const recent = knowledge.slice(-5)
+    lines.push(`认知（${character}）：${recent.join('；')}`)
   }
 
   const unresolvedClues = Array.from(clues.entries())
-    .filter(([, status]) => status === 'planted')
+    .filter(([, resolved]) => !resolved)
     .map(([text]) => text)
   if (unresolvedClues.length) lines.push(`未回收伏笔：${unresolvedClues.join('；')}`)
 
   if (relationships.length) lines.push(`关系变化：${relationships.slice(-20).join('；')}`)
 
-  const recentTimeline = timeline.slice(-30)
-  if (recentTimeline.length) lines.push(`时间线（近期）：\n${recentTimeline.join('\n')}`)
-
   return lines.join('\n\n')
 }
 
-function buildRecentMessages(workspace: ProjectWorkspace, budgetCharacters: number) {
+function buildTimeline(scenes: StoredScene[]) {
+  const timeline = scenes
+    .map((scene) => {
+      const notes = scene.notes
+      if (!notes.time && !notes.location && !notes.events.length) return undefined
+      return `${notes.time || '某时'}@${notes.location || '某地'}：${notes.events.join('；')}`
+    })
+    .filter((line): line is string => Boolean(line))
+  return timeline.slice(-30).join('\n')
+}
+
+function buildRecentMessages(workspace: ProjectWorkspace, currentChapterId: string | undefined, budgetCharacters: number) {
   const lines: string[] = []
   let remaining = budgetCharacters
   for (let index = workspace.messages.length - 1; index >= 0; index--) {
     const message = workspace.messages[index]
     if (message.kind === 'notice') continue
+    if (message.kind === 'prose' && message.chapterId === currentChapterId) continue
     const content = message.kind === 'prose' ? message.paragraphs?.join('\n\n') ?? '' : message.text ?? message.title ?? ''
-    if (content.length > remaining && lines.length > 0) break
+    if (!content) continue
+    if (content.length > remaining) {
+      if (lines.length === 0) lines.push(truncateTail(content, remaining))
+      break
+    }
     lines.push(content)
     remaining -= content.length
     if (remaining <= 0) break
@@ -458,7 +496,7 @@ function buildRecentMessages(workspace: ProjectWorkspace, budgetCharacters: numb
   return lines.reverse().join('\n\n')
 }
 
-function retrieveRelevantScenes(scenes: StoredScene[], currentScene: StoredScene | undefined, budgetCharacters: number) {
+function retrieveRelevantScenes(scenes: StoredScene[], currentScene: StoredScene | undefined, userRequest: string, budgetCharacters: number) {
   if (!currentScene || scenes.length <= 1) return ''
   const queryEntities = new Set(
     [
@@ -467,33 +505,49 @@ function retrieveRelevantScenes(scenes: StoredScene[], currentScene: StoredScene
       ...currentScene.notes.charactersPresent,
     ].filter((value): value is string => Boolean(value)).map(normalizeText),
   )
+  const requestKeywords = userRequest
+    .replace(/[^\u4e00-\u9fa5A-Za-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length >= 2)
+  const requestText = normalizeText(userRequest)
+
   const scored = scenes
     .map((scene, index) => {
       const notes = scene.notes
+      const haystack = normalizeText([
+        notes.povCharacter,
+        notes.location,
+        ...notes.charactersPresent,
+        ...notes.events,
+        ...notes.unresolvedThreads,
+      ].join(' '))
       const entityHits = [
         notes.povCharacter,
         notes.location,
         ...notes.charactersPresent,
       ].filter((value): value is string => Boolean(value)).filter((value) => queryEntities.has(normalizeText(value))).length
+      const requestHits = requestText ? requestKeywords.filter((word) => haystack.includes(normalizeText(word))).length : 0
       const timeProximity = Math.max(0, 8 - Math.abs(scenes.length - 1 - index))
       const unresolvedBias = notes.unresolvedThreads.length ? 1 : 0
-      return { scene, score: entityHits * 4 + timeProximity * 2 + unresolvedBias }
+      return { scene, score: entityHits * 4 + requestHits * 3 + timeProximity * 2 + unresolvedBias }
     })
     .filter((item) => item.scene !== currentScene && item.score > 0)
     .sort((left, right) => right.score - left.score)
-    .slice(0, 6)
+    .slice(0, 5)
 
   const lines: string[] = []
   let remaining = budgetCharacters
   for (const { scene } of scored) {
     const notes = scene.notes
-    const text = `${notes.time || '某时'}@${notes.location || '某地'}（${notes.povCharacter || '未知视角'}）：${notes.events.join('；')}`
+    const summary = `${notes.time || '某时'}@${notes.location || '某地'}（${notes.povCharacter || '未知视角'}）：${notes.events.join('；')}`
       + (notes.unresolvedThreads.length ? `｜未解决：${notes.unresolvedThreads.join('；')}` : '')
+    const excerpt = scene.excerpt ? `\n原文节选：${takeLeading(scene.excerpt, Math.floor(budgetCharacters * 0.5))}` : ''
+    const text = `${summary}${excerpt}`
     if (text.length > remaining && lines.length > 0) break
     lines.push(text)
     remaining -= text.length
   }
-  return lines.join('\n')
+  return lines.join('\n\n')
 }
 
 function contentToString(content: unknown) {
@@ -527,9 +581,10 @@ export async function generateWritingTurn(
     body: JSON.stringify({
       model: config.model,
       stream: true,
+      ...(config.maxOutputTokens ? { max_tokens: config.maxOutputTokens } : {}),
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'system', content: `当前作品资料：${buildProjectContext(workspace, scenes, inputBudgetCharacters(config.model, workspace.project.contextBudget ?? 'standard'))}` },
+        { role: 'system', content: `当前作品资料：${buildProjectContext(workspace, scenes, inputBudgetCharacters(config, workspace.project.contextBudget ?? 'standard'), userRequest)}` },
         { role: 'user', content: userRequest },
       ],
     }),

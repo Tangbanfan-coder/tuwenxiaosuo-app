@@ -54,6 +54,7 @@ export interface StoredScene {
   order: number
   createdAt: number
   notes: SceneNotes
+  excerpt: string
 }
 
 export const storyDatabase = new StoryDatabase()
@@ -189,7 +190,7 @@ export async function createCharacterDraft(projectId: string, name: string, role
 export async function deleteProject(projectId: string) {
   await storyDatabase.transaction(
     'rw',
-    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.characters, storyDatabase.illustrations, storyDatabase.styles],
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.characters, storyDatabase.illustrations, storyDatabase.styles, storyDatabase.scenes],
     async () => {
       await Promise.all([
         storyDatabase.messages.where('projectId').equals(projectId).delete(),
@@ -197,6 +198,7 @@ export async function deleteProject(projectId: string) {
         storyDatabase.characters.where('projectId').equals(projectId).delete(),
         storyDatabase.illustrations.where('projectId').equals(projectId).delete(),
         storyDatabase.styles.where('projectId').equals(projectId).delete(),
+        storyDatabase.scenes.where('projectId').equals(projectId).delete(),
       ])
       await storyDatabase.projects.delete(projectId)
     },
@@ -377,6 +379,29 @@ export async function completeWritingTurn(
           order: Date.now(),
           createdAt: now,
           notes: result.sceneNotes,
+          excerpt: result.paragraphs.join('\n\n').slice(-6_000),
+        })
+      } else {
+        await storyDatabase.scenes.add({
+          id: createId('scene'),
+          projectId,
+          chapterId: targetChapter.id,
+          order: Date.now(),
+          createdAt: now,
+          notes: {
+            time: undefined,
+            location: undefined,
+            povCharacter: undefined,
+            charactersPresent: [],
+            events: [],
+            stateChanges: [],
+            relationshipChanges: [],
+            knowledgeChanges: [],
+            cluesPlanted: [],
+            cluesResolved: [],
+            unresolvedThreads: [],
+          },
+          excerpt: result.paragraphs.join('\n\n').slice(-6_000),
         })
       }
 

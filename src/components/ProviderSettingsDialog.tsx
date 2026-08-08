@@ -456,7 +456,11 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
               )}
               <div className="model-list" role="listbox" aria-label="模型列表">
                 {visibleModels.map((model) => (
-                  <button key={model.id} type="button" role="option" aria-selected={current.model === model.id} onClick={() => updateCurrent({ model: model.id })}>
+                  <button key={model.id} type="button" role="option" aria-selected={current.model === model.id} onClick={() => updateCurrent({
+                    model: model.id,
+                    contextLength: model.contextLength ?? current.contextLength,
+                    maxOutputTokens: model.maxOutputTokens ?? current.maxOutputTokens,
+                  })}>
                     <span><strong>{model.id}</strong>{model.ownedBy && <small>{model.ownedBy}</small>}</span>
                     {current.model === model.id && <Check size={17} />}
                   </button>

@@ -1,7 +1,18 @@
 import type { HttpTransport, ModelListResult, ModelSummary, ProviderConfig } from './types'
 
 interface ModelsResponse {
-  data?: Array<{ id?: unknown; owned_by?: unknown }>
+  data?: Array<{
+    id?: unknown
+    owned_by?: unknown
+    context_length?: unknown
+    inputTokenLimit?: unknown
+    outputTokenLimit?: unknown
+    max_tokens?: unknown
+  }>
+}
+
+function positiveNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined
 }
 
 export function normalizeBaseUrl(baseUrl: string) {
@@ -44,10 +55,14 @@ export async function listOpenAiModels(
       })
       if (!Array.isArray(response.data.data)) throw new Error('接口没有返回 OpenAI 兼容的模型列表')
       const models: ModelSummary[] = response.data.data
-        .filter((model): model is { id: string; owned_by?: string } => typeof model.id === 'string')
+        .filter((model): model is Record<string, unknown> & { id: string } => typeof model.id === 'string')
         .map((model) => ({
           id: model.id,
           ownedBy: typeof model.owned_by === 'string' ? model.owned_by : undefined,
+          contextLength: positiveNumber(model.context_length)
+            ?? positiveNumber(model.inputTokenLimit)
+            ?? positiveNumber(model.max_tokens),
+          maxOutputTokens: positiveNumber(model.outputTokenLimit),
         }))
       return { models, baseUrl: candidate }
     } catch (error) {

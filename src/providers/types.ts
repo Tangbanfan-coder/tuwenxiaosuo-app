@@ -10,6 +10,8 @@ export interface ProviderConfig {
   model: string
   protocol: 'openai-compatible'
   secretRef: SecretRef
+  contextLength?: number
+  maxOutputTokens?: number
 }
 
 export interface ProviderSettings {
@@ -22,6 +24,8 @@ export interface ProviderSettings {
 export interface ModelSummary {
   id: string
   ownedBy?: string
+  contextLength?: number
+  maxOutputTokens?: number
 }
 
 export interface ModelListResult {

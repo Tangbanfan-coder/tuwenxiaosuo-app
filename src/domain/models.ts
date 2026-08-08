@@ -56,7 +56,7 @@ export interface SceneNotes {
   povCharacter?: string
   charactersPresent: string[]
   events: string[]
-  stateChanges: Array<{ character: string; state: string }>
+  stateChanges: Array<{ character: string; aspect: string; state: string }>
   relationshipChanges: string[]
   knowledgeChanges: Array<{ character: string; nowKnows: string }>
   cluesPlanted: string[]
