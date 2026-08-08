@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Brush, Check, ChevronDown, ChevronRight, FileText, Image, Moon, Palette, ScrollText, Sun, X } from 'lucide-react'
 import { ILLUSTRATION_STYLE_PRESETS, getIllustrationStylePreset } from '../domain/illustrationStyles'
 import { THEME_PRESETS, getThemePreset } from '../domain/themes'
-import type { AppearanceMode, IllustrationStylePresetId, ThemePresetId } from '../domain/models'
+import type { AppearanceMode, ContextBudget, IllustrationStylePresetId, ThemePresetId } from '../domain/models'
 import type { ProviderConfig, ProviderSettings, ProviderSlot } from '../providers/types'
 import { usePresence } from '../hooks/usePresence'
 
@@ -17,6 +17,8 @@ interface Props {
   onIllustrationStyleChange: (styleId: IllustrationStylePresetId, customPrompt?: string) => Promise<void>
   activeWritingInstructions: string
   onEditWritingInstructions: () => void
+  contextBudget: ContextBudget
+  onContextBudgetChange: (budget: ContextBudget) => Promise<void>
   providerSettings: ProviderSettings
   onOpenProviderSettings: (slot: ProviderSlot) => void
   appearanceMode: AppearanceMode
@@ -40,6 +42,8 @@ export default function SettingsDrawer({
   onIllustrationStyleChange,
   activeWritingInstructions,
   onEditWritingInstructions,
+  contextBudget,
+  onContextBudgetChange,
   providerSettings,
   onOpenProviderSettings,
   appearanceMode,
@@ -131,8 +135,28 @@ export default function SettingsDrawer({
             </div>
             <p className="settings-help">每轮写作都会携带，本轮明确要求可以临时覆盖。</p>
 
-            <div className="control-heading settings-subheading"><Palette size={17} /><span>作品氛围</span></div>
-            <div ref={themeSelectRef} className="theme-select">
+            <div className="control-heading settings-subheading"><ScrollText size={17} /><span>写作上下文</span></div>
+            <div className="context-budget-choice" role="radiogroup" aria-label="写作上下文长度">
+              {([
+                ['standard', '标准', '约 5 万字'],
+                ['long', '长', '约 12 万字'],
+                ['full', '完整', '不截断'],
+              ] as const).map(([value, label, hint]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={contextBudget === value}
+                  onClick={() => void onContextBudgetChange(value)}
+                >
+                  {label}
+                  <span>{hint}</span>
+                </button>
+              ))}
+            </div>
+            <p className="settings-help">每轮会携带近期对话和当前章尾文。越长越不易忘记旧剧情，但更费 token。</p>
+
+            <div className="control-heading settings-subheading"><Palette size={17} /><span>作品氛围</span></div>            <div ref={themeSelectRef} className="theme-select">
               <button
                 className="theme-select-trigger"
                 type="button"

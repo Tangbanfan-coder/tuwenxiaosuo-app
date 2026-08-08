@@ -9,7 +9,15 @@ export interface StoredImageSource {
 
 const IMAGE_SAVE_TIMEOUT_MS = 120_000
 const IMAGE_VALIDATION_TIMEOUT_MS = 10_000
-const IMAGE_EXTENSIONS = ['png', 'jpg', 'webp', 'gif'] as const
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'webp', 'gif', 'heic', 'avif'] as const
+
+type ImageFormat = typeof IMAGE_EXTENSIONS[number]
+
+const BMFF_BRANDS: Record<string, ImageFormat> = {
+  heic: 'heic', heix: 'heic', heim: 'heic', heis: 'heic', hevc: 'heic', hevx: 'heic',
+  mif1: 'heic', msf1: 'heic',
+  avif: 'avif', avis: 'avif',
+}
 
 function safePathSegment(value: string) {
   return value.replace(/[^a-zA-Z0-9_-]/g, '_')
@@ -53,22 +61,13 @@ function blobToDataUrl(blob: Blob) {
 }
 
 function extensionForMime(mimeType: string) {
-  if (mimeType.includes('jpeg')) return 'jpg'
+  if (mimeType.includes('jpeg') || mimeType.includes('jpg')) return 'jpg'
   if (mimeType.includes('webp')) return 'webp'
   if (mimeType.includes('gif')) return 'gif'
-  return 'png'
-}
-
-function extensionForSource(source: string) {
-  try {
-    const pathname = new URL(source).pathname.toLocaleLowerCase()
-    if (pathname.endsWith('.jpeg') || pathname.endsWith('.jpg')) return 'jpg'
-    if (pathname.endsWith('.webp')) return 'webp'
-    if (pathname.endsWith('.gif')) return 'gif'
-  } catch {
-    // Temporary image URLs do not always have a conventional filename.
-  }
-  return 'png'
+  if (mimeType.includes('heic') || mimeType.includes('heif')) return 'heic'
+  if (mimeType.includes('avif')) return 'avif'
+  if (mimeType.includes('png')) return 'png'
+  return undefined
 }
 
 function decodedImageBytes(base64: string) {
@@ -91,24 +90,41 @@ function bytesEndWith(bytes: Uint8Array, signature: number[]) {
   return signature.every((value, index) => bytes[offset + index] === value)
 }
 
-function hasCompleteImageBytes(base64: string, extension: string) {
-  const bytes = decodedImageBytes(base64)
-  if (!bytes || bytes.length < 12) return false
-  if (extension === 'png') return bytesStartWith(bytes, [137, 80, 78, 71, 13, 10, 26, 10]) && bytesEndWith(bytes, [73, 69, 78, 68, 174, 66, 96, 130])
-  if (extension === 'jpg') return bytesStartWith(bytes, [255, 216, 255]) && bytesEndWith(bytes, [255, 217])
-  if (extension === 'webp') return bytesStartWith(bytes, [82, 73, 70, 70]) && bytesStartWith(bytes.slice(8), [87, 69, 66, 80])
-  if (extension === 'gif') return (bytesStartWith(bytes, [71, 73, 70, 56, 55, 97]) || bytesStartWith(bytes, [71, 73, 70, 56, 57, 97])) && bytesEndWith(bytes, [59])
-  return false
+function detectImageFormat(bytes: Uint8Array): ImageFormat | undefined {
+  if (!bytes || bytes.length < 12) return undefined
+  if (bytesStartWith(bytes, [137, 80, 78, 71, 13, 10, 26, 10])) return 'png'
+  if (bytesStartWith(bytes, [255, 216, 255])) return 'jpg'
+  if (bytesStartWith(bytes, [71, 73, 70, 56])) return 'gif'
+  if (bytesStartWith(bytes, [82, 73, 70, 70]) && bytesStartWith(bytes.slice(8), [87, 69, 66, 80])) return 'webp'
+  const readAscii = (offset: number, length: number) => {
+    let value = ''
+    for (let index = 0; index < length; index++) value += String.fromCharCode(bytes[offset + index] ?? 0)
+    return value
+  }
+  if (readAscii(4, 4) !== 'ftyp') return undefined
+  const brand = BMFF_BRANDS[readAscii(8, 4)] ?? (bytesStartWith(bytes, [0, 0, 0, 1]) ? BMFF_BRANDS[readAscii(20, 4)] : undefined)
+  return brand
 }
 
-async function persistedImageIsComplete(path: string, extension: string) {
+function completeImageFormat(base64: string): ImageFormat | undefined {
+  const bytes = decodedImageBytes(base64)
+  if (!bytes || bytes.length < 12) return undefined
+  const format = detectImageFormat(bytes)
+  if (!format) return undefined
+  if (format === 'png' && !bytesEndWith(bytes, [73, 69, 78, 68, 174, 66, 96, 130])) return undefined
+  if (format === 'jpg' && !bytesEndWith(bytes, [255, 217])) return undefined
+  if (format === 'gif' && !bytesEndWith(bytes, [59])) return undefined
+  return format
+}
+
+async function persistedImageIsComplete(path: string) {
   try {
     const result = await withTimeout(
       Filesystem.readFile({ path, directory: Directory.Data }),
       IMAGE_VALIDATION_TIMEOUT_MS,
       '校验图片文件超时',
     )
-    return typeof result.data === 'string' && hasCompleteImageBytes(result.data, extension)
+    return typeof result.data === 'string' && Boolean(completeImageFormat(result.data))
   } catch {
     return false
   }
@@ -123,7 +139,7 @@ export async function recoverPersistedImageAsset(projectId: string, assetId: str
       const stat = await Filesystem.stat({ path, directory: Directory.Data })
       const modifiedAt = Math.max(stat.mtime || 0, stat.ctime || 0)
       if (stat.type !== 'file' || stat.size <= 0 || modifiedAt + 5_000 < minModifiedAt) continue
-      if (!(await persistedImageIsComplete(path, extension))) continue
+      if (!(await persistedImageIsComplete(path))) continue
       const localUri = stat.uri || (await Filesystem.getUri({ path, directory: Directory.Data })).uri
       return { imageUrl: '', localUri }
     } catch {
@@ -150,27 +166,41 @@ export async function persistImageAsset(source: string, projectId: string, asset
   }
 
   if (!source.startsWith('data:')) {
-    const path = imagePathFor(projectId, assetId, extensionForSource(source))
+    const temporaryPath = imagePathFor(projectId, assetId, 'tmp')
     const saveStartedAt = Date.now()
     try {
       // Native download runs outside the WebView, so providers do not need to
       // expose temporary image URLs to the app's CORS origin.
-      const result = await withTimeout(
+      await withTimeout(
         Filesystem.downloadFile({
           url: source,
-          path,
+          path: temporaryPath,
           directory: Directory.Data,
           recursive: true,
         }),
         IMAGE_SAVE_TIMEOUT_MS,
         '保存图片超过 120 秒仍未完成',
       )
-      const localUri = result.path || (await Filesystem.getUri({ path, directory: Directory.Data })).uri
-      if (!(await persistedImageIsComplete(path, extensionForSource(source)))) {
-        throw new Error('图片文件不完整')
+      const stored = await Filesystem.readFile({ path: temporaryPath, directory: Directory.Data })
+      const format = typeof stored.data === 'string' ? completeImageFormat(stored.data) : undefined
+      if (!format) throw new Error('无法识别图片格式')
+      const path = imagePathFor(projectId, assetId, format)
+      if (temporaryPath !== path) {
+        try {
+          await Filesystem.deleteFile({ path, directory: Directory.Data })
+        } catch {
+          // No previous file at the target path.
+        }
+        await Filesystem.rename({ from: temporaryPath, to: path, directory: Directory.Data })
       }
+      const localUri = (await Filesystem.getUri({ path, directory: Directory.Data })).uri
       return { imageUrl: source, localUri }
     } catch (error) {
+      try {
+        await Filesystem.deleteFile({ path: temporaryPath, directory: Directory.Data })
+      } catch {
+        // Temporary file already moved or removed.
+      }
       const recovered = await recoverPersistedImageAsset(projectId, assetId, saveStartedAt)
       if (recovered?.localUri) return { imageUrl: source, localUri: recovered.localUri }
       const detail = error instanceof Error && error.message ? `（${error.message}）` : ''
@@ -181,8 +211,9 @@ export async function persistImageAsset(source: string, projectId: string, asset
   const dataUrl = source
 
   const { mimeType, base64 } = dataUrlParts(dataUrl)
-  const extension = extensionForMime(mimeType)
-  if (!hasCompleteImageBytes(base64, extension)) throw new Error('图片数据不完整')
+  const detected = completeImageFormat(base64)
+  const extension = detected ?? extensionForMime(mimeType)
+  if (!extension) throw new Error('图片数据不完整，无法识别格式')
   const path = imagePathFor(projectId, assetId, extension)
   const saveStartedAt = Date.now()
   try {
@@ -196,7 +227,7 @@ export async function persistImageAsset(source: string, projectId: string, asset
       IMAGE_SAVE_TIMEOUT_MS,
       '保存图片超过 120 秒仍未完成',
     )
-    if (!(await persistedImageIsComplete(path, extension))) throw new Error('图片文件不完整')
+    if (detected && !(await persistedImageIsComplete(path))) throw new Error('图片文件不完整')
     return { imageUrl: source, localUri: result.uri }
   } catch (error) {
     const recovered = await recoverPersistedImageAsset(projectId, assetId, saveStartedAt)
@@ -234,10 +265,9 @@ function safeSavedFileName(title: string) {
 }
 
 export async function saveImageToDevice(source: string, localUri: string | undefined, title: string): Promise<void> {
-  const extension = (localUri && extensionFromPath(localUri)) || extensionForSource(source)
-  const fileName = `叙影-${safeSavedFileName(title)}.${extension}`
-
   if (Capacitor.isNativePlatform() && localUri) {
+    const extension = extensionFromPath(localUri) ?? 'png'
+    const fileName = `叙影-${safeSavedFileName(title)}.${extension}`
     await FileSharer.save({
       path: localUri,
       filename: fileName,
@@ -249,7 +279,10 @@ export async function saveImageToDevice(source: string, localUri: string | undef
 
   const response = await fetch(source)
   if (!response.ok) throw new Error('无法读取图片数据')
-  const dataUrl = await blobToDataUrl(await response.blob())
+  const bytes = new Uint8Array(await (await response.blob()).arrayBuffer())
+  const extension = detectImageFormat(bytes) ?? 'png'
+  const fileName = `叙影-${safeSavedFileName(title)}.${extension}`
+  const dataUrl = await blobToDataUrl(new Blob([bytes]))
   await FileSharer.save({
     base64Data: dataUrl,
     filename: fileName,

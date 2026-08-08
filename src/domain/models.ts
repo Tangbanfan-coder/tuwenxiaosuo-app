@@ -2,6 +2,7 @@ export type ThemePresetId = 'neutral' | 'warm' | 'rainy-mystery' | 'dark-horror'
 export type AppearanceMode = 'dark' | 'light'
 export type IllustrationStylePresetId = 'unconstrained' | 'realistic-cinematic' | 'anime' | 'manga' | 'watercolor' | 'oil-painting' | 'pixel-art' | 'custom'
 export type ReferenceStyleMode = 'project' | 'reference'
+export type ContextBudget = 'standard' | 'long' | 'full'
 
 export interface StoryProject {
   id: string
@@ -10,6 +11,7 @@ export interface StoryProject {
   activeChapterId?: string
   autoIllustrate: boolean
   writingInstructions?: string
+  contextBudget?: ContextBudget
   createdAt: number
   updatedAt: number
   lastOpenedAt: number

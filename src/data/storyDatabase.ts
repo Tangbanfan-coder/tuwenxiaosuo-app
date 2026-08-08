@@ -2,6 +2,7 @@ import Dexie, { type Table } from 'dexie'
 import type {
   Chapter,
   CharacterAsset,
+  ContextBudget,
   ConversationMessage,
   IllustrationStylePresetId,
   IllustrationAsset,
@@ -238,9 +239,16 @@ export async function updateAutoIllustrate(projectId: string, autoIllustrate: bo
 
 export async function updateWritingInstructions(projectId: string, writingInstructions: string) {
   const normalized = writingInstructions.trim()
-  if (normalized.length > 4000) throw new Error('长期创作设定不能超过 4000 个字')
+  if (normalized.length > 50_000) throw new Error('长期创作设定不能超过 50000 个字')
   await storyDatabase.projects.update(projectId, {
     writingInstructions: normalized,
+    updatedAt: Date.now(),
+  })
+}
+
+export async function updateContextBudget(projectId: string, contextBudget: ContextBudget) {
+  await storyDatabase.projects.update(projectId, {
+    contextBudget,
     updatedAt: Date.now(),
   })
 }

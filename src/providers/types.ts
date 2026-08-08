@@ -45,4 +45,5 @@ export interface TransportResponse<T> {
 
 export interface HttpTransport {
   request<T>(request: TransportRequest): Promise<TransportResponse<T>>
+  stream(request: TransportRequest, onDelta: (delta: string) => void): Promise<string>
 }

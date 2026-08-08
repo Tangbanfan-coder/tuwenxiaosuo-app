@@ -1,4 +1,4 @@
-import type { ProjectWorkspace, VisualPlan, WritingCharacterPlan, WritingTurnResult } from '../domain/models'
+import type { ContextBudget, ProjectWorkspace, VisualPlan, WritingCharacterPlan, WritingTurnResult } from '../domain/models'
 import { resolveProjectIllustrationStyle } from '../domain/illustrationStyles'
 import type { HttpTransport, ProviderConfig } from './types'
 import { normalizeBaseUrl } from './openAiCompatible'
@@ -107,26 +107,60 @@ function extractJson(content: string) {
   return JSON.parse(trimmed.slice(start, end + 1)) as RawWritingResult
 }
 
+function stripJsonFragments(content: string) {
+  let withoutCodeBlocks = content.replace(/```(?:json)?\s*[\s\S]*?```/gi, ' ')
+  let output = ''
+  let depth = 0
+  let inString = false
+  let escape = false
+  for (const character of withoutCodeBlocks) {
+    if (depth === 0) {
+      if (!inString && character === '{') {
+        depth = 1
+        output += ' '
+        continue
+      }
+      output += character
+    } else if (inString) {
+      if (escape) escape = false
+      else if (character === '\\') escape = true
+      else if (character === '"') inString = false
+    } else if (character === '"') {
+      inString = true
+    } else if (character === '{') {
+      depth++
+    } else if (character === '}') {
+      depth--
+    }
+  }
+  return output
+}
+
 export function parseWritingResult(content: string): WritingTurnResult {
+  let parsed: RawWritingResult | undefined
   try {
-    const parsed = extractJson(content)
-    const paragraphs = stringArray(parsed.prose?.paragraphs)
-    if (!paragraphs.length) throw new Error('结构化结果中没有正文')
+    const candidate = extractJson(content)
+    if (stringArray(candidate.prose?.paragraphs).length) {
+      parsed = candidate
+    }
+  } catch {
+    // Fall through to plain-text handling.
+  }
+  if (parsed) {
     return {
       assistantNote: stringValue(parsed.assistant_note) || '正文已完成，并整理了本轮视觉计划。',
       chapterAction: parsed.chapter_action === 'new' ? 'new' : 'continue',
       chapterTitle: stringValue(parsed.prose?.chapter_title) || undefined,
-      paragraphs,
+      paragraphs: stringArray(parsed.prose?.paragraphs),
       visualPlan: normalizeVisualPlan(parsed.visual_plan),
     }
-  } catch (error) {
-    const paragraphs = content.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean)
-    if (!paragraphs.length) throw error
-    return {
-      assistantNote: '模型返回了普通文本，已作为正文保存；本轮没有自动创建视觉计划。',
-      chapterAction: 'continue',
-      paragraphs,
-    }
+  }
+  const paragraphs = stripJsonFragments(content).split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean)
+  if (!paragraphs.length) throw new Error('模型没有返回可解析的写作结果')
+  return {
+    assistantNote: '模型返回了普通文本，已作为正文保存；本轮没有自动创建视觉计划。',
+    chapterAction: 'continue',
+    paragraphs,
   }
 }
 
@@ -145,7 +179,17 @@ export function explicitlyRequestsNewChapter(userRequest: string) {
   return explicitNewChapterPatterns.some((pattern) => pattern.test(normalized))
 }
 
-function buildProjectContext(workspace: ProjectWorkspace) {
+const CONTEXT_BUDGETS: Record<ContextBudget, number | undefined> = {
+  standard: 50_000,
+  long: 120_000,
+  full: undefined,
+}
+
+function truncateTail(value: string, maxCharacters: number | undefined) {
+  return maxCharacters !== undefined && value.length > maxCharacters ? value.slice(-maxCharacters) : value
+}
+
+function buildProjectContext(workspace: ProjectWorkspace, budget: ContextBudget = 'standard') {
   const illustrationStyle = resolveProjectIllustrationStyle(workspace.style)
   const chapter = workspace.chapters.find((item) => item.id === workspace.project.activeChapterId) ?? workspace.chapters[0]
   const characters = workspace.characters.map((character) => ({
@@ -156,17 +200,40 @@ function buildProjectContext(workspace: ProjectWorkspace) {
     wardrobe: character.appearance.wardrobe,
     confirmed: character.status === 'confirmed',
   }))
-  const recentMessages = workspace.messages.slice(-12).map((message) => {
-    if (message.kind === 'prose') return { kind: message.kind, content: message.paragraphs?.join('\n\n') }
-    return { kind: message.kind, content: message.text ?? message.title }
-  })
+
+  const totalBudget = CONTEXT_BUDGETS[budget]
+  const chapterBudget = totalBudget === undefined ? undefined : Math.floor(totalBudget * 0.6)
+  const messagesBudget = totalBudget === undefined ? undefined : totalBudget - (chapterBudget ?? 0)
+
+  const chapterTail = chapter?.content ?? ''
+  const includedChapterTail = truncateTail(chapterTail, chapterBudget)
+
+  const recentMessages: Array<{ kind: string; content: string }> = []
+  if (messagesBudget === undefined) {
+    for (const message of workspace.messages) {
+      if (message.kind === 'prose') recentMessages.push({ kind: message.kind, content: message.paragraphs?.join('\n\n') ?? '' })
+      else recentMessages.push({ kind: message.kind, content: message.text ?? message.title ?? '' })
+    }
+  } else {
+    let remaining = messagesBudget
+    for (let index = workspace.messages.length - 1; index >= 0; index--) {
+      const message = workspace.messages[index]
+      if (message.kind === 'notice') continue
+      const content = message.kind === 'prose' ? message.paragraphs?.join('\n\n') ?? '' : message.text ?? message.title ?? ''
+      if (content.length > remaining && recentMessages.length > 0) break
+      recentMessages.push({ kind: message.kind, content })
+      remaining -= content.length
+      if (remaining <= 0) break
+    }
+    recentMessages.reverse()
+  }
 
   return JSON.stringify({
     projectTitle: workspace.project.title,
     writingInstructions: workspace.project.writingInstructions?.trim() || undefined,
     currentChapter: chapter ? { order: chapter.order, title: chapter.title } : undefined,
     chapters: workspace.chapters.map((item) => ({ order: item.order, title: item.title })),
-    existingChapter: chapter?.content.slice(-12_000),
+    existingChapter: includedChapterTail || undefined,
     characters,
     projectStyle: {
       name: illustrationStyle.label,
@@ -190,28 +257,37 @@ export async function generateWritingTurn(
   userRequest: string,
   config: ProviderConfig,
   transport: HttpTransport,
+  onDelta?: (delta: string) => void,
 ) {
   const baseUrl = normalizeBaseUrl(config.baseUrl)
   if (!baseUrl) throw new Error('请先配置文本模型的 API URL')
   if (!config.model.trim()) throw new Error('请先选择文本模型')
 
-  const response = await transport.request<ChatCompletionResponse>({
+  const request = {
     url: `${baseUrl}/chat/completions`,
-    method: 'POST',
+    method: 'POST' as const,
     headers: { 'Content-Type': 'application/json' },
-    auth: { kind: 'bearer', secretRef: config.secretRef },
+    auth: { kind: 'bearer' as const, secretRef: config.secretRef },
     timeoutMs: 120_000,
     body: JSON.stringify({
       model: config.model,
+      stream: true,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'system', content: `当前作品资料：${buildProjectContext(workspace)}` },
+        { role: 'system', content: `当前作品资料：${buildProjectContext(workspace, workspace.project.contextBudget ?? 'standard')}` },
         { role: 'user', content: userRequest },
       ],
     }),
-  })
+  }
 
-  const content = contentToString(response.data.choices?.[0]?.message?.content)
-  if (!content) throw new Error('文本模型没有返回内容')
+  let content: string
+  if (onDelta) {
+    content = await transport.stream(request, onDelta)
+  } else {
+    const response = await transport.request<ChatCompletionResponse>(request)
+    content = contentToString(response.data.choices?.[0]?.message?.content)
+  }
+
+  if (!content.trim()) throw new Error('文本模型没有返回内容')
   return parseWritingResult(content)
 }

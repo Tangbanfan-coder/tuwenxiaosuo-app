@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BookOpen,
   Check,
@@ -48,16 +48,18 @@ import {
   setIllustrationReady,
   updateAutoIllustrate,
   updateCharacterReferenceStyleMode,
+  updateContextBudget,
   updateIllustrationStyle,
   updateProjectTheme,
   updateWritingInstructions,
 } from './data/storyDatabase'
 import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
-import type { AppearanceMode, CharacterAsset, ConversationMessage, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, StoryProject, ThemePresetId } from './domain/models'
+import type { AppearanceMode, CharacterAsset, ContextBudget, ConversationMessage, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, StoryProject, ThemePresetId } from './domain/models'
 import { browserTransport } from './providers/browserTransport'
 import { loadProviderSettings, saveProviderSettings } from './providers/config'
 import { persistImageAsset, recoverPersistedImageAsset, resolveImageSource, saveImageToDevice } from './providers/imageAssetStore'
 import { usePresence } from './hooks/usePresence'
+import ConfirmDialog from './components/ConfirmDialog'
 import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage } from './providers/images'
 import { secretStore } from './providers/secretStore'
 import type { ProviderSettings, ProviderSlot } from './providers/types'
@@ -147,12 +149,24 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSlot, setSettingsSlot] = useState<ProviderSlot>('text')
   const [returnToSettingsDrawer, setReturnToSettingsDrawer] = useState(false)
-  const [toastMessage, setToastMessage] = useState('')
+  const [toast, setToast] = useState<{ text: string; kind: 'success' | 'error' }>()
   const [providerSettings, setProviderSettings] = useState<ProviderSettings>(() => loadProviderSettings())
   const [imageProviderReady, setImageProviderReady] = useState(false)
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() => loadAppearanceMode())
   const [visibleChapterId, setVisibleChapterId] = useState<string>()
   const [lightboxImage, setLightboxImage] = useState<{ source: string; title: string; alt: string; localUri?: string }>()
+  const [streamingText, setStreamingText] = useState('')
+  const [confirmState, setConfirmState] = useState<{
+    title: string
+    message: string
+    confirmLabel?: string
+    danger?: boolean
+    onConfirm: () => void
+  }>()
+
+  const showToast = useCallback((text: string, kind: 'success' | 'error' = 'success') => {
+    setToast({ text, kind })
+  }, [])
 
   const syncVisibleChapterFromScroll = useCallback(() => {
     const timeline = timelineRef.current
@@ -191,9 +205,9 @@ export default function App() {
         const availableProjects = await listProjects()
         if (cancelled) return
         if (invalidLegacyImages) {
-          setToastMessage(`发现 ${invalidLegacyImages} 张不完整图片，请手动重新生成`)
+          showToast(`发现 ${invalidLegacyImages} 张不完整图片，请手动重新生成`)
         } else if (recovery.recoveredCount || recovery.failedCount) {
-          setToastMessage(`已恢复 ${recovery.recoveredCount} 个图片任务${recovery.failedCount ? `，${recovery.failedCount} 个任务需要手动重试` : ''}`)
+          showToast(`已恢复 ${recovery.recoveredCount} 个图片任务${recovery.failedCount ? `，${recovery.failedCount} 个任务需要手动重试` : ''}`)
         }
         setProjects(availableProjects)
         const savedProjectId = getActiveProjectId()
@@ -221,7 +235,7 @@ export default function App() {
       window.requestAnimationFrame(syncVisibleChapterFromScroll)
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [booting, workspace?.project.id, workspace?.messages.length, syncVisibleChapterFromScroll])
+  }, [booting, workspace?.project.id, workspace?.messages.length, streamingText, syncVisibleChapterFromScroll])
 
   useEffect(() => {
     const defaultChapterId = workspace?.project.activeChapterId ?? workspace?.chapters[0]?.id
@@ -229,10 +243,10 @@ export default function App() {
   }, [workspace?.project.id])
 
   useEffect(() => {
-    if (!toastMessage) return
-    const timeout = window.setTimeout(() => setToastMessage(''), 2600)
+    if (!toast) return
+    const timeout = window.setTimeout(() => setToast(undefined), 2600)
     return () => window.clearTimeout(timeout)
-  }, [toastMessage])
+  }, [toast])
 
   useEffect(() => {
     let cancelled = false
@@ -254,19 +268,32 @@ export default function App() {
     const normalizedTitle = await renameProject(projectId, title)
     setProjects((current) => current.map((project) => project.id === projectId ? { ...project, title: normalizedTitle, updatedAt: Date.now() } : project))
     setWorkspace((current) => current?.project.id === projectId ? { ...current, project: { ...current.project, title: normalizedTitle } } : current)
-    setToastMessage('作品已重命名')
+    showToast('作品已重命名')
   }
 
-  async function handleDeleteProject(projectId: string) {    const project = projects.find((item) => item.id === projectId)
-    if (!project || !window.confirm(`确定删除作品“${project.title}”吗？正文、角色和插画都会被删除，且无法撤销。`)) return
-    const deletingActive = workspace?.project.id === projectId
-    await deleteProject(projectId)
-    const remaining = await refreshProjects()
-    if (deletingActive) {
-      const nextProject = remaining[0] ?? await createProject('未命名作品')
-      await openProject(nextProject.id)
-    }
-    setToastMessage(`已删除作品“${project.title}”`)
+  async function handleDeleteProject(projectId: string) {
+    const project = projects.find((item) => item.id === projectId)
+    if (!project) return
+    setConfirmState({
+      title: '删除作品',
+      message: `确定删除作品“${project.title}”吗？正文、角色和插画都会被删除，且无法撤销。`,
+      confirmLabel: '删除',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const deletingActive = workspace?.project.id === projectId
+          await deleteProject(projectId)
+          const remaining = await refreshProjects()
+          if (deletingActive) {
+            const nextProject = remaining[0] ?? await createProject('未命名作品')
+            await openProject(nextProject.id)
+          }
+          showToast(`已删除作品“${project.title}”`)
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : '删除作品失败', 'error')
+        }
+      },
+    })
   }
 
   async function handleThemeChange(themeId: ThemePresetId) {
@@ -283,9 +310,9 @@ export default function App() {
       await updateIllustrationStyle(workspace.project.id, styleId, customPrompt)
       await refreshWorkspace(workspace.project.id)
       await refreshProjects()
-      setToastMessage('插画画风已更新，将用于之后生成的图片')
+      showToast('插画画风已更新，将用于之后生成的图片')
     } catch (error) {
-      setToastMessage(error instanceof Error ? error.message : '插画画风保存失败')
+      showToast(error instanceof Error ? error.message : '插画画风保存失败', 'error')
       throw error
     }
   }
@@ -296,9 +323,9 @@ export default function App() {
       await updateWritingInstructions(workspace.project.id, value)
       await refreshWorkspace(workspace.project.id)
       await refreshProjects()
-      setToastMessage(value.trim() ? '长期创作设定已保存' : '长期创作设定已清除')
+      showToast(value.trim() ? '长期创作设定已保存' : '长期创作设定已清除')
     } catch (error) {
-      setToastMessage(error instanceof Error ? error.message : '长期创作设定保存失败')
+      showToast(error instanceof Error ? error.message : '长期创作设定保存失败', 'error')
       throw error
     }
   }
@@ -329,6 +356,15 @@ export default function App() {
       project: { ...current.project, autoIllustrate },
     } : current)
     await updateAutoIllustrate(workspace.project.id, autoIllustrate)
+  }
+
+  async function handleContextBudgetChange(contextBudget: ContextBudget) {
+    if (!workspace) return
+    setWorkspace((current) => current ? {
+      ...current,
+      project: { ...current.project, contextBudget },
+    } : current)
+    await updateContextBudget(workspace.project.id, contextBudget)
   }
 
   async function providerIsReady(slot: ProviderSlot) {
@@ -372,12 +408,12 @@ export default function App() {
       const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, character.id)
       await setCharacterPortraitReady(character.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)
-      setToastMessage(`${character.name}的定妆照等待确认`)
+      showToast(`${character.name}的定妆照等待确认`)
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
       await setCharacterPortraitFailed(character.id, message)
       await refreshWorkspace(sourceWorkspace.project.id)
-      setToastMessage(`${character.name}的定妆照生成失败`)
+      showToast(`${character.name}的定妆照生成失败`, 'error')
     }
   }
 
@@ -388,7 +424,7 @@ export default function App() {
     if (!(await providerIsReady('image'))) {
       setCharacterAssetsOpen(false)
       openProviderSettings('image')
-      setToastMessage('请先完成图片模型配置')
+      showToast('请先完成图片模型配置')
       return
     }
     await enqueueImageTask(() => generateCharacterPortrait(character, workspace, feedback))
@@ -405,9 +441,9 @@ export default function App() {
       await refreshWorkspace(workspace.project.id)
       setReferenceImageOpen(false)
       setCharacterAssetsOpen(true)
-      setToastMessage('参考图已导入，请确认角色外貌')
+      showToast('参考图已导入，请确认角色外貌')
     } catch (error) {
-      setToastMessage(error instanceof Error ? error.message : '参考图导入失败')
+      showToast(error instanceof Error ? error.message : '参考图导入失败', 'error')
     }
   }
 
@@ -415,7 +451,7 @@ export default function App() {
     if (!workspace) return
     await updateCharacterReferenceStyleMode(characterId, referenceStyleMode)
     await refreshWorkspace(workspace.project.id)
-    setToastMessage(referenceStyleMode === 'project' ? '该角色会统一为作品画风' : '该角色会保留参考图画风')
+    showToast(referenceStyleMode === 'project' ? '该角色会统一为作品画风' : '该角色会保留参考图画风')
   }
 
   async function generateIllustration(illustration: IllustrationAsset, sourceWorkspace: ProjectWorkspace) {
@@ -447,12 +483,12 @@ export default function App() {
       const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, illustration.id)
       await setIllustrationReady(illustration.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)
-      setToastMessage('剧情插画已生成')
+      showToast('剧情插画已生成')
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
       await setIllustrationFailed(illustration.id, message)
       await refreshWorkspace(sourceWorkspace.project.id)
-      setToastMessage('剧情插画生成失败，没有自动重试')
+      showToast('剧情插画生成失败，没有自动重试', 'error')
     }
   }
 
@@ -473,7 +509,7 @@ export default function App() {
   async function retryIllustration(illustrationId: string) {
     if (!workspace || !(await providerIsReady('image'))) {
       openProviderSettings('image')
-      setToastMessage('请先完成图片模型配置')
+      showToast('请先完成图片模型配置')
       return
     }
     const illustration = workspace.illustrations.find((item) => item.id === illustrationId)
@@ -491,15 +527,16 @@ export default function App() {
 
     const textProvider = providerSettings.text
     if (!textProvider.baseUrl.trim() || !textProvider.model.trim() || !(await secretStore.has(textProvider.secretRef))) {
-      setToastMessage('请先完成文本模型配置')
+      showToast('请先完成文本模型配置')
       openProviderSettings('text')
       return
     }
 
-    setSending(true)
-    setDraft('')
-    let noticeId: string | undefined
-    try {
+      setSending(true)
+      setDraft('')
+      setStreamingText('')
+      let noticeId: string | undefined
+      try {
       const addedMessages = await beginWritingTurn(
         workspace.project.id,
         text,
@@ -515,7 +552,9 @@ export default function App() {
         messages: [...current.messages, ...addedMessages],
       } : current)
       await refreshProjects()
-      const result = await generateWritingTurn(workspace, text, textProvider, browserTransport)
+      const result = await generateWritingTurn(workspace, text, textProvider, browserTransport, (delta) => {
+        setStreamingText((current) => current + delta)
+      })
       await completeWritingTurn(
         workspace.project.id,
         userMessageId,
@@ -541,17 +580,17 @@ export default function App() {
           void enqueueImageTask(async () => {
             for (const character of portraits) await generateCharacterPortrait(character, nextWorkspace)
           })
-          setToastMessage('正文已保存，定妆照已进入生成队列')
+          showToast('正文已保存，定妆照已进入生成队列')
         } else if (!imageReady) {
-          setToastMessage('正文和视觉计划已保存；请先配置图片模型')
+          showToast('正文和视觉计划已保存；请先配置图片模型')
         } else if (readyIllustrations.length) {
           for (const illustration of readyIllustrations) void queueIllustration(illustration, nextWorkspace)
-          setToastMessage('正文已保存，插画已进入生成队列')
+          showToast('正文已保存，插画已进入生成队列')
         } else {
-          setToastMessage(newIllustrations.length ? '正文和视觉计划已保存；请先确认角色定妆照' : '正文和视觉计划已保存')
+          showToast(newIllustrations.length ? '正文和视觉计划已保存；请先确认角色定妆照' : '正文和视觉计划已保存')
         }
       } else {
-        setToastMessage('正文已保存')
+        showToast('正文已保存')
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
@@ -562,9 +601,10 @@ export default function App() {
       } else {
         setDraft(text)
       }
-      setToastMessage('本轮写作未完成')
+      showToast('本轮写作未完成', 'error')
     } finally {
       setSending(false)
+      setStreamingText('')
     }
   }
 
@@ -662,6 +702,11 @@ export default function App() {
               )
             })
           )}
+          {sending && streamingText && (
+            <div className="timeline-entry">
+              <article className="streaming-prose" aria-live="polite">{streamingText}</article>
+            </div>
+          )}
           <div className="ready-state" role="status">
             <span /><span /><span />
             <em>{sending ? '正在保存你的想法…' : '等待你的下一步'}</em>
@@ -731,6 +776,8 @@ export default function App() {
           setAppSettingsOpen(false)
           setWritingInstructionsOpen(true)
         }}
+        contextBudget={workspace.project.contextBudget ?? 'standard'}
+        onContextBudgetChange={handleContextBudgetChange}
         providerSettings={providerSettings}
         onOpenProviderSettings={(slot) => openProviderSettings(slot, true)}
         appearanceMode={appearanceMode}
@@ -756,7 +803,7 @@ export default function App() {
         onSave={(nextSettings) => {
           saveProviderSettings(nextSettings)
           setProviderSettings(nextSettings)
-          setToastMessage('模型配置已保存')
+          showToast('模型配置已保存')
         }}
       />
       <CharacterAssetsDrawer
@@ -773,8 +820,24 @@ export default function App() {
         onClose={() => setReferenceImageOpen(false)}
         onImport={importCharacterReference}
       />
-      <IllustrationLightbox image={lightboxImage} onClose={() => setLightboxImage(undefined)} onToast={setToastMessage} />
-      {toastMessage && <div className="app-toast" role="status"><Check size={17} aria-hidden="true" />{toastMessage}</div>}
+      <IllustrationLightbox image={lightboxImage} onClose={() => setLightboxImage(undefined)} onToast={showToast} />
+      <ConfirmDialog
+        open={Boolean(confirmState)}
+        title={confirmState?.title ?? ''}
+        message={confirmState?.message ?? ''}
+        confirmLabel={confirmState?.confirmLabel}
+        danger={confirmState?.danger}
+        onClose={() => setConfirmState(undefined)}
+        onConfirm={() => confirmState?.onConfirm()}
+      />
+      {toast && (
+        <div className={`app-toast ${toast.kind === 'error' ? 'app-toast-error' : ''}`} role="status">
+          {toast.kind === 'error'
+            ? <TriangleAlert size={17} aria-hidden="true" />
+            : <Check size={17} aria-hidden="true" />}
+          {toast.text}
+        </div>
+      )}
     </main>
   )
 }

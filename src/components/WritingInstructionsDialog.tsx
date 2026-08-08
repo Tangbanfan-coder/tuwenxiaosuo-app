@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Save, X } from 'lucide-react'
 import { usePresence } from '../hooks/usePresence'
+import ConfirmDialog from './ConfirmDialog'
 
 interface Props {
   open: boolean
@@ -10,13 +11,14 @@ interface Props {
   onSave: (value: string) => Promise<void>
 }
 
-const MAX_LENGTH = 4000
+const MAX_LENGTH = 50_000
 
 export default function WritingInstructionsDialog({ open, projectTitle, value, onClose, onSave }: Props) {
   const dialogRef = useRef<HTMLElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [draft, setDraft] = useState(value)
   const [saving, setSaving] = useState(false)
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
   const { present, closing } = usePresence(open, onClose, 180)
   const normalizedValue = value.trim()
   const isDirty = useMemo(() => draft.trim() !== normalizedValue, [draft, normalizedValue])
@@ -32,7 +34,10 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
 
   function close() {
     if (saving) return
-    if (isDirty && !window.confirm('长期创作设定尚未保存，确定放弃更改吗？')) return
+    if (isDirty) {
+      setConfirmDiscardOpen(true)
+      return
+    }
     onClose()
   }
 
@@ -119,6 +124,14 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, o
           </footer>
         </form>
       </section>
+      <ConfirmDialog
+        open={confirmDiscardOpen}
+        title="放弃未保存的更改？"
+        message="长期创作设定尚未保存。"
+        confirmLabel="放弃更改"
+        onClose={() => setConfirmDiscardOpen(false)}
+        onConfirm={onClose}
+      />
     </div>
   )
 }

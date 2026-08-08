@@ -6,6 +6,7 @@ import { listOpenAiModels } from '../providers/openAiCompatible'
 import { secretStore } from '../providers/secretStore'
 import type { ModelSummary, ProviderConfig, ProviderSettings, ProviderSlot } from '../providers/types'
 import { usePresence } from '../hooks/usePresence'
+import ConfirmDialog from './ConfirmDialog'
 
 interface Props {
   open: boolean
@@ -156,7 +157,13 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
       setTestState((value) => ({ ...value, [current.id]: { status: 'error', message: '至少保留一个供应商；可以把它清空为自定义接口' } }))
       return
     }
-    if (!window.confirm(`删除供应商“${current.name || '未命名'}”？它的 API Key 也会从本机移除。`)) return
+    setConfirmDeleteProvider(true)
+  }
+
+  const [confirmDeleteProvider, setConfirmDeleteProvider] = useState(false)
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
+
+  function performDeleteProvider() {
     const nextList = providers.filter((provider) => provider.id !== current.id)
     const next = nextList[0]
     const key = listKey(activeSlot)
@@ -167,6 +174,13 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
     setProviderMenuOpen(false)
   }
 
+  async function performDiscard() {
+    await restoreKeys()
+    setApiKeys({})
+    setShowKey(false)
+    onClose()
+  }
+
   async function restoreKeys() {
     for (const [ref, value] of Object.entries(baselineApiKeys)) {
       if (value) await secretStore.set(ref, value)
@@ -175,7 +189,10 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
   }
 
   async function close() {
-    if (isDirty && !window.confirm('配置尚未保存，确定放弃这些更改吗？')) return
+    if (isDirty) {
+      setConfirmDiscardOpen(true)
+      return
+    }
     await restoreKeys()
     setApiKeys({})
     setShowKey(false)
@@ -458,6 +475,23 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
           </button>
         </footer>
       </section>
+      <ConfirmDialog
+        open={confirmDeleteProvider}
+        title="删除供应商"
+        message={`确定删除供应商“${current.name || '未命名'}”吗？它的 API Key 也会从本机移除。`}
+        confirmLabel="删除"
+        danger
+        onClose={() => setConfirmDeleteProvider(false)}
+        onConfirm={performDeleteProvider}
+      />
+      <ConfirmDialog
+        open={confirmDiscardOpen}
+        title="放弃未保存的更改？"
+        message="模型配置尚未保存。"
+        confirmLabel="放弃更改"
+        onClose={() => setConfirmDiscardOpen(false)}
+        onConfirm={() => void performDiscard()}
+      />
     </div>
   )
 }
