@@ -2,7 +2,7 @@
 import { ChevronDown, LoaderCircle, Plus, RefreshCw, Save, Sparkles, Trash2, X } from 'lucide-react'
 import { usePresence } from '../hooks/usePresence'
 import ConfirmDialog from './ConfirmDialog'
-import { parseWritingStructureJson, structureWritingInstructions, WRITING_STRUCTURE_CORE_LIMIT } from '../providers/writing'
+import { estimateWritingInstructionStructureCalls, parseWritingStructureJson, structureWritingInstructions, WRITING_STRUCTURE_CORE_LIMIT } from '../providers/writing'
 import { browserTransport } from '../providers/browserTransport'
 import type { ProviderConfig } from '../providers/types'
 import type { WritingInstructionsStructure } from '../domain/models'
@@ -19,6 +19,7 @@ interface Props {
 }
 
 const MAX_LENGTH = 50_000
+const STRUCTURE_CALL_WARNING_THRESHOLD = 10
 
 type Phase = 'edit' | 'structuring' | 'review'
 
@@ -28,6 +29,7 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
   const [draft, setDraft] = useState(value)
   const [saving, setSaving] = useState(false)
   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
+  const [estimatedStructureCalls, setEstimatedStructureCalls] = useState<number>()
   const [phase, setPhase] = useState<Phase>('edit')
   const [structuredResult, setStructuredResult] = useState<WritingInstructionsStructure>()
   const [structureError, setStructureError] = useState('')
@@ -43,6 +45,7 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
     setSaving(false)
     setPhase('edit')
     setStructureError('')
+    setEstimatedStructureCalls(undefined)
     setStructuredResult(undefined)
     setExpandedSection(undefined)
     setExistingStructure(parseWritingStructureJson(structure))
@@ -70,11 +73,23 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
     onClose()
   }
 
-  async function structureDraft() {
+  async function structureDraft(callCountConfirmed = false) {
     if (!textProvider) {
       setStructureError('请先在模型服务中配置文本模型，再使用自动整理。')
       setPhase('edit')
       return
+    }
+    if (!callCountConfirmed) {
+      try {
+        const callCount = estimateWritingInstructionStructureCalls(draft, textProvider)
+        if (callCount > STRUCTURE_CALL_WARNING_THRESHOLD) {
+          setEstimatedStructureCalls(callCount)
+          return
+        }
+      } catch (error) {
+        setStructureError(error instanceof Error ? error.message : '无法估算整理调用次数')
+        return
+      }
     }
     setPhase('structuring')
     setStructureError('')
@@ -371,6 +386,17 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
         confirmLabel="放弃更改"
         onClose={() => setConfirmDiscardOpen(false)}
         onConfirm={onClose}
+      />
+      <ConfirmDialog
+        open={estimatedStructureCalls !== undefined}
+        title="整理调用次数较多"
+        message={estimatedStructureCalls === undefined
+          ? ''
+          : `当前模型预计需要调用 ${estimatedStructureCalls} 次；失败分块最多重试一次，最坏可能达到 ${estimatedStructureCalls * 2} 次。调用会产生额外费用，建议改用上下文窗口更大的模型。`}
+        confirmLabel="仍要整理"
+        cancelLabel="暂不整理"
+        onClose={() => setEstimatedStructureCalls(undefined)}
+        onConfirm={() => void structureDraft(true)}
       />
     </div>
   )

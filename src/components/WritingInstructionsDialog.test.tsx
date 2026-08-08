@@ -88,4 +88,30 @@ describe('长期创作设定确认流程', () => {
 
     expect(await screen.findByText(/已整理为分层结构：0 个分类、0 个风格范例/)).toBeDefined()
   })
+
+  it('预计调用超过 10 次时先征求用户确认', async () => {
+    const user = userEvent.setup()
+    render(
+      <WritingInstructionsDialog
+        open
+        projectTitle="测试作品"
+        value={'很长的设定内容。'.repeat(6_000)}
+        textProvider={{
+          ...textProvider,
+          manualContextLength: 8_000,
+          manualMaxOutputTokens: 4_000,
+        }}
+        onClose={vi.fn()}
+        onSave={vi.fn().mockResolvedValue(undefined)}
+        onSaveStructure={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: /整理结构/ }))
+    expect(await screen.findByRole('alertdialog', { name: '整理调用次数较多' })).toBeDefined()
+    expect(structureWritingInstructionsMock).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: '仍要整理' }))
+    await waitFor(() => expect(structureWritingInstructionsMock).toHaveBeenCalledTimes(1))
+  })
 })

@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import { describe, expect, it } from 'vitest'
 import { generateWritingTurn } from '../writing'
-import type { HttpTransport, ProviderConfig } from '../types'
+import type { HttpTransport, ProviderConfig, TransportRequest } from '../types'
 
 const textProvider: ProviderConfig = {
   id: 'test',
@@ -43,6 +43,18 @@ const noopTransport: HttpTransport = {
   async stream() {
     return VALID_RESULT
   },
+}
+
+function captureRequestBody(onBody: (body: Record<string, unknown>) => void): HttpTransport {
+  return {
+    async request<T>(request: TransportRequest) {
+      onBody(JSON.parse(String(request.body)) as Record<string, unknown>)
+      return { status: 200, data: { choices: [{ message: { content: VALID_RESULT } }] } as T }
+    },
+    async stream() {
+      return VALID_RESULT
+    },
+  }
 }
 
 describe('上下文预算', () => {
@@ -106,5 +118,33 @@ describe('上下文预算', () => {
       manualMaxOutputTokens: 384_000,
     }
     await expect(generateWritingTurn(emptyWorkspace(), '写一章', capped, noopTransport)).resolves.toBeDefined()
+  })
+
+  it('只有注册表推测输出上限时不强制发送输出参数', async () => {
+    let body: Record<string, unknown> = {}
+    await generateWritingTurn(emptyWorkspace(), '写一章', textProvider, captureRequestBody((value) => { body = value }))
+    expect(body).not.toHaveProperty('max_tokens')
+    expect(body).not.toHaveProperty('max_completion_tokens')
+  })
+
+  it('显式配置输出上限时为通用模型发送 max_tokens', async () => {
+    let body: Record<string, unknown> = {}
+    const configured = { ...textProvider, manualContextLength: 128_000, manualMaxOutputTokens: 2_000 }
+    await generateWritingTurn(emptyWorkspace(), '写一章', configured, captureRequestBody((value) => { body = value }))
+    expect(body.max_tokens).toBe(2_000)
+    expect(body).not.toHaveProperty('max_completion_tokens')
+  })
+
+  it('显式配置输出上限时为 OpenAI 推理模型发送 max_completion_tokens', async () => {
+    let body: Record<string, unknown> = {}
+    const configured = {
+      ...textProvider,
+      model: 'gpt-5',
+      manualContextLength: 128_000,
+      manualMaxOutputTokens: 2_000,
+    }
+    await generateWritingTurn(emptyWorkspace(), '写一章', configured, captureRequestBody((value) => { body = value }))
+    expect(body.max_completion_tokens).toBe(2_000)
+    expect(body).not.toHaveProperty('max_tokens')
   })
 })

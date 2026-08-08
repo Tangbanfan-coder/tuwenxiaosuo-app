@@ -7,7 +7,7 @@ import {
   loadProjectWorkspace,
   listProjects,
 } from '../../data/storyDatabase'
-import { buildProjectContext, parseWritingStructure, structureWritingInstructions } from '../writing'
+import { buildProjectContext, parseChapterOrder, parseWritingStructure, structureWritingInstructions } from '../writing'
 import type { StoredScene } from '../../data/storyDatabase'
 import type { ProjectWorkspace } from '../../domain/models'
 import type { HttpTransport, ProviderConfig, TransportRequest } from '../types'
@@ -270,5 +270,23 @@ describe('长期设定分块整理', () => {
     const result = await structureWritingInstructions('原始长期设定。'.repeat(30), structureProvider, transport)
     expect(result.core).toBe(longCore)
     expect(result.core.length).toBeGreaterThan(2_000)
+  })
+})
+
+describe('章节号解析', () => {
+  it.each([
+    ['3', 3],
+    ['三', 3],
+    ['十二', 12],
+    ['二十三', 23],
+    ['一百零三', 103],
+    ['二〇二', 202],
+  ])('将 %s 解析为第 %i 章', (input, expected) => {
+    expect(parseChapterOrder(input)).toBe(expected)
+  })
+
+  it('零和无效内容不产生章节号', () => {
+    expect(parseChapterOrder('零')).toBeUndefined()
+    expect(parseChapterOrder('第三')).toBeUndefined()
   })
 })

@@ -290,6 +290,16 @@ function maxOutputForRequest(config: ProviderConfig, windowTokens: number) {
   return Math.min(configured, Math.floor(windowTokens * 0.5))
 }
 
+function outputTokenParameter(config: ProviderConfig, maxOutput: number) {
+  const configured = config.manualMaxOutputTokens ?? config.maxOutputTokens
+  if (!configured) return {}
+  const modelId = config.model.toLocaleLowerCase().split('/').pop() ?? ''
+  const usesCompletionTokens = /^(?:o[134](?:-|$)|gpt-5(?:[.-]|$))/.test(modelId)
+  return usesCompletionTokens
+    ? { max_completion_tokens: maxOutput }
+    : { max_tokens: maxOutput }
+}
+
 function contextSafetyMarginTokens(windowTokens: number) {
   return Math.min(
     CONTEXT_SAFETY_MARGIN_TOKENS,
@@ -364,6 +374,52 @@ export function parseWritingStructureJson(value: string | undefined): (WritingIn
   } catch {
     return undefined
   }
+}
+
+const CHINESE_DIGITS: Record<string, number> = {
+  零: 0,
+  〇: 0,
+  一: 1,
+  二: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+}
+
+export function parseChapterOrder(value: string) {
+  if (/^\d+$/.test(value)) {
+    const parsed = Number(value)
+    return parsed > 0 ? parsed : undefined
+  }
+  if ([...value].every((character) => character in CHINESE_DIGITS)) {
+    const parsed = Number([...value].map((character) => CHINESE_DIGITS[character]).join(''))
+    return parsed > 0 ? parsed : undefined
+  }
+  let total = 0
+  let current = 0
+  for (const character of value) {
+    if (character in CHINESE_DIGITS) {
+      current = CHINESE_DIGITS[character]
+      continue
+    }
+    if (character === '十') {
+      total += (current || 1) * 10
+      current = 0
+      continue
+    }
+    if (character === '百') {
+      total += (current || 1) * 100
+      current = 0
+      continue
+    }
+    return undefined
+  }
+  const parsed = total + current
+  return parsed > 0 ? parsed : undefined
 }
 
 export function parseWritingStructure(project: ProjectWorkspace['project']): WritingInstructionsStructure | undefined {
@@ -659,9 +715,10 @@ function retrieveRelevantScenes(scenes: StoredScene[], currentScene: StoredScene
     if (index < requestText.length - 2) requestGrams.add(requestText.slice(index, index + 3))
   }
   const requestedChapterOrder = /第([一二三四五六七八九十百零〇0-9]+)章/.exec(userRequest)
-  const requestedChapterId = requestedChapterOrder
-    ? chapters[Number(requestedChapterOrder[1]) - 1]?.id
-    : undefined
+  const requestedOrder = requestedChapterOrder ? parseChapterOrder(requestedChapterOrder[1]) : undefined
+  const requestedChapterId = requestedOrder === undefined
+    ? undefined
+    : chapters.find((chapter) => chapter.order === requestedOrder)?.id
 
   const scored = scenes
     .map((scene, index) => {
@@ -854,15 +911,7 @@ function mergeStructureChunks(chunks: StructureChunkResult[]): WritingInstructio
   }
 }
 
-export async function structureWritingInstructions(
-  source: string,
-  config: ProviderConfig,
-  transport: HttpTransport,
-): Promise<WritingInstructionsStructure> {
-  const baseUrl = normalizeBaseUrl(config.baseUrl)
-  if (!baseUrl) throw new Error('请先配置文本模型的 API URL')
-  if (!config.model.trim()) throw new Error('请先选择文本模型')
-
+function planWritingInstructionStructure(source: string, config: ProviderConfig) {
   const windowTokens = effectiveWindowTokens(config)
   const maxOutput = Math.min(maxOutputForRequest(config, windowTokens), 4_096)
   const safetyMarginTokens = contextSafetyMarginTokens(windowTokens)
@@ -877,6 +926,23 @@ export async function structureWritingInstructions(
   )
   const chunks = splitStructureSource(source, chunkSize)
   if (!chunks.length) throw new Error('长期创作设定为空，无法整理')
+  return { chunks, maxOutput }
+}
+
+export function estimateWritingInstructionStructureCalls(source: string, config: ProviderConfig) {
+  return planWritingInstructionStructure(source, config).chunks.length
+}
+
+export async function structureWritingInstructions(
+  source: string,
+  config: ProviderConfig,
+  transport: HttpTransport,
+): Promise<WritingInstructionsStructure> {
+  const baseUrl = normalizeBaseUrl(config.baseUrl)
+  if (!baseUrl) throw new Error('请先配置文本模型的 API URL')
+  if (!config.model.trim()) throw new Error('请先选择文本模型')
+
+  const { chunks, maxOutput } = planWritingInstructionStructure(source, config)
 
   const results: StructureChunkResult[] = []
   for (let index = 0; index < chunks.length; index++) {
@@ -893,7 +959,7 @@ export async function structureWritingInstructions(
           body: JSON.stringify({
             model: config.model,
             stream: false,
-            max_tokens: maxOutput,
+            ...outputTokenParameter(config, maxOutput),
             messages: [
               { role: 'system', content: STRUCTURE_CHUNK_PROMPT },
               { role: 'user', content: chunks[index] },
@@ -929,7 +995,6 @@ export async function generateWritingTurn(
   config: ProviderConfig,
   transport: HttpTransport,
   onDelta?: (delta: string) => void,
-  onWarning?: (message: string) => void,
 ) {
   const baseUrl = normalizeBaseUrl(config.baseUrl)
   if (!baseUrl) throw new Error('请先配置文本模型的 API URL')
@@ -946,7 +1011,7 @@ export async function generateWritingTurn(
   const body = JSON.stringify({
     model: config.model,
     stream: true,
-    max_tokens: maxOutput,
+    ...outputTokenParameter(config, maxOutput),
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'system', content: `当前作品资料：${context}` },
