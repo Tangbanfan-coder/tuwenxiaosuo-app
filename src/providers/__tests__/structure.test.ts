@@ -185,7 +185,7 @@ describe('长期创作设定三层结构', () => {
       notes: {
         time: undefined, location: '北境', povCharacter: '林昭', charactersPresent: ['林昭'],
         events: [], stateChanges: [], relationshipChanges: [], knowledgeChanges: [],
-        cluesPlanted: [], cluesResolved: [], unresolvedThreads: [],
+        foreshadowingPlanted: [], resolvedForeshadowingIds: [], unresolvedThreads: [],
       },
       excerpt: '',
     }]

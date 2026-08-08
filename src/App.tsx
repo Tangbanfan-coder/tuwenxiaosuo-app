@@ -13,6 +13,8 @@ import {
   Settings,
   Sparkles,
   TriangleAlert,
+  ThumbsDown,
+  ThumbsUp,
   UserRound,
   X,
   ZoomIn,
@@ -23,7 +25,9 @@ import CharacterAssetsDrawer from './components/CharacterAssetsDrawer'
 import ProviderSettingsDialog from './components/ProviderSettingsDialog'
 import ReferenceImageDialog, { type ReferenceImageTarget } from './components/ReferenceImageDialog'
 import SettingsDrawer from './components/SettingsDrawer'
+import ContextUsage, { type ContextUsageState } from './components/ContextUsage'
 import WritingInstructionsDialog from './components/WritingInstructionsDialog'
+import SummaryHistoryDialog from './components/SummaryHistoryDialog'
 import {
   beginWritingTurn,
   completeWritingTurn,
@@ -34,18 +38,23 @@ import {
   failWritingTurn,
   getActiveProjectId,
   initializeStoryDatabase,
+  listChapterSummaryVersions,
+  listMessageFeedback,
   listGeneratingImageAssets,
   listProjects,
   listReadyLocalIllustrations,
   loadProjectWorkspace,
   markProjectOpened,
   renameProject,
+  restoreChapterSummaryVersion,
   setCharacterPortraitFailed,
   setCharacterPortraitGenerating,
   setCharacterPortraitReady,
   setIllustrationFailed,
   setIllustrationGenerating,
   setIllustrationReady,
+  storyDatabase,
+  toggleFeedback,
   updateAutoIllustrate,
   updateCharacterProfile,
   updateCharacterReferenceStyleMode,
@@ -57,6 +66,8 @@ import {
 } from './data/storyDatabase'
 import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
 import type { AppearanceMode, CharacterAsset, ContextBudget, ConversationMessage, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, StoryProject, ThemePresetId } from './domain/models'
+import type { Feedback, FeedbackScope, FeedbackVerdict, StoredParagraph } from './domain/models'
+import { createParagraphFingerprint } from './domain/paragraphs'
 import { browserTransport } from './providers/browserTransport'
 import { loadProviderSettings, saveProviderSettings } from './providers/config'
 import { refreshModelLimits } from './providers/modelLimits'
@@ -66,7 +77,7 @@ import ConfirmDialog from './components/ConfirmDialog'
 import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage } from './providers/images'
 import { secretStore } from './providers/secretStore'
 import type { ProviderSettings, ProviderSlot } from './providers/types'
-import { explicitlyRequestsNewChapter, generateWritingTurn } from './providers/writing'
+import { explicitlyRequestsNewChapter, generateWritingTurn, previewWritingTurnBudget, projectStreamingProse, type ContextBudgetPlan } from './providers/writing'
 
 const APPEARANCE_KEY = 'illustrated-story-chat.appearance.v1'
 const IMAGE_INTEGRITY_AUDIT_KEY = 'illustrated-story-chat.image-integrity-audit.v1'
@@ -141,6 +152,11 @@ export default function App() {
   const [projects, setProjects] = useState<StoryProject[]>([])
   const [workspace, setWorkspace] = useState<ProjectWorkspace | null>(null)
   const [draft, setDraft] = useState('')
+  const [contextUsagePlan, setContextUsagePlan] = useState<ContextBudgetPlan>()
+  const [contextUsageState, setContextUsageState] = useState<ContextUsageState>('empty')
+  const [contextUsageError, setContextUsageError] = useState('')
+  const [composerFocused, setComposerFocused] = useState(false)
+  const [contextUsageDetailsOpen, setContextUsageDetailsOpen] = useState(false)
   const [booting, setBooting] = useState(true)
   const [bootError, setBootError] = useState('')
   const [sending, setSending] = useState(false)
@@ -149,6 +165,7 @@ export default function App() {
   const [characterAssetsOpen, setCharacterAssetsOpen] = useState(false)
   const [referenceImageOpen, setReferenceImageOpen] = useState(false)
   const [writingInstructionsOpen, setWritingInstructionsOpen] = useState(false)
+  const [summaryHistoryOpen, setSummaryHistoryOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSlot, setSettingsSlot] = useState<ProviderSlot>('text')
   const [returnToSettingsDrawer, setReturnToSettingsDrawer] = useState(false)
@@ -159,6 +176,7 @@ export default function App() {
   const [visibleChapterId, setVisibleChapterId] = useState<string>()
   const [lightboxImage, setLightboxImage] = useState<{ source: string; title: string; alt: string; localUri?: string }>()
   const [streamingText, setStreamingText] = useState('')
+  const streamingRawRef = useRef('')
   const [confirmState, setConfirmState] = useState<{
     title: string
     message: string
@@ -170,6 +188,40 @@ export default function App() {
   const showToast = useCallback((text: string, kind: 'success' | 'error' = 'success') => {
     setToast({ text, kind })
   }, [])
+
+  useEffect(() => {
+    const userRequest = draft.trim()
+    const textProvider = providerSettings.text
+    if (!workspace || !userRequest || !textProvider.model.trim()) {
+      setContextUsagePlan(undefined)
+      setContextUsageError('')
+      setContextUsageState('empty')
+      return
+    }
+
+    let cancelled = false
+    setContextUsageState('loading')
+    setContextUsageError('')
+    const previewTimer = window.setTimeout(() => {
+      void previewWritingTurnBudget(workspace, userRequest, textProvider)
+        .then((plan) => {
+          if (cancelled) return
+          setContextUsagePlan(plan)
+          setContextUsageState(plan.isOverLimit ? 'over-limit' : plan.estimator.isFallback ? 'fallback' : 'ready')
+        })
+        .catch((error) => {
+          if (cancelled) return
+          setContextUsagePlan(undefined)
+          setContextUsageState('error')
+          setContextUsageError(error instanceof Error ? error.message : '未知预览错误')
+        })
+    }, 240)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(previewTimer)
+    }
+  }, [draft, providerSettings.text, workspace])
 
   const syncVisibleChapterFromScroll = useCallback(() => {
     const timeline = timelineRef.current
@@ -549,6 +601,7 @@ export default function App() {
 
       setSending(true)
       setDraft('')
+      streamingRawRef.current = ''
       setStreamingText('')
       let noticeId: string | undefined
       try {
@@ -568,7 +621,8 @@ export default function App() {
       } : current)
       await refreshProjects()
       const result = await generateWritingTurn(workspace, text, textProvider, browserTransport, (delta) => {
-        setStreamingText((current) => current + delta)
+        streamingRawRef.current += delta
+        setStreamingText(projectStreamingProse(streamingRawRef.current))
       })
       await completeWritingTurn(
         workspace.project.id,
@@ -578,6 +632,10 @@ export default function App() {
         workspace.project.autoIllustrate,
         explicitlyRequestsNewChapter(text),
       )
+      // The final prose is about to be loaded from storage; do not render the
+      // same turn twice while the workspace refresh is in flight.
+      streamingRawRef.current = ''
+      setStreamingText('')
       const nextWorkspace = await loadProjectWorkspace(workspace.project.id)
       if (nextWorkspace) setWorkspace(nextWorkspace)
       await refreshProjects()
@@ -619,6 +677,7 @@ export default function App() {
       showToast('本轮写作未完成', 'error')
     } finally {
       setSending(false)
+      streamingRawRef.current = ''
       setStreamingText('')
     }
   }
@@ -730,6 +789,14 @@ export default function App() {
       </div>
 
       <footer className="composer-wrap">
+        <ContextUsage
+          plan={contextUsagePlan}
+          state={contextUsageState}
+          error={contextUsageError}
+          composerFocused={composerFocused}
+          detailsOpen={contextUsageDetailsOpen}
+          onDetailsOpenChange={setContextUsageDetailsOpen}
+        />
         <div className="composer-tools">
           <button type="button" onClick={() => setCharacterAssetsOpen(true)}><UserRound size={17} />角色资产</button>
           <button type="button" onClick={() => setReferenceImageOpen(true)}><ImagePlus size={17} />参考图</button>
@@ -750,6 +817,8 @@ export default function App() {
             placeholder="继续写下去，或告诉 AI 你想看到的画面…"
             aria-label="创作要求"
             onChange={(event) => setDraft(event.target.value)}
+            onFocus={() => setComposerFocused(true)}
+            onBlur={() => setComposerFocused(false)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
@@ -793,6 +862,16 @@ export default function App() {
         }}
         contextBudget={workspace.project.contextBudget ?? 'standard'}
         onContextBudgetChange={handleContextBudgetChange}
+        contextUsagePlan={contextUsagePlan}
+        contextUsageState={contextUsageState}
+        onOpenContextUsage={() => {
+          setAppSettingsOpen(false)
+          setContextUsageDetailsOpen(true)
+        }}
+        onOpenSummaryHistory={() => {
+          setAppSettingsOpen(false)
+          setSummaryHistoryOpen(true)
+        }}
         providerSettings={providerSettings}
         onOpenProviderSettings={(slot) => openProviderSettings(slot, true)}
         appearanceMode={appearanceMode}
@@ -819,6 +898,23 @@ export default function App() {
             showToast(error instanceof Error ? error.message : '分层结构保存失败', 'error')
             throw error
           }
+        }}
+      />
+
+      <SummaryHistoryDialog
+        open={summaryHistoryOpen}
+        projectId={workspace.project.id}
+        chapters={workspace.chapters}
+        onClose={() => {
+          setSummaryHistoryOpen(false)
+          setAppSettingsOpen(true)
+        }}
+        listVersions={listChapterSummaryVersions}
+        restoreVersion={async (projectId, chapterId, versionId) => {
+          await restoreChapterSummaryVersion(projectId, chapterId, versionId)
+          const refreshedWorkspace = await refreshWorkspace(projectId)
+          if (!refreshedWorkspace) throw new Error('摘要已恢复，但当前作品无法重新加载，请关闭后重试。')
+          showToast('章节摘要已恢复，后续写作将立即使用恢复后的摘要')
         }}
       />
 
@@ -915,9 +1011,7 @@ function MessageItem({
 
   if (message.kind === 'prose') {
     return (
-      <article className="story-prose">
-        {message.paragraphs?.map((paragraph, index) => <p key={`${message.id}-${index}`}>{paragraph}</p>)}
-      </article>
+      <FeedbackProse message={message} />
     )
   }
 
@@ -960,6 +1054,206 @@ function MessageItem({
         </figcaption>
         {showVisualPrompt && <div className="visual-prompt"><strong>本轮画面描述</strong><p>{illustration?.prompt || '这条旧消息没有保存视觉指令。'}</p></div>}
       </figure>
+    </div>
+  )
+}
+
+type ParagraphAnchor = {
+  id: string
+  index: number
+  text: string
+  fingerprint: string
+}
+
+function FeedbackProse({ message }: { message: ConversationMessage }) {
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [feedback, setFeedback] = useState<Feedback[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [selectedVerdict, setSelectedVerdict] = useState<FeedbackVerdict>('up')
+
+  const refreshFeedback = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      setFeedback(await listMessageFeedback(message.projectId, message.id))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '反馈读取失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [message.id, message.projectId])
+
+  useEffect(() => {
+    void refreshFeedback()
+  }, [refreshFeedback])
+
+  function openPanel(verdict: FeedbackVerdict) {
+    setSelectedVerdict(verdict)
+    setPanelOpen(true)
+    void refreshFeedback()
+  }
+
+  return (
+    <article className="story-prose">
+      {message.paragraphs?.map((paragraph, index) => <p key={`${message.id}-${index}`}>{paragraph}</p>)}
+      <div className="message-feedback-actions" aria-label="正文反馈">
+        <button
+          className={`feedback-trigger ${feedback.some((item) => item.scope === 'message' && item.verdict === 'up') ? 'is-active' : ''}`}
+          type="button"
+          aria-label="点赞这条正文"
+          title="点赞这条正文"
+          onClick={() => openPanel('up')}
+        ><ThumbsUp size={15} aria-hidden="true" />点赞</button>
+        <button
+          className={`feedback-trigger ${feedback.some((item) => item.scope === 'message' && item.verdict === 'down') ? 'is-active' : ''}`}
+          type="button"
+          aria-label="点踩这条正文"
+          title="点踩这条正文"
+          onClick={() => openPanel('down')}
+        ><ThumbsDown size={15} aria-hidden="true" />点踩</button>
+      </div>
+      {panelOpen && (
+        <FeedbackPanel
+          message={message}
+          feedback={feedback}
+          loading={loading}
+          error={error}
+          initialVerdict={selectedVerdict}
+          onClose={() => setPanelOpen(false)}
+          onSaved={(next) => setFeedback(next)}
+          refreshFeedback={refreshFeedback}
+        />
+      )}
+    </article>
+  )
+}
+
+function FeedbackPanel({
+  message,
+  feedback,
+  loading,
+  error,
+  initialVerdict,
+  onClose,
+  onSaved,
+  refreshFeedback,
+}: {
+  message: ConversationMessage
+  feedback: Feedback[]
+  loading: boolean
+  error: string
+  initialVerdict: FeedbackVerdict
+  onClose: () => void
+  onSaved: (feedback: Feedback[]) => void
+  refreshFeedback: () => Promise<void>
+}) {
+  const [scope, setScope] = useState<FeedbackScope>('message')
+  const [paragraphIndex, setParagraphIndex] = useState<number>()
+  const [verdict, setVerdict] = useState<FeedbackVerdict>(initialVerdict)
+  const [reason, setReason] = useState('')
+  const [customNote, setCustomNote] = useState('')
+  const [paragraphs, setParagraphs] = useState<ParagraphAnchor[]>([])
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  useEffect(() => {
+    setVerdict(initialVerdict)
+  }, [initialVerdict])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const texts = Array.isArray(message.paragraphs) ? message.paragraphs : []
+      try {
+        const stored = await storyDatabase.paragraphs.where('[projectId+messageId]').equals([message.projectId, message.id]).toArray()
+        const anchors = texts.map((text, index) => {
+          const fingerprint = createParagraphFingerprint(text)
+          const persisted = stored.find((row: StoredParagraph) => (
+            row.projectId === message.projectId
+              && row.messageId === message.id
+              && row.chapterId === message.chapterId
+              && row.index === index
+              && row.text === text
+              && row.fingerprint === fingerprint
+          ))
+          return {
+            id: persisted?.id ?? `paragraph-message-${message.id}-${index}`,
+            index,
+            text,
+            fingerprint,
+          }
+        })
+        if (!cancelled) setParagraphs(anchors)
+      } catch {
+        if (!cancelled) setParagraphs(texts.map((text, index) => ({ id: `paragraph-message-${message.id}-${index}`, index, text, fingerprint: createParagraphFingerprint(text) })))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [message])
+
+  const current = feedback.find((item) => item.scope === scope && (scope === 'message' || item.paragraphIndex === paragraphIndex))
+
+  async function submit() {
+    if (!message.chapterId) {
+      setSaveError('当前正文缺少章节锚点，暂时无法提交反馈')
+      return
+    }
+    if (scope === 'paragraph' && paragraphIndex === undefined) {
+      setSaveError('请选择一个段落')
+      return
+    }
+    const anchor = paragraphIndex === undefined ? undefined : paragraphs.find((item) => item.index === paragraphIndex)
+    if (scope === 'paragraph' && !anchor) {
+      setSaveError('段落锚点无效，请重新打开反馈面板')
+      return
+    }
+    setSaving(true)
+    setSaveError('')
+    try {
+      const input = {
+        projectId: message.projectId,
+        messageId: message.id,
+        chapterId: message.chapterId,
+        scope,
+        ...(anchor ? { paragraphId: anchor.id, paragraphIndex: anchor.index, paragraphFingerprint: anchor.fingerprint } : {}),
+        verdict,
+        reason: reason || undefined,
+        customNote: customNote.trim() || undefined,
+      }
+      const next = await toggleFeedback(input)
+      await refreshFeedback()
+      if (next === null) await refreshFeedback()
+      onSaved(await listMessageFeedback(message.projectId, message.id))
+      onClose()
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : '反馈提交失败，请稍后重试')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="feedback-panel" role="dialog" aria-label="正文反馈面板" aria-modal="false">
+      <div className="feedback-panel-header"><strong>这段正文怎么样？</strong><button type="button" className="feedback-close" aria-label="关闭反馈面板" title="关闭" onClick={onClose}><X size={16} /></button></div>
+      {loading && <p className="feedback-hint">正在读取已有反馈…</p>}
+      {error && <p className="feedback-error" role="alert">{error}</p>}
+      <div className="feedback-verdicts" role="group" aria-label="选择反馈类型">
+        <button type="button" className={verdict === 'up' ? 'selected' : ''} onClick={() => setVerdict('up')}><ThumbsUp size={15} />点赞</button>
+        <button type="button" className={verdict === 'down' ? 'selected' : ''} onClick={() => setVerdict('down')}><ThumbsDown size={15} />点踩</button>
+      </div>
+      <div className="feedback-scope" role="group" aria-label="反馈范围">
+        <label><input type="radio" checked={scope === 'message'} onChange={() => { setScope('message'); setParagraphIndex(undefined) }} />整条正文</label>
+        <label><input type="radio" checked={scope === 'paragraph'} onChange={() => setScope('paragraph')} />仅针对某段</label>
+      </div>
+      {scope === 'paragraph' && <div className="feedback-paragraphs" role="listbox" aria-label="选择段落">
+        {paragraphs.map((paragraph) => <button key={paragraph.id} type="button" role="option" aria-selected={paragraphIndex === paragraph.index} className={paragraphIndex === paragraph.index ? 'selected' : ''} onClick={() => setParagraphIndex(paragraph.index)}><span>第 {paragraph.index + 1} 段</span><small>{paragraph.text.slice(0, 44)}{paragraph.text.length > 44 ? '…' : ''}</small></button>)}
+      </div>}
+      {verdict === 'down' && <div className="feedback-reasons"><span>点踩原因（可选）</span><div>{['剧情方向', '人物塑造', '节奏', '语言表达', '其他'].map((item) => <button key={item} type="button" className={reason === item ? 'selected' : ''} onClick={() => setReason(reason === item ? '' : item)}>{item}</button>)}</div></div>}
+      <label className="feedback-note">补充说明（可选）<textarea value={customNote} onChange={(event) => setCustomNote(event.target.value)} rows={2} placeholder="告诉我们更多想法…" /></label>
+      {current && <p className="feedback-hint">当前已{current.verdict === 'up' ? '点赞' : '点踩'}，再次提交相同选项将撤销。</p>}
+      {saveError && <p className="feedback-error" role="alert">{saveError}</p>}
+      <div className="feedback-panel-actions"><button type="button" onClick={onClose}>取消</button><button type="button" className="primary" disabled={saving} onClick={() => void submit()}>{saving ? '提交中…' : '提交反馈'}</button></div>
     </div>
   )
 }
