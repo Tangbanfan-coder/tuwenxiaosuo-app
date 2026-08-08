@@ -9,6 +9,7 @@ import type {
   ProjectStyle,
   ProjectWorkspace,
   ReferenceStyleMode,
+  SceneNotes,
   StoryProject,
   ThemePresetId,
   WritingTurnResult,
@@ -22,6 +23,7 @@ class StoryDatabase extends Dexie {
   characters!: Table<CharacterAsset, string>
   illustrations!: Table<IllustrationAsset, string>
   styles!: Table<ProjectStyle, string>
+  scenes!: Table<StoredScene, string>
 
   constructor() {
     super('illustrated-story-chat')
@@ -33,7 +35,25 @@ class StoryDatabase extends Dexie {
       illustrations: 'id, projectId, [projectId+createdAt], status',
       styles: 'id, &projectId, updatedAt',
     })
+    this.version(2).stores({
+      projects: 'id, updatedAt, lastOpenedAt',
+      messages: 'id, projectId, [projectId+order], createdAt',
+      chapters: 'id, projectId, [projectId+order], updatedAt',
+      characters: 'id, projectId, [projectId+createdAt], status',
+      illustrations: 'id, projectId, [projectId+createdAt], status',
+      styles: 'id, &projectId, updatedAt',
+      scenes: 'id, projectId, [projectId+order], createdAt',
+    })
   }
+}
+
+export interface StoredScene {
+  id: string
+  projectId: string
+  chapterId?: string
+  order: number
+  createdAt: number
+  notes: SceneNotes
 }
 
 export const storyDatabase = new StoryDatabase()
@@ -246,6 +266,10 @@ export async function updateWritingInstructions(projectId: string, writingInstru
   })
 }
 
+export async function loadProjectScenes(projectId: string) {
+  return storyDatabase.scenes.where('projectId').equals(projectId).sortBy('order')
+}
+
 export async function updateContextBudget(projectId: string, contextBudget: ContextBudget) {
   await storyDatabase.projects.update(projectId, {
     contextBudget,
@@ -304,7 +328,7 @@ export async function completeWritingTurn(
   const now = Date.now()
   await storyDatabase.transaction(
     'rw',
-    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.characters, storyDatabase.illustrations],
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.characters, storyDatabase.illustrations, storyDatabase.scenes],
     async () => {
       const project = await storyDatabase.projects.get(projectId)
       if (!project) throw new Error('当前作品不存在')
@@ -326,6 +350,7 @@ export async function completeWritingTurn(
           order: chapterOrder,
           content: result.paragraphs.join('\n\n'),
           status: 'draft',
+          summary: result.chapterSummary?.trim() || undefined,
           createdAt: now,
           updatedAt: now,
         }
@@ -337,10 +362,22 @@ export async function completeWritingTurn(
         await storyDatabase.chapters.update(activeChapter.id, {
           title,
           content,
+          summary: result.chapterSummary?.trim() || activeChapter.summary,
           updatedAt: now,
         })
-        targetChapter = { ...activeChapter, title, content, updatedAt: now }
+        targetChapter = { ...activeChapter, title, content, updatedAt: now, summary: result.chapterSummary?.trim() || activeChapter.summary }
         project.activeChapterId = activeChapter.id
+      }
+
+      if (result.sceneNotes) {
+        await storyDatabase.scenes.add({
+          id: createId('scene'),
+          projectId,
+          chapterId: targetChapter.id,
+          order: Date.now(),
+          createdAt: now,
+          notes: result.sceneNotes,
+        })
       }
 
       await storyDatabase.messages.update(userMessageId, { chapterId: targetChapter.id })

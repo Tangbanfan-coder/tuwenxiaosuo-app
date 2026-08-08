@@ -50,11 +50,27 @@ export interface VisualPlan {
   characters: WritingCharacterPlan[]
 }
 
+export interface SceneNotes {
+  time?: string
+  location?: string
+  povCharacter?: string
+  charactersPresent: string[]
+  events: string[]
+  stateChanges: Array<{ character: string; state: string }>
+  relationshipChanges: string[]
+  knowledgeChanges: Array<{ character: string; nowKnows: string }>
+  cluesPlanted: string[]
+  cluesResolved: string[]
+  unresolvedThreads: string[]
+}
+
 export interface WritingTurnResult {
   assistantNote: string
   chapterAction: 'continue' | 'new'
   chapterTitle?: string
   paragraphs: string[]
+  chapterSummary?: string
+  sceneNotes?: SceneNotes
   visualPlan?: VisualPlan
 }
 
@@ -65,6 +81,7 @@ export interface Chapter {
   order: number
   content: string
   status: 'draft' | 'final'
+  summary?: string
   createdAt: number
   updatedAt: number
 }
