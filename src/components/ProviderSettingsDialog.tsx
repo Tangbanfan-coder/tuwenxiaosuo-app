@@ -62,6 +62,8 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
   const [testState, setTestState] = useState<Record<string, TestState>>({})
   const [saving, setSaving] = useState(false)
   const [providerMenuOpen, setProviderMenuOpen] = useState(false)
+  const [confirmDeleteProvider, setConfirmDeleteProvider] = useState(false)
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -172,9 +174,6 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
     }
     setConfirmDeleteProvider(true)
   }
-
-  const [confirmDeleteProvider, setConfirmDeleteProvider] = useState(false)
-  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
 
   function performDeleteProvider() {
     const nextList = providers.filter((provider) => provider.id !== current.id)
