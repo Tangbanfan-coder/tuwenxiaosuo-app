@@ -1,0 +1,130 @@
+# 变更记录
+
+## 2026-08-08 — README 更新与签名 Release 实机安装
+
+- README 补齐段落检索、真实 token 预算、渐进压缩、摘要版本、稳定伏笔 ID、正文反馈和流式正文投影等当前能力，并增加测试、Release 构建与覆盖安装说明。
+- 使用 JDK 21 与 Android SDK 36 完成 Capacitor 同步、Debug/Release Gradle 构建；Release APK 使用外部 keystore 签名，签名配置位于 Git 忽略文件中，未提交密码或密钥。
+- 安装前拉取手机现有 APK 并比较证书 SHA-256，新旧签名一致；`adb install -r` 覆盖安装成功并保留应用数据，随后通过 launcher intent 启动，未观察到 AndroidRuntime/WebView 崩溃日志。
+
+## 2026-08-08 — 流式 JSON 显示与重复正文修复
+
+- 流式输出继续保留完整原始响应供最终 JSON 解析，但 UI 改为只投影 `prose.paragraphs`，不再显示 `scene_notes`、`chapter_summary` 等协议字段；模型返回普通文本时保留兼容回退。
+- 写作结果成功落库后先清除临时流式正文，再刷新 workspace，避免已保存正文与临时流同时出现造成重复观感。
+- 系统写作协议补充续写防重复约束：最近正文只作定位锚点，默认从最后动作之后推进，不复述已有段落。
+- 新增流式投影回归测试，覆盖 JSON 前缀、分段正文、转义字符、协议字段隔离和普通文本回退。
+- 验证：`npm test -- --run`、`npm run build`。
+
+## 2026-08-08 — 通用代理协作与成本控制规则
+
+- 重写 `AGENTS.md` 为跨技术栈的风险/耦合度驱动规则：低风险工作可由总控直接处理，中高风险按责任域委派；同一责任域合并实现、测试和交接，避免微任务反复切换代理。
+- 增加安全并行、单一文件所有权、验证分层、一次性日志负责人、基础设施失败最多原样重试一次及代理不可用时的降级路径；全量测试/构建集中到高风险边界和最终集成。
+- `.codex/config.toml` 保留已支持的 `max_threads = 3`、`max_depth = 1`，仅补充通用调度语义；`luna_worker.toml` 保留 `high` 质量基线并明确禁止默认升至 `max`，收紧阅读范围、验证次数、重试和交接格式。
+
+## 2026-08-08 — 反馈数据层与 Dexie v6
+
+- 新增 Dexie v6 `feedback` 表，使用项目/消息索引与唯一 `targetKey`，记录消息级或消息段落级 verdict、原因、自定义说明、时间和段落 fingerprint；保留 v1-v5 schema。
+- `upsertFeedback`、`toggleFeedback`、`removeFeedback`、`listMessageFeedback`、`listRecentProjectFeedback` 均在事务内校验项目、章节、正文消息、段落归属和指纹；相同 verdict 再次点击撤销，反向 verdict 原地切换，拒绝漂移绑定。
+- 项目删除事务级联清理反馈；新增迁移、CRUD、拒绝路径、排序和级联删除测试。验证：反馈数据层定向 16 项通过，最终全量 15 个测试文件 / 97 项通过，`npm run build` 通过。
+
+## 2026-08-08 — 正文点赞/点踩反馈 UI
+
+- prose 消息新增消息级点赞/点踩按钮，点击后打开可关闭的反馈面板；面板支持整条正文或指定段落范围，段落按序号和首句预览选择。
+- 点踩支持原因与自定义说明，点赞同样支持可选说明；提交复用 `toggleFeedback`，相同 verdict 再次提交撤销，切换 verdict 更新记录，并刷新按钮/面板状态。
+- 段落锚点优先读取 `paragraphs` 表中与当前消息、章节、文本和指纹一致的记录，缺失时使用稳定消息段落 ID 与指纹；数据库提交仍会校验锚点漂移并显示错误。
+- 新增移动端可滚动面板、键盘友好文本域、aria-label/title 和深浅色主题样式。
+- 验证：`npm test -- --run`（15 个测试文件 / 94 个测试通过）、`npm run build` 通过。
+- 补充 `src/App.test.tsx` prose UI 集成测试：按钮打开/关闭、段落选择、点踩原因与自定义说明、稳定 paragraphId/fingerprint 传入，以及同 verdict 撤销/切换 verdict。
+- 补充测试 mock 的 `listMessageFeedback`、`toggleFeedback` 与段落查询依赖；验证后全量为 15 个测试文件 / 97 个测试通过。
+
+## 2026-08-08 — 写作上下文注入近期偏好反馈
+
+- `prepareWritingTurnContext` 与场景、检索段落并行读取当前作品最近 8 条反馈，并通过 `listProjectParagraphs` 验证段落锚点；反馈读取失败时按非核心可选资料安全降为空，避免阻塞写作请求。
+- 写作资料 JSON 新增“近期偏好反馈” section，预算计划继续使用既有 `feedback` key；预览和真实发送共用同一 `prepareWritingTurnContext` 渲染路径。
+- 消息级反馈在同消息存在段落反馈时明确限定为其他未单独标注段落的一般偏好；段落级反馈明确覆盖消息级规则。点踩优先于点赞排序与保留，点赞写为“保持此风格”，点踩写为“避免/调整”，自定义说明置于原因之前。
+- 每条反馈仅发送章节序号/标题、消息或段落定位、截短首句预览、短指纹、结论指令和短 reason/customNote；预览始终至少截去一个字符，并阻止说明字段复制完整目标原文。
+- 四档压缩策略加入反馈裁剪：normal 8 条、organizing 6 条、compressed 4 条、critical 最多 2 条且仅保留点踩；反馈 section 为可裁剪资料，critical 锁定的核心规则、当前工作区和核心记忆（含开放伏笔 ID）优先保留。
+- 新增 `src/providers/__tests__/feedbackContext.test.ts`，覆盖空反馈、消息/段落覆盖、点踩优先、critical 裁剪、请求不含完整目标段落及预览/发送 token 一致性。
+- 验证：`npm test`（15 个测试文件 / 94 个测试通过）、`npm run build` 通过。
+
+## 2026-08-08 — 章节摘要版本历史与恢复界面
+
+- 设置抽屉的“上下文与记忆”区域新增“摘要版本历史”入口，进入独立对话框查看各章节的摘要版本、来源、时间、摘要预览与来源段落数量；版本列表不提供编辑或删除操作。
+- `SummaryHistoryDialog` 按版本倒序显示，并以当前 `Chapter.summary` 的摘要文本匹配“当前使用”版本；若多个版本文本相同，优先标记最新版本。读取中的 loading、无章节/无历史空状态、数据库读取错误及重试均在对话框内处理。
+- 恢复操作必须确认，明确说明会生成新的 `restore` 版本且不会删除历史。App 在数据库恢复成功后立即复用 `refreshWorkspace` 重载当前项目，并提示后续写作会使用恢复后的摘要；刷新失败会回传可恢复错误，对话框不会关闭。
+- 新增组件、设置入口和 App 集成测试，覆盖章节切换、倒序/当前标记、loading/empty/error、确认恢复、成功后刷新版本和 workspace、失败保留对话框。
+- 样式沿用现有抽屉/对话框体系，版本项以分隔列表呈现而非卡片墙；深浅色主题、移动端底部对话框滚动和窄屏全宽恢复按钮均已覆盖。
+- 验证：`npm test`（14 个测试文件 / 87 个测试通过）、`npm run build` 通过；Impeccable detector（`src/App.tsx`、`src/components/SettingsDrawer.tsx`、`src/components/SummaryHistoryDialog.tsx`、`src/styles.css`）返回 `[]`。
+
+## 2026-08-08 — 渐进式写作上下文整理
+
+- 写作上下文从单次按预算裁剪升级为四档稳定策略：`normal`、`organizing`、`compressed`、`critical`。档位依据未裁剪的常规上下文真实 token 需求相对 `contextContentBudgetTokens` 的压力比决定，集中阈值为 `0.70`、`0.90`、`1.15`；零内容预算时使用可序列化的高有限压力值进入 `critical`。
+- `prepareWritingTurnContext` 现先用当前 tokenizer 构建未裁剪常规候选材料并测量 demand，再按档位选择/重建上下文，最后执行原有真实 token 硬校验；预览与发送仍调用同一条准备路径。未增加模型调用、网络请求、`summaryVersions` 写入或自动摘要，压缩材料仅使用已有章节摘要、核心记忆和当前工作区。
+- `ContextBudgetPlan` 新增可序列化的 `compressionStage`、`contextDemandTokens`、`contextRetainedTokens` 与 `contextPressureRatio`。`normal` 保留原有丰富资料；后续档位逐步收紧设定范例、当前正文尾部、时间线、章节提要数量、检索 topK 与近期对话；`critical` 锁定核心规则、当前章节状态和含稳定 ID 的开放伏笔。
+- 段落检索改为原子记录：段落 ID、位置和原文只会整条保留，预算不足时整条省略，绝不发送半条锚点。
+- `ContextUsage` 明细新增低调的常规状态，以及整理中、已压缩、紧凑上下文三档递进提示；紧凑档说明保留范围并给出缩短输入、降低最大输出或更换更大窗口模型的恢复建议。简洁条仍显示 `estimatedInputTokens / inputLimitTokens`。
+- 覆盖四档阈值边界、预览/发送计划一致性、低优先级 token 单调收紧、critical 核心事实与整条检索锚点，以及四档用量 UI 文案/样式。Impeccable detector（`ContextUsage.tsx`、`styles.css`）返回 `[]`。
+
+## 2026-08-08 — 写作上下文用量预览
+
+- 新增 `previewWritingTurnBudget`：与 `generateWritingTurn` 共用 `prepareWritingTurnContext`，统一执行当前项目场景读取、段落 Retriever、上下文裁剪、最终序列化及 `ContextBudgetPlan` 构造；预览不发送模型请求，避免出现“预览一套、发送另一套”的预算偏差。
+- 新增 `ContextUsage` / `ContextUsageDetails`：输入区上方常驻“上下文 · 约 N / M”细条，点击打开可访问的明细对话框；展示系统提示、项目/工作区、核心记忆、时间线/检索、近期消息、反馈预留和用户消息的 token 与占比，并显示输出预留、安全余量、剩余 token、窗口占比和计数来源。
+- App 对当前 workspace、草稿和文本 Provider 使用 240ms debounce 预览，并在输入变化时取消过期响应；loading、empty、over-limit、fallback 与 error 均不会阻塞发送。输入框获得焦点时通过 `data-composer-focused` 压缩隐藏浮层，且条本身采用绝对定位，不挤压键盘态输入区域。
+- 设置抽屉新增“查看本轮上下文用量”入口，复用 App 持有的同一份 `ContextBudgetPlan` 和 ContextUsage 对话框，不复制预算渲染逻辑。
+- 明细对话框使用 `role="dialog"`、标题关联、Lucide 关闭图标、Escape 与关闭按钮、焦点转移和移动端滚动；新增组件测试覆盖简洁条、明细分项、状态与键盘关闭。
+- 验证：`npm test`（11 个测试文件 / 71 个测试通过，含 `WritingInstructionsDialog` 长文本确认路径）、`npm run build` 通过；Impeccable mechanical detector（指定 4 个 UI 文件）返回 `[]`。
+- 审查修正：简洁条改为 `estimatedInputTokens / inputLimitTokens`，即当前消息与注入内容估算相对已扣输出预留和安全余量后的输入可用窗口；比例条统一使用 `--context-usage-section-scale`，测试同时锁定运行时自定义属性和 CSS `scaleX` 契约。
+
+## 2026-08-08 — 段落级 Retriever 与 Bigram BM25
+
+- 新增可插拔 `Retriever` 接口和稳定的 `RetrievedParagraph` 结果结构（paragraphId、项目/章节/消息定位、段落序号、指纹、原文、得分）；写作请求可通过可选依赖注入未来的语义实现，默认使用零依赖 `BigramBm25Retriever`。
+- BM25 主体使用中文重叠字符 bigram、英文/数字整词、TF、DF/IDF 与文档长度归一；并为单个中文字符提供受控 unigram fallback。结果采用输入顺序作为同分稳定排序，支持 topK 与完整段落字符预算，指纹漂移记录不会计分或注入。
+- 新增数据库最小查询 `listRetrievableProjectParagraphs`：仅接收当前 `Chapter.content` hash/段落 ID/原文一致的章节版本，保留消息段落；按同一 chapterId + 指纹/归一原文去重并优先当前章节副本，不跨章节合并，旧章节版本仍保留。
+- 写作上下文改为按用户请求及当前章节/场景实体检索段落原文，注入段落 ID、章节标题/序号、段落序号和原文；不再从 `StoredScene.excerpt` 作为检索原文。检索段落归入 `timelineRetrievedContext`，二次预算裁剪不足以保留完整锚点时整条省略，避免注入残缺 ID。
+- 新增 Retriever BM25、数据库过滤/去重、写作请求锚点与预算分项集成测试；定向验证：`npm test -- src/providers/__tests__/retriever.test.ts src/data/retrieval.test.ts`（8 passed）；`npm run build` 通过。全量 `npm test` 的既有长期设定/UI 测试仍有 5 秒超时，检索定向测试未复现该问题。
+
+## 2026-08-08 — 统一段落库
+
+- 新增 Dexie v3 的 `paragraphs` 表，记录消息/章节段落的稳定 ID、项目/章节/消息定位、索引、原文、指纹与创建时间；保留 `ConversationMessage.paragraphs`，因此既有 UI 渲染无需改动。
+- 指纹使用 `hashText(normalizeText(text))`：归一化空白、全半角/常见中文标点、引号和破折号等等价形式，并保持 FNV-1a 哈希跨会话确定性。
+- 迁移从 v2 的权威记录直接回填：仅从 prose `Message.paragraphs`（需具备自身 `chapterId`）和 `Chapter.content` 生成记录，不进行跨记录文本匹配；异常的无章节旧 prose 会安全跳过而不臆造关联。
+- 章节段落 ID 含整章 `contentHash`，内容相同为幂等 upsert，内容变化新增版本，旧版本不删除。未来增加章节手动保存入口时，应在同一 Dexie 事务中调用 `upsertChapterParagraphs(chapter)`。
+- `completeWritingTurn` 已在包含 `messages` 与 `paragraphs` 的同一 Dexie 事务内写 prose 消息和消息段落；项目删除也在事务中级联删除段落。
+- 新增数据库单元测试，覆盖 v2 回填、消息事务原子性、章节版本化/幂等、指纹归一化和项目删除级联。
+- 验证前通过 `npm ci` 按现有锁文件还原本地依赖；未修改 package 清单或锁文件。
+- 验证：`npm test -- src/data/storyDatabase.test.ts`（6 passed）、`npm test`（5 files / 44 passed）、`npm run build`（通过）。
+
+## 2026-08-08 — 伏笔稳定 ID 与兼容迁移
+
+- 场景持久化模型改为结构化 `Foreshadowing { id, text, aliases? }`：`SceneNotes.foreshadowingPlanted` 保存新建记录，`resolvedForeshadowingIds` 只保存已经验证的稳定 ID。模型解析期另用 `WritingSceneNotes` 明确区分 `newForeshadowingTexts` 与 `resolvedForeshadowingIds`，避免字符串既被当作文本又被当作 ID。
+- 新伏笔由应用在写作结果落库时用 `foreshadowing-${crypto.randomUUID()}` 分配 ID；写作提示和核心记忆会向模型展示未回收项的 `[id] text`，并明确要求只返回已展示的 ID 核销。
+- 核销主路径只接受当前开放记录中的精确稳定 ID；重复 ID 会去重，伪造/不存在 ID 会安全忽略，不会影响其他记录。同名伏笔因 ID 独立而可分别核销。
+- 为兼容旧模型响应和旧数据，保留一个受限的文本兼容路径：仅在归一化后与唯一一个开放伏笔的 `text` 或显式 `aliases` 完全相等时绑定；不使用 `includes`、相似度或语义匹配。无法唯一判断的旧核销文本持久化到 `legacyUnmatchedResolvedForeshadowingTexts`，不会被猜测性关联。
+- Dexie 新增 version(4)，完整保留 v1-v3 schema；按每个项目的场景顺序把旧 `cluesPlanted: string[]` 升级为确定性 `foreshadowing-legacy-${sceneId}-${index}` ID。旧 `cluesResolved` 只在上述唯一完全相等条件下转换为 ID，其他原文保留。段落表及其 v3 迁移语义未改动。
+- 新增 provider/database 测试，覆盖新建 ID、改写措辞但携带正确 ID、伪造 ID、重复核销、同文不同 ID、旧模型文本兼容、模糊文本拒绝和 v3→v4 数据迁移。
+- 验证：`npm test -- src/data/storyDatabase.test.ts src/providers/__tests__/foreshadowing.test.ts src/providers/__tests__/structure.test.ts`（3 files / 29 passed）、`npm test`（6 files / 49 passed）、`npm run build`（通过）。
+
+## 2026-08-08 — 写作上下文真实 Token 预算
+
+- 新增 `js-tiktoken@^1.0.21`，使用其 browser-safe ESM `lite` + `ranks/o200k_base` 入口；不依赖网络、embedding、Node API 或 WASM，`npm run build` 已确认 Vite/Capacitor WebView 可打包。
+- 新增可插拔的 `TokenEstimator { estimate(text: string): number }` 及 provider/model resolver。当前所有 `openai-compatible` 供应商（包括 deepseek、qwen、glm、kimi/moonshot）统一使用 `o200k_base`；未来可通过 registry 注册非兼容供应商适配器。
+- tokenizer 初始化或编码失败时，显式切换到 `chars / 1.2` fallback，并将 `source: chars-per-token` 与 `isFallback: true` 写入预算计划，不会静默伪装为真实计数。
+- 新增纯函数 `buildContextBudgetPlan`：输出窗口、预计输入、输出预留、安全余量、已使用/剩余、超限状态、窗口占比、0.85 收窄和序列化守卫，以及 system prompt、project/workspace、core memory、timeline/retrieved context、recent messages、反馈预留、user message 的 token 和占比。
+- 写作请求现在用同一计划先分配可用上下文、再以实际序列化的系统上下文进行 token 硬校验；沿用原输出预留、10%安全余量、0.85 收窄和原 512 字符序列化守卫（一次性显式换算为 427 token）。长期设定分块请求也改为同一 estimator 计算，不再在正常路径使用字符估算。
+- 新增 estimator 与预算计划测试，覆盖中文、英文、混合标点、空文本、初始化/运行时 fallback、各预算分项、序列化和超限状态。
+- 验证：`npm ls js-tiktoken --depth=0`（`js-tiktoken@1.0.21`）、`npm test -- src/providers/__tests__/tokenEstimator.test.ts src/providers/__tests__/contextBudgetPlan.test.ts src/providers/__tests__/budget.test.ts src/providers/__tests__/structure.test.ts`（4 files / 37 passed）、`npm test`（8 files / 59 passed）、`npm run build`（通过）。
+
+## 2026-08-08 — 设定分块真实 Token 计数性能优化
+
+- `splitStructureSource` 不再对每个候选端点反复执行完整二分 token 化。每段先使用 1024 字符的本地真实 token 探针按比例定位，再最多进行两次真实 token 修正；只有文本 token 密度极端不均时才进入精确二分 fallback。
+- 段落优先边界和最终 trim 后仍会用真实 estimator 核对；若边界合并改变 token 数，才做一次局部精确修正，因此正常路径不会回退到 `chars / 1.2`。
+- 未改变“预计调用超过 10 次先确认”的 UI 语义或测试超时。复现的单独组件测试中，该用例优化前约 6.95 秒并触发 5 秒超时，优化后测试体约 1.23 秒并通过。
+- 验证：`npm test -- src/components/WritingInstructionsDialog.test.tsx --reporter=verbose`（3 passed，第三项 1.23s）、`npm test -- src/providers/__tests__/tokenEstimator.test.ts src/providers/__tests__/contextBudgetPlan.test.ts src/providers/__tests__/structure.test.ts src/providers/__tests__/retriever.test.ts src/data/retrieval.test.ts`（5 files / 36 passed）、`npm test`（10 files / 67 passed）、`npm run build`（通过）。
+
+## 2026-08-08 — 章节摘要不可变版本库与安全恢复
+
+- 新增 `SummaryVersion` 领域记录与 Dexie v5 `summaryVersions` 表；版本按 `(projectId, chapterId, version)` 唯一，记录摘要、源章节内容 hash、统一段落库稳定 ID、创建原因和可选恢复来源。v1–v4 的 schema（含 `paragraphs`）原样保留。
+- v4→v5 迁移会为每个非空 `Chapter.summary` 创建第 1 个 `migration` 版本，并保留原章节数据。段落锚点只接受 ID、项目、章节、索引、原文和指纹均与当前 `Chapter.content` 精确一致的 chapter 段落；无可验证段落时安全存为空数组，绝不按文本模糊绑定。
+- `completeWritingTurn` 现在在原有写作事务内先持久化当前章节段落，再为非空模型 `chapterSummary` 追加 `generation` 版本。只有最新版本的摘要文本和源内容 hash 均相同才幂等跳过；内容或摘要变化会使用下一个单调递增版本号。摘要版本写失败会使章节、prose 消息和段落写入一并回滚。
+- 新增 `listChapterSummaryVersions(projectId, chapterId)` 与 `restoreChapterSummaryVersion(projectId, chapterId, versionId)`。恢复在一个事务内验证章节和版本的项目/章节归属，拒绝跨项目或跨章节 ID；它更新 `Chapter.summary` 并总是创建新的 `restore` 版本、以 `restoredFromId` 指向旧版本，不修改历史版本。恢复记录保留被恢复版本的源内容出处，仅保留仍能验证为该出处/项目/章节的段落 ID。
+- 项目删除现已在同一事务级联删除 `summaryVersions`。当前没有独立章节删除入口；未来若添加，必须同时按 `projectId + chapterId` 删除对应摘要版本和段落版本。
+- 验证：`npm test -- src/data/storyDatabase.test.ts`（12 passed）、`npm test`（11 files / 75 passed）、`npm run build`（通过）。

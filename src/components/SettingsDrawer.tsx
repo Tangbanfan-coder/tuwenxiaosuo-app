@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Brush, Check, ChevronDown, ChevronRight, FileText, Image, Moon, Palette, ScrollText, Sun, X } from 'lucide-react'
+import { Brush, Check, ChevronDown, ChevronRight, FileText, Gauge, History, Image, Moon, Palette, ScrollText, Sun, X } from 'lucide-react'
+import { contextUsageSummary, type ContextUsageState } from './ContextUsage'
 import { ILLUSTRATION_STYLE_PRESETS, getIllustrationStylePreset } from '../domain/illustrationStyles'
 import { THEME_PRESETS, getThemePreset } from '../domain/themes'
 import type { AppearanceMode, ContextBudget, IllustrationStylePresetId, ThemePresetId } from '../domain/models'
 import type { ProviderConfig, ProviderSettings, ProviderSlot } from '../providers/types'
+import type { ContextBudgetPlan } from '../providers/writing'
 import { usePresence } from '../hooks/usePresence'
 
 interface Props {
@@ -19,6 +21,10 @@ interface Props {
   onEditWritingInstructions: () => void
   contextBudget: ContextBudget
   onContextBudgetChange: (budget: ContextBudget) => Promise<void>
+  contextUsagePlan?: ContextBudgetPlan
+  contextUsageState: ContextUsageState
+  onOpenContextUsage: () => void
+  onOpenSummaryHistory: () => void
   providerSettings: ProviderSettings
   onOpenProviderSettings: (slot: ProviderSlot) => void
   appearanceMode: AppearanceMode
@@ -44,6 +50,10 @@ export default function SettingsDrawer({
   onEditWritingInstructions,
   contextBudget,
   onContextBudgetChange,
+  contextUsagePlan,
+  contextUsageState,
+  onOpenContextUsage,
+  onOpenSummaryHistory,
   providerSettings,
   onOpenProviderSettings,
   appearanceMode,
@@ -135,7 +145,7 @@ export default function SettingsDrawer({
             </div>
             <p className="settings-help">每轮写作都会携带，本轮明确要求可以临时覆盖。</p>
 
-            <div className="control-heading settings-subheading"><ScrollText size={17} /><span>写作上下文</span></div>
+            <div className="control-heading settings-subheading"><ScrollText size={17} /><span>上下文与记忆</span></div>
             <div className="context-budget-choice" role="radiogroup" aria-label="写作上下文长度">
               {([
                 ['standard', '标准', '窗口的 55%'],
@@ -155,6 +165,24 @@ export default function SettingsDrawer({
               ))}
             </div>
             <p className="settings-help">按已识别模型的上下文窗口自动换算（输出与安全预留后按比例使用）。越长越不易忘记旧剧情，但更费 token。</p>
+            <div className="settings-navigation-list context-usage-settings-entry">
+              <button type="button" onClick={onOpenContextUsage}>
+                <Gauge size={18} aria-hidden="true" />
+                <span>
+                  <strong>查看本轮上下文用量</strong>
+                  <small>{contextUsageSummary(contextUsagePlan, contextUsageState)}</small>
+                </span>
+                <ChevronRight size={17} aria-hidden="true" />
+              </button>
+              <button type="button" onClick={onOpenSummaryHistory}>
+                <History size={18} aria-hidden="true" />
+                <span>
+                  <strong>摘要版本历史</strong>
+                  <small>查看章节摘要来源并恢复旧版本</small>
+                </span>
+                <ChevronRight size={17} aria-hidden="true" />
+              </button>
+            </div>
 
             <div className="control-heading settings-subheading"><Palette size={17} /><span>作品氛围</span></div>            <div ref={themeSelectRef} className="theme-select">
               <button

@@ -11,6 +11,10 @@
 - 一个作品对应一个创作会话，正文、章节、角色和插画按作品隔离。
 - 支持创建、切换和删除作品，本地内容在应用重启后保留。
 - 支持按作品保存长期创作设定，并处理本轮要求与长期设定的优先级。
+- 使用稳定段落 ID 与本地 Bigram BM25 检索历史正文，可按章节和段落定位相关原文；检索接口为未来语义检索实现预留扩展点。
+- OpenAI 兼容文本模型使用 `o200k_base` tokenizer 估算上下文，并在输入区显示预计 token、可用窗口、分项用量和压缩状态。
+- 上下文接近窗口时会按常规、整理、压缩和紧凑四档逐步收敛；章节摘要保留不可变版本历史并支持恢复。
+- 伏笔使用应用生成的稳定 ID 记录和核销，避免模型改写措辞后错误匹配。
 - 文本模型与图片模型可分别配置多家供应商、API 地址、API Key 和模型。
 - 支持获取、搜索并选择 OpenAI 兼容接口返回的模型列表。
 - 支持模型自主分章，也支持用户明确要求新开章节。
@@ -21,6 +25,8 @@
 - 图片任务串行执行，不自动重试可能产生费用的请求。
 - Android 图片会保存到应用私有目录，并具备超时、遗留任务恢复和文件完整性检查。
 - 已生成插画支持点击进入全屏预览。
+- 生成正文支持消息级点赞/点踩，并可在反馈面板中选择具体段落、原因和补充说明；近期偏好会以紧凑指令参与后续写作。
+- 流式写作只展示正文段落，不暴露模型内部 JSON 协议字段；完成落库时避免临时流与最终正文重复显示。
 
 ## 技术栈
 
@@ -54,6 +60,14 @@ Web 版本主要用于界面和基础逻辑调试。出于安全考虑，Web 预
 npm run build
 ```
 
+### 测试
+
+```bash
+npm test
+```
+
+提交或发布前应至少通过全量测试、生产构建，以及受影响平台的实际构建。
+
 ## Android 构建
 
 除 Node.js 外，还需要：
@@ -61,6 +75,14 @@ npm run build
 - JDK 21
 - Android SDK Platform 36
 - Android Build Tools 36
+
+Windows PowerShell 可以先设置本机工具链路径（不要把真实本机路径提交到仓库）：
+
+```powershell
+$env:JAVA_HOME = 'C:\path\to\jdk-21'
+$env:ANDROID_SDK_ROOT = 'C:\path\to\Android\Sdk'
+$env:ANDROID_HOME = $env:ANDROID_SDK_ROOT
+```
 
 同步 Web 资源和 Capacitor 插件：
 
@@ -87,6 +109,28 @@ cd android
 ```text
 android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+配置 `android/keystore.properties` 后可构建签名 Release APK：
+
+```powershell
+cd android
+.\gradlew.bat assembleRelease
+```
+
+Release APK 位于：
+
+```text
+android/app/build/outputs/apk/release/app-release.apk
+```
+
+连接已开启 USB 调试的设备后，确认设备在线并覆盖安装 Debug 包：
+
+```powershell
+adb devices
+adb install -r android/app/build/outputs/apk/release/app-release.apk
+```
+
+`-r` 会覆盖现有安装并尽量保留本地作品和应用数据；如需清空数据，应明确执行 `adb shell pm clear com.illustratedstory.app`。当前 Android application ID 为 `com.illustratedstory.app`。
 
 ## 模型接口要求
 

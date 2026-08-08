@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto'
 import { describe, expect, it } from 'vitest'
-import { generateWritingTurn } from '../writing'
+import { generateWritingTurn, previewWritingTurnBudget } from '../writing'
+import { resolveTokenEstimator } from '../tokenEstimator'
 import type { HttpTransport, ProviderConfig, TransportRequest } from '../types'
 
 const textProvider: ProviderConfig = {
@@ -125,6 +126,27 @@ describe('上下文预算', () => {
     await generateWritingTurn(emptyWorkspace(), '写一章', textProvider, captureRequestBody((value) => { body = value }))
     expect(body).not.toHaveProperty('max_tokens')
     expect(body).not.toHaveProperty('max_completion_tokens')
+  })
+
+  it('预览与发送复用同一份阶段化最终上下文计划', async () => {
+    const workspace = emptyWorkspace()
+    workspace.project.id = 'preview-shared-plan'
+    const userRequest = '让开场的雨夜追逐更紧张，并保持第三人称。'
+    const preview = await previewWritingTurnBudget(workspace, userRequest, textProvider)
+    let body: Record<string, unknown> = {}
+    await generateWritingTurn(workspace, userRequest, textProvider, captureRequestBody((value) => { body = value }))
+    const previewAfterSend = await previewWritingTurnBudget(workspace, userRequest, textProvider)
+
+    const messages = body.messages as Array<{ content: string }>
+    const serializedContext = messages[1]?.content
+    const estimator = resolveTokenEstimator({ protocol: textProvider.protocol, providerId: textProvider.id, model: textProvider.model })
+    expect(serializedContext).toMatch(/^当前作品资料：/)
+    expect(preview.serializedContextTokens).toBe(Math.ceil(estimator.estimator.estimate(serializedContext)))
+    expect(preview.contextRetainedTokens).toBe(preview.serializedContextTokens)
+    expect(preview.contextDemandTokens).toBeGreaterThanOrEqual(preview.contextRetainedTokens)
+    expect(previewAfterSend).toEqual(preview)
+    expect(previewAfterSend.compressionStage).toBe(preview.compressionStage)
+    expect(preview.sections.map((section) => section.key)).toContain('timelineRetrievedContext')
   })
 
   it('显式配置输出上限时为通用模型发送 max_tokens', async () => {
