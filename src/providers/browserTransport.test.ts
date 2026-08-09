@@ -131,6 +131,42 @@ describe('BrowserFetchTransport', () => {
     expect(JSON.parse(nativeOptions.data)).toMatchObject({ model: 'test-model', stream: false })
   })
 
+  it('Android 开启流式输出后使用 WebView SSE，不调用 CapacitorHttp', async () => {
+    const body = [
+      'data: {"choices":[{"delta":{"content":"实时正文"}}]}\n',
+      'data: [DONE]\n',
+    ].join('')
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(body, { status: 200 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const onDelta = vi.fn()
+
+    await expect(new BrowserFetchTransport().stream({
+      url: 'https://api.test/v1/chat/completions',
+      method: 'POST',
+      body: '{}',
+      androidTransport: 'webview-stream',
+    }, onDelta)).resolves.toBe('实时正文')
+
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    expect(mocks.nativeRequest).not.toHaveBeenCalled()
+    expect(onDelta).toHaveBeenCalledWith('实时正文')
+  })
+
+  it('Android 流式连接失败时不自动用原生 HTTP 重发', async () => {
+    const fetchSpy = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await expect(new BrowserFetchTransport().stream({
+      url: 'https://api.test/v1/chat/completions',
+      method: 'POST',
+      body: '{}',
+      androidTransport: 'webview-stream',
+    }, vi.fn())).rejects.toThrow('关闭“流式输出”后手动重试；本次没有自动重发')
+
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    expect(mocks.nativeRequest).not.toHaveBeenCalled()
+  })
+
   it('Web stream 继续解析 fetch SSE', async () => {
     mocks.native = false
     const body = [

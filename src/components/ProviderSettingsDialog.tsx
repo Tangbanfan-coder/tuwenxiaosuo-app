@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { Capacitor } from '@capacitor/core'
 import { Check, ChevronDown, Eye, EyeOff, LoaderCircle, PlugZap, Plus, Save, Search, Trash2, X } from 'lucide-react'
 import { createProviderConfig } from '../providers/config'
 import { browserTransport } from '../providers/browserTransport'
@@ -475,6 +476,21 @@ export default function ProviderSettingsDialog({ open, nested = false, settings,
             </label>
           </div>
           {modelUnknownWarning && <p className="field-hint model-limit-hint">{modelUnknownWarning}</p>}
+
+          {activeSlot === 'text' && Capacitor.isNativePlatform() && (
+            <label className="provider-streaming-toggle">
+              <span>
+                <strong>流式输出</strong>
+                <small>通过 WebView 实时显示正文，仅在中转服务支持 CORS 时启用。</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={Boolean(current.androidStreamingEnabled)}
+                onChange={(event) => updateCurrent({ androidStreamingEnabled: event.target.checked })}
+              />
+              <span className="switch" aria-hidden="true" />
+            </label>
+          )}
 
           <div className="connection-row">
             <button className="test-button" type="button" disabled={status.status === 'loading'} onClick={() => void testConnection()}>

@@ -159,7 +159,8 @@ export class BrowserFetchTransport implements HttpTransport {
   }
 
   async stream(request: TransportRequest, onDelta: (delta: string) => void) {
-    if (Capacitor.isNativePlatform()) {
+    const nativeWebViewStream = Capacitor.isNativePlatform() && request.androidTransport === 'webview-stream'
+    if (Capacitor.isNativePlatform() && !nativeWebViewStream) {
       let payload: unknown
       try {
         payload = typeof request.body === 'string' ? JSON.parse(request.body) : request.body
@@ -238,6 +239,9 @@ export class BrowserFetchTransport implements HttpTransport {
       return collected
     } catch (error) {
       if (error instanceof TransportError) throw error
+      if (nativeWebViewStream) {
+        throw new TransportError('流式连接失败，中转站可能未允许 CORS。请在文本模型设置中关闭“流式输出”后手动重试；本次没有自动重发。')
+      }
       if (isTimeoutError(error)) {
         throw new TransportError('连接超时，请检查 API URL')
       }

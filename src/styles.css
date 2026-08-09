@@ -1010,6 +1010,16 @@ label {
 .field-hint { color: #7f7d76; font-size: 10px; line-height: 1.5; }
 .field-error { color: #e19a9d; font-size: 11px; }
 
+.provider-streaming-toggle { min-height: 64px; display: flex; align-items: center; gap: 12px; margin: 0 0 16px; padding: 10px 11px; border: 1px solid #3f3e38; border-radius: 8px; background: #171715; cursor: pointer; }
+.provider-streaming-toggle > span:first-child { min-width: 0; display: grid; flex: 1; gap: 4px; }
+.provider-streaming-toggle strong { color: #d7d3c9; font-size: 12px; }
+.provider-streaming-toggle small { color: #85827a; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.provider-streaming-toggle input { width: 1px; height: 1px; position: absolute; opacity: 0; }
+.provider-streaming-toggle .switch { flex: none; }
+.provider-streaming-toggle input:checked + .switch { background: #8f7c4e; }
+.provider-streaming-toggle input:checked + .switch::after { left: 16px; background: #fff8e7; }
+.provider-streaming-toggle input:focus-visible + .switch { outline: 2px solid #d7c18d; outline-offset: 2px; }
+
 .secret-input { display: flex; align-items: center; }
 .secret-input input { min-width: 0; flex: 1; padding: 0 11px; border: 0; outline: 0; background: transparent; color: #efede7; }
 .secret-input input[type="password"] { -webkit-text-security: disc; color: #6f6d66; }
@@ -1337,6 +1347,9 @@ label {
 .app-shell[data-appearance="light"] .preset-row button,
 .app-shell[data-appearance="light"] .test-button { border-color: #c4c8c1; background: #eceee8; color: #3f463f; }
 .app-shell[data-appearance="light"] .provider-actions button { border-color: #c4c8c1; background: #eceee8; color: #3f463f; }
+.app-shell[data-appearance="light"] .provider-streaming-toggle { border-color: #d2d5ce; background: #f4f5f1; }
+.app-shell[data-appearance="light"] .provider-streaming-toggle strong { color: #303530; }
+.app-shell[data-appearance="light"] .provider-streaming-toggle small { color: #697069; }
 .app-shell[data-appearance="light"] .model-picker { border-color: #d2d5ce; background: #ffffff; }
 .app-shell[data-appearance="light"] .model-picker > header,
 .app-shell[data-appearance="light"] .model-search { border-color: #dfe1dc; }

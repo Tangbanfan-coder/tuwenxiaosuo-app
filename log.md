@@ -184,3 +184,11 @@
 - 新增模型服务弹层层级测试，分别覆盖设置内嵌套打开和独立打开两种状态。
 - 验证：`npm test -- src/components/ProviderSettingsDialog.test.tsx src/components/SettingsDrawer.test.tsx`（2 个文件 / 4 项通过）、`npm run build` 通过（仅保留既有大 chunk 提示）、Impeccable detector 返回 `[]`；390×844 与 1000×800 视口确认嵌套背景为透明且无遮罩动画，移动端底部面板和桌面弹层布局正常。
 - 将本次黑屏闪烁修复、回归测试和变更日志提交并推送到 `origin/codex/context-management-upgrade`；未包含工作区中既有的 `.codex/agents/luna_worker.toml` 改动。
+
+## 2026-08-09 — Android 文本请求可选流式传输
+
+- Android 文本模型设置新增“流式输出”开关，默认关闭且仅在原生 Android 环境显示；关闭时写作请求继续使用 `CapacitorHttp`，避免中转站缺少 CORS 响应头导致请求失败。
+- 开启后仅对话/写作请求改用 WebView `fetch` 解析 SSE，以恢复实时正文；模型列表、生图和参考图上传仍强制走原生 HTTP，不受此开关影响。
+- WebView 流式连接失败时给出中转站 CORS 兼容性提示，并要求用户关闭开关后手动重试；不会自动改用原生 HTTP 重发，避免重复生成和重复计费。Web 环境继续沿用原有流式请求且不显示 Android 专用开关。
+- 新增设置保存与 Web 隐藏、Android SSE 选择、失败不重发以及写作传输模式测试。
+- 验证：定向测试 3 个文件 / 23 项通过；`npm run build` 通过（仅保留既有大 chunk 提示）；Impeccable detector 返回 `[]`。全量测试 130 项中 128 项通过，既有 HEIC 解码失败用例和高压力反馈用例在并行运行时超时；高压力反馈用例单独复测通过，HEIC 解码失败用例单独放宽至 30 秒仍超时，本轮未修改其实现。

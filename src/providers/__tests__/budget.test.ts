@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { generateWritingTurn, previewWritingTurnBudget } from '../writing'
 import { resolveTokenEstimator } from '../tokenEstimator'
 import type { HttpTransport, ProviderConfig, TransportRequest } from '../types'
@@ -53,6 +53,18 @@ function captureRequestBody(onBody: (body: Record<string, unknown>) => void): Ht
       return { status: 200, data: { choices: [{ message: { content: VALID_RESULT } }] } as T }
     },
     async stream() {
+      return VALID_RESULT
+    },
+  }
+}
+
+function captureStreamRequest(onRequest: (request: TransportRequest) => void): HttpTransport {
+  return {
+    async request<T>() {
+      return { status: 200, data: { choices: [{ message: { content: VALID_RESULT } }] } as T }
+    },
+    async stream(request) {
+      onRequest(request)
       return VALID_RESULT
     },
   }
@@ -126,6 +138,16 @@ describe('上下文预算', () => {
     await generateWritingTurn(emptyWorkspace(), '写一章', textProvider, captureRequestBody((value) => { body = value }))
     expect(body).not.toHaveProperty('max_tokens')
     expect(body).not.toHaveProperty('max_completion_tokens')
+  })
+
+  it('按文本供应商配置选择 Android 写作传输模式', async () => {
+    let defaultRequest: TransportRequest | undefined
+    let streamingRequest: TransportRequest | undefined
+    await generateWritingTurn(emptyWorkspace(), '写一章', textProvider, captureStreamRequest((request) => { defaultRequest = request }), vi.fn())
+    await generateWritingTurn(emptyWorkspace(), '写一章', { ...textProvider, androidStreamingEnabled: true }, captureStreamRequest((request) => { streamingRequest = request }), vi.fn())
+
+    expect(defaultRequest?.androidTransport).toBe('native')
+    expect(streamingRequest?.androidTransport).toBe('webview-stream')
   })
 
   it('预览与发送复用同一份阶段化最终上下文计划', async () => {
