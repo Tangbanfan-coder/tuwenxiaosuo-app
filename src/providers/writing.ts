@@ -1942,6 +1942,7 @@ export async function generateWritingTurn(
     auth: { kind: 'bearer' as const, secretRef: config.secretRef },
     timeoutMs: 120_000,
     body,
+    androidTransport: config.androidStreamingEnabled ? 'webview-stream' as const : 'native' as const,
   }
 
   let content: string

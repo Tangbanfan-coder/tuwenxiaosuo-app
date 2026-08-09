@@ -14,6 +14,7 @@ export interface ProviderConfig {
   maxOutputTokens?: number
   manualContextLength?: number
   manualMaxOutputTokens?: number
+  androidStreamingEnabled?: boolean
 }
 
 export interface ProviderSettings {
@@ -42,6 +43,7 @@ export interface TransportRequest {
   auth?: RequestAuth
   body?: BodyInit
   timeoutMs?: number
+  androidTransport?: 'native' | 'webview-stream'
 }
 
 export interface TransportResponse<T> {
