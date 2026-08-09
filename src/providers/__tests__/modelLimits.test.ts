@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { heuristicModelContextTokens, isModelKnown, lookupModelLimit, withModelMetadata } from '../modelLimits'
+import { heuristicModelContextTokens, isModelKnown, lookupModelLimit, MODEL_LIMIT_URLS, withModelMetadata } from '../modelLimits'
 import type { ProviderConfig } from '../types'
 
 describe('模型窗口匹配', () => {
@@ -27,6 +27,17 @@ describe('模型窗口匹配', () => {
     expect(heuristicModelContextTokens('deepseek-chat')).toBe(64_000)
     expect(heuristicModelContextTokens('gpt-4-0613')).toBe(8_000)
     expect(heuristicModelContextTokens('unknown-weird-model')).toBe(32_000)
+  })
+
+  it.each(['grok-5', 'grok-4.5-mini'])('Grok 型号 %s 不会落入 32k 未知模型兜底', (model) => {
+    expect(heuristicModelContextTokens(model)).toBe(256_000)
+    expect(isModelKnown(model)).toBe(true)
+    expect(lookupModelLimit(model)?.context ?? heuristicModelContextTokens(model)).toBeGreaterThan(32_000)
+  })
+
+  it('在线模型表优先使用 jsDelivr，并保留 GitHub Raw 回退', () => {
+    expect(MODEL_LIMIT_URLS[0]).toContain('cdn.jsdelivr.net')
+    expect(MODEL_LIMIT_URLS[1]).toContain('raw.githubusercontent.com')
   })
 })
 

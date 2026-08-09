@@ -12,13 +12,20 @@ export interface ContextUsageDetailsProps {
 }
 
 interface ContextUsageProps extends ContextUsageDetailsProps {
-  composerFocused?: boolean
   detailsOpen?: boolean
   onDetailsOpenChange?: (open: boolean) => void
+  detailsPresentation?: 'popover' | 'sheet'
 }
 
 function formatTokens(value: number) {
   return Math.max(0, Math.round(value)).toLocaleString('zh-CN')
+}
+
+function formatCompactTokens(value: number) {
+  const rounded = Math.max(0, Math.round(value))
+  if (rounded < 1_000) return rounded.toLocaleString('zh-CN')
+  if (rounded < 1_000_000) return `${Number((rounded / 1_000).toFixed(1))}k`
+  return `${Number((rounded / 1_000_000).toFixed(1))}M`
 }
 
 function formatPercent(value: number) {
@@ -177,11 +184,12 @@ export default function ContextUsage({
   plan,
   state,
   error,
-  composerFocused = false,
   detailsOpen,
   onDetailsOpenChange,
+  detailsPresentation = 'popover',
 }: ContextUsageProps) {
   const [internalDetailsOpen, setInternalDetailsOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const isDetailsOpen = detailsOpen ?? internalDetailsOpen
@@ -200,46 +208,62 @@ export default function ContextUsage({
 
   useEffect(() => {
     if (!isDetailsOpen) return
+    if (!previousFocusRef.current?.isConnected) {
+      previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    }
     const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+    const handlePointerDown = (event: MouseEvent) => {
+      if (detailsPresentation !== 'popover' || rootRef.current?.contains(event.target as Node)) return
+      setDetailsOpen(false)
+    }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
       setDetailsOpen(false)
     }
+    document.addEventListener('mousedown', handlePointerDown)
     window.addEventListener('keydown', handleKeyDown)
     return () => {
       window.clearTimeout(focusTimer)
+      document.removeEventListener('mousedown', handlePointerDown)
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [isDetailsOpen])
+  }, [detailsPresentation, isDetailsOpen])
+
+  const compactSummary = state === 'loading'
+    ? '估算中'
+    : state === 'error'
+      ? '暂不可估算'
+      : plan
+        ? `${formatCompactTokens(plan.estimatedInputTokens)} / ${formatCompactTokens(plan.inputLimitTokens)}`
+        : '上下文'
 
   return (
     <div
+      ref={rootRef}
       className="context-usage"
-      data-composer-focused={composerFocused ? 'true' : 'false'}
       data-status={state}
       data-compression-stage={plan?.compressionStage}
+      data-details-presentation={detailsPresentation}
     >
       <button
-        className="context-usage-strip"
+        className="context-usage-trigger"
         type="button"
         aria-label={`${summary}，查看本轮上下文用量明细`}
         aria-expanded={isDetailsOpen}
         aria-haspopup="dialog"
-        aria-hidden={composerFocused || undefined}
-        tabIndex={composerFocused ? -1 : undefined}
         onClick={() => setDetailsOpen(true)}
       >
         {state === 'loading' ? <LoaderCircle size={14} className="context-usage-spinner" aria-hidden="true" /> : <Gauge size={14} aria-hidden="true" />}
-        <span>{summary}</span>
+        <span>{compactSummary}</span>
         {state === 'over-limit' && <AlertTriangle size={14} aria-label="预算超限警告" />}
       </button>
 
       {isDetailsOpen && (
-        <div className="context-usage-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.currentTarget === event.target) setDetailsOpen(false)
+        <div className={`context-usage-surface context-usage-surface--${detailsPresentation}`} role="presentation" onMouseDown={(event) => {
+          if (detailsPresentation === 'sheet' && event.currentTarget === event.target) setDetailsOpen(false)
         }}>
-          <section className="context-usage-dialog" role="dialog" aria-modal="true" aria-labelledby="context-usage-dialog-title">
+          <section className="context-usage-dialog" role="dialog" aria-modal={detailsPresentation === 'sheet'} aria-labelledby="context-usage-dialog-title">
             <header className="context-usage-dialog-header">
               <div>
                 <h2 id="context-usage-dialog-title">本轮上下文用量</h2>

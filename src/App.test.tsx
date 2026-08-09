@@ -69,13 +69,49 @@ const providerSettings: ProviderSettings = {
 }
 
 vi.mock('./data/storyDatabase', () => databaseMocks)
-vi.mock('./components/ProjectDrawer', () => ({ default: () => null }))
-vi.mock('./components/CharacterAssetsDrawer', () => ({ default: () => null }))
+vi.mock('./components/ProjectDrawer', () => ({
+  default: ({
+    open,
+    projects,
+    onDelete,
+  }: {
+    open: boolean
+    projects: StoryProject[]
+    onDelete: (projectId: string) => Promise<void>
+  }) => open ? (
+    <section role="dialog" aria-label="作品列表测试入口">
+      {projects[0] && <button type="button" onClick={() => void onDelete(projects[0].id)}>删除测试作品</button>}
+    </section>
+  ) : null,
+}))
+vi.mock('./components/CharacterAssetsDrawer', () => ({
+  default: ({ open, onClose }: { open: boolean; onClose: () => void }) => open ? (
+    <section role="dialog" aria-label="角色资产测试入口">
+      <button type="button" onClick={onClose}>关闭角色资产</button>
+    </section>
+  ) : null,
+}))
 vi.mock('./components/ProviderSettingsDialog', () => ({ default: () => null }))
-vi.mock('./components/ReferenceImageDialog', () => ({ default: () => null }))
+vi.mock('./components/ReferenceImageDialog', () => ({
+  default: ({
+    open,
+    onImport,
+  }: {
+    open: boolean
+    onImport: (target: { characterId: string }, dataUrl: string, referenceStyleMode: 'project') => Promise<void>
+  }) => open ? (
+    <section role="dialog" aria-label="参考图测试入口">
+      <button type="button" onClick={() => void onImport({ characterId: 'character-1' }, 'data:image/png;base64,dGVzdA==', 'project')}>导入测试参考图</button>
+    </section>
+  ) : null,
+}))
 vi.mock('./components/ContextUsage', () => ({ default: () => null }))
 vi.mock('./components/WritingInstructionsDialog', () => ({ default: () => null }))
-vi.mock('./components/ConfirmDialog', () => ({ default: () => null }))
+vi.mock('./components/ConfirmDialog', () => ({
+  default: ({ open, onConfirm }: { open: boolean; onConfirm: () => void }) => open
+    ? <button type="button" onClick={onConfirm}>确认测试操作</button>
+    : null,
+}))
 vi.mock('./components/SettingsDrawer', () => ({
   default: ({ open, onOpenSummaryHistory }: { open: boolean; onOpenSummaryHistory: () => void }) => (
     open ? <button type="button" onClick={onOpenSummaryHistory}>打开摘要版本历史</button> : null
@@ -110,7 +146,7 @@ vi.mock('./providers/config', () => ({
 }))
 vi.mock('./providers/modelLimits', () => ({ refreshModelLimits: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('./providers/imageAssetStore', () => ({
-  persistImageAsset: vi.fn(),
+  persistImageAsset: vi.fn().mockResolvedValue({ imageUrl: 'data:image/png;base64,dGVzdA==', localUri: 'local://reference.png' }),
   recoverPersistedImageAsset: vi.fn(),
   resolveImageSource: vi.fn(),
   saveImageToDevice: vi.fn(),
@@ -185,6 +221,68 @@ beforeEach(() => {
 })
 
 afterEach(() => cleanup())
+
+describe('empty project library', () => {
+  it('keeps a fresh install empty and renders a usable first-project state', async () => {
+    databaseMocks.listProjects.mockResolvedValue([])
+    databaseMocks.getActiveProjectId.mockReturnValue(undefined)
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: '还没有作品' })).toBeDefined()
+    expect(screen.getByRole('button', { name: '新建作品' })).toBeDefined()
+    expect(databaseMocks.createProject).not.toHaveBeenCalled()
+  })
+
+  it('does not recreate an unnamed project after deleting the last active project', async () => {
+    const user = userEvent.setup()
+    databaseMocks.listProjects
+      .mockResolvedValueOnce([project])
+      .mockResolvedValueOnce([])
+    databaseMocks.deleteProject.mockResolvedValue(undefined)
+
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '打开作品列表' }))
+    await user.click(await screen.findByRole('button', { name: '删除测试作品' }))
+    await user.click(await screen.findByRole('button', { name: '确认测试操作' }))
+
+    await waitFor(() => expect(databaseMocks.deleteProject).toHaveBeenCalledWith(project.id))
+    expect(databaseMocks.createProject).not.toHaveBeenCalled()
+    expect(await screen.findByRole('heading', { name: '还没有作品' })).toBeDefined()
+  })
+})
+
+describe('reference image navigation', () => {
+  it('returns from character assets to reference image entry after an import', async () => {
+    const user = userEvent.setup()
+    databaseMocks.loadProjectWorkspace.mockResolvedValue({
+      ...workspace,
+      characters: [{
+        id: 'character-1',
+        projectId: project.id,
+        name: '林昭',
+        role: '主角',
+        identity: { ageAndBuild: '', fixedTraits: [] },
+        appearance: { defaultLook: '', wardrobe: '' },
+        continuity: { revision: 0, referenceStyleMode: 'project' },
+        portraitStatus: 'ready',
+        status: 'draft',
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+    })
+
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '参考图' }))
+    await user.click(await screen.findByRole('button', { name: '导入测试参考图' }))
+    expect(await screen.findByRole('dialog', { name: '角色资产测试入口' })).toBeDefined()
+
+    await user.click(screen.getByRole('button', { name: '关闭角色资产' }))
+    expect(await screen.findByRole('dialog', { name: '参考图测试入口' })).toBeDefined()
+  })
+})
 
 describe('App summary history integration', () => {
   it('opens summary history from settings and reloads the workspace after a successful restore', async () => {

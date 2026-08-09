@@ -128,3 +128,51 @@
 - 新增 `listChapterSummaryVersions(projectId, chapterId)` 与 `restoreChapterSummaryVersion(projectId, chapterId, versionId)`。恢复在一个事务内验证章节和版本的项目/章节归属，拒绝跨项目或跨章节 ID；它更新 `Chapter.summary` 并总是创建新的 `restore` 版本、以 `restoredFromId` 指向旧版本，不修改历史版本。恢复记录保留被恢复版本的源内容出处，仅保留仍能验证为该出处/项目/章节的段落 ID。
 - 项目删除现已在同一事务级联删除 `summaryVersions`。当前没有独立章节删除入口；未来若添加，必须同时按 `projectId + chapterId` 删除对应摘要版本和段落版本。
 - 验证：`npm test -- src/data/storyDatabase.test.ts`（12 passed）、`npm test`（11 files / 75 passed）、`npm run build`（通过）。
+
+## 2026-08-09 — 上下文入口与设置二级页交互重构
+
+- 上下文用量入口从输入区上方的常驻横条移入输入卡片底部工具栏，使用紧凑 token 数值和仪表图标表达状态；输入卡片同时收纳角色、参考图、自动配图与发送动作，建立与本轮发送一致的操作层级。
+- 从输入栏打开上下文用量时，改为锚定在入口上方的非模态浮层，支持点击外部、关闭按钮和 `Escape` 收起；从设置打开时复用同一份预算明细，但改为带遮罩的底部上推面板。
+- 长期创作设定、摘要版本历史、文本/图片模型服务不再先关闭设置页。设置抽屉保留在下层并进入暂停状态，二级页面在移动端从底部滑入；关闭后直接回到原设置位置，且 `Escape` 不会同时关闭上下两层。
+- 补充上下文紧凑入口与设置暂停态测试；在 390×844 与 1000×800 视口检查默认输入栏、上下文浮层、设置页及四类二级面板的边界、层级和滚动。
+- 验证：`npm test`（16 files / 101 passed）、`npm run build`（通过；仅保留既有大 chunk 提示）、Impeccable detector（`App.tsx`、`ContextUsage.tsx`、`SettingsDrawer.tsx`、`styles.css`）返回 `[]`。
+
+## 2026-08-09 — 真机网络与参考图链路修复
+
+- `BrowserFetchTransport` 在 Capacitor 原生平台改用 `CapacitorHttp`，普通 JSON/模型列表请求绕过 WebView CORS；multipart `FormData` 会转换为原生 `formData` entries 和 base64 文件。真机写作因原生 HTTP 不提供 SSE 增量回调，自动将 `stream: true` 改为一次性 `stream: false`，完成后仍通过同一 UI 回调展示；Web 端继续使用 fetch SSE。
+- 参考图生图继续走标准 `/images/edits`，但失败信息明确说明需要 OpenAI 兼容 multipart edits 端点并保留原始错误，避免中转站只支持 generations 时出现笼统提示。
+- 参考图导入支持 HEIC/HEIF；若设备能解码则在导入阶段经 canvas 转为 PNG，无法解码时提示先转换为 JPG/PNG/WebP，不再把 HEIC 原样提交给图片模型。
+- 参考图对话框在已有角色时新增“新建角色”选项，可继续创建并绑定第二个及后续角色；补充角色选择、HEIC 成功/失败与导入回调测试。
+- 未收录的 Grok 模型启发式上下文窗口按 256K 处理；在线模型表改为 jsDelivr 优先、GitHub Raw 回退，并仅在有效响应或 304 后记录检查时间。
+- 场景 `order` 改为项目内已有最大值加一，避免同毫秒写作轮次乱序。流式 JSON 截断或解析失败时，`App` 将已投影正文交给 `failWritingTurn`，以失败状态草稿消息保存且不写入章节/场景/段落正式记录。
+- 验证：定向测试 5 个文件 / 41 项通过；`npm run build` 通过（保留既有大 chunk 警告）；`npx vitest run --testTimeout=15000` 通过（19 个文件 / 118 项）；默认 `npm test` 仍有既有 `feedbackContext.test.ts` 单项 5 秒超时，放宽测试时限后通过；Impeccable detector（参考图对话框及样式）返回 `[]`。
+
+## 2026-08-09 — Android Release 覆盖安装
+
+- 运行 `npm run android:sync`，重新构建前端并同步 Capacitor Android 资源；构建仅保留既有大 chunk 警告。
+- 使用 `android/keystore.properties` 指向的 release 签名配置运行 `gradlew assembleRelease`，生成 `android/app/build/outputs/apk/release/app-release.apk`。
+- 安装前通过 Android SDK `apksigner` 比较新 APK 与手机现装 `com.illustratedstory.app` 的 SHA-256 签名证书，结果一致；随后执行 `adb install -r` 覆盖安装并返回 `Success`，未卸载应用、未清空应用数据。
+
+## 2026-08-09 — 当前工作区变更同步
+
+- 将当前分支 `codex/context-management-upgrade` 的全部已修改和新增文件统一提交并推送到 `origin`，范围包含上下文入口与设置交互、真机网络与参考图链路、测试、协作配置和变更日志。
+- release keystore、`android/keystore.properties`、构建产物和签名校验副本保持忽略状态，不进入版本库。
+
+## 2026-08-09 — 移动端作品与设置交互修正
+
+- 手机窄屏下“我的作品”抽屉改为全宽，重命名时不再因原先的 `88vw` 宽度在软键盘上方留下右侧空隙；空作品列表新增明确的空状态。
+- 设置中的“本轮上下文用量”底部面板在手机端去除左右边距，并将最大高度与章节摘要等设置二级页统一为 `94svh`，保持同一层级的全宽视觉行为。
+- 参考图导入后进入角色资产页时记录来源；关闭角色资产会返回新的参考图添加界面，直接从主界面进入角色资产时仍返回主界面。
+- 新作品默认插画画风从“写实电影感”改为“自由发挥”。
+- 数据库初始化不再自动创建“未命名作品”，删除最后一部作品后也不再补建；应用会进入可新建作品的空库界面，并自动打开空作品列表。
+- 补充 App 与数据库回归测试，覆盖首次安装空库、删除最后作品、参考图返回路径和新作品默认画风。
+- 验证：`npx vitest run src/App.test.tsx src/data/storyDatabase.test.ts --testTimeout=15000`（2 个文件 / 27 项通过）、`npm run build` 通过、Impeccable detector 返回 `[]`；390×844 浏览器视口确认作品抽屉与上下文底部面板均横向全屏，新作品设置显示“自由发挥”，控制台无错误。
+- 全量测试共 123 项，其中 122 项通过；既有 `ReferenceImageDialog.test.tsx` 的“设备不能解码 HEIC”用例在 15 秒与单独 30 秒运行时均超时，本批改动未触及其实现。
+
+## 2026-08-09 — 移动端修正版 Release 覆盖安装与同步
+
+- 运行 `npm run android:sync`，完成前端 production 构建并同步 Capacitor Android 资源；仅保留既有大 chunk 提示。
+- 使用 `android/keystore.properties` 配置及 `C:\Users\Zhou\Desktop\keystore\xuying-release.keystore` 执行 `gradlew assembleRelease`，生成签名 APK：`android/app/build/outputs/apk/release/app-release.apk`。
+- 通过 Android SDK `apksigner` 比较新 APK 与手机现装 `com.illustratedstory.app` 的 SHA-256 签名证书，结果一致；随后执行 `adb install -r` 覆盖安装并返回 `Success`，保留现有应用数据。
+- 安装后确认设备上的 `versionCode=1`、`versionName=1.0`，`lastUpdateTime` 已更新为本次安装时间。
+- 将本批移动端 UI、交互、默认值、空作品库、测试及变更日志提交并推送到 `origin/codex/context-management-upgrade`。

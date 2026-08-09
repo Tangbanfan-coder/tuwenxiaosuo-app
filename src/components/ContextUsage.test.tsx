@@ -95,25 +95,20 @@ describe('ContextUsage', () => {
     expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull()
   })
 
-  it('supports the close button and compresses itself while the composer is focused', async () => {
+  it('keeps the compact trigger inside the composer and supports the close button', async () => {
     const user = userEvent.setup()
-    const { container, rerender } = render(<ContextUsage plan={plan()} state="ready" />)
+    const { container } = render(<ContextUsage plan={plan()} state="ready" />)
 
     await user.click(screen.getByRole('button', { name: /查看本轮上下文用量明细/ }))
     await user.click(screen.getByRole('button', { name: '关闭上下文用量明细' }))
     expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull()
-
-    rerender(<ContextUsage plan={plan()} state="ready" composerFocused />)
-    const root = container.querySelector('.context-usage')
-    const strip = container.querySelector('.context-usage-strip')
-    expect(root?.getAttribute('data-composer-focused')).toBe('true')
-    expect(strip?.getAttribute('tabindex')).toBe('-1')
+    expect(container.querySelector('.context-usage-trigger')?.textContent).toContain('1.9k / 14.5k')
   })
 
   it('renders loading, empty, over-limit, fallback and error states without blocking details', async () => {
     const user = userEvent.setup()
     const { rerender } = render(<ContextUsage state="loading" />)
-    expect(screen.getByText('上下文 · 估算中')).toBeDefined()
+    expect(screen.getByText('估算中')).toBeDefined()
 
     rerender(<ContextUsage state="empty" />)
     await user.click(screen.getByRole('button', { name: /暂无输入/ }))

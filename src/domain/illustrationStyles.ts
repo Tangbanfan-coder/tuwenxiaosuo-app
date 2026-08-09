@@ -8,7 +8,7 @@ export interface IllustrationStylePreset {
   negativePrompt: string
 }
 
-export const DEFAULT_ILLUSTRATION_STYLE_ID: IllustrationStylePresetId = 'realistic-cinematic'
+export const DEFAULT_ILLUSTRATION_STYLE_ID: IllustrationStylePresetId = 'unconstrained'
 
 export const ILLUSTRATION_STYLE_PRESETS: readonly IllustrationStylePreset[] = [
   {

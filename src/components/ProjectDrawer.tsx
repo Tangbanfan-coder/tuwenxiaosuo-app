@@ -98,6 +98,13 @@ export default function ProjectDrawer({
         </header>
 
         <div className="project-list" aria-label="作品列表">
+          {!projects.length && (
+            <div className="empty-project-list" role="status">
+              <BookPlus size={24} aria-hidden="true" />
+              <strong>还没有作品</strong>
+              <span>从下方新建一部作品开始。</span>
+            </div>
+          )}
           {projects.map((project) => {
             const theme = getThemePreset(project.themeId)
             const isActive = project.id === activeProjectId

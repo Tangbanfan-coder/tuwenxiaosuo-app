@@ -8,8 +8,11 @@ import {
   StoryDatabase,
   beginWritingTurn,
   completeWritingTurn,
+  createProject,
   deleteProject,
+  failWritingTurn,
   hashText,
+  initializeStoryDatabase,
   listChapterSummaryVersions,
   listMessageFeedback,
   listProjectParagraphs,
@@ -111,6 +114,26 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+})
+
+describe('project defaults', () => {
+  it('initializes an empty project library without creating an unnamed project', async () => {
+    await clearStoryDatabase()
+
+    await initializeStoryDatabase()
+
+    expect(await storyDatabase.projects.count()).toBe(0)
+  })
+
+  it('creates new projects with the unconstrained illustration style', async () => {
+    await clearStoryDatabase()
+
+    const created = await createProject('自由画风测试')
+    const style = await storyDatabase.styles.where('projectId').equals(created.id).first()
+
+    expect(style?.illustrationStyleId).toBe('unconstrained')
+    expect(style?.visualPrompt).toBe('')
+  })
 })
 
 describe('paragraph fingerprint', () => {
@@ -730,6 +753,44 @@ describe('paragraph persistence', () => {
     expect(await storyDatabase.paragraphs.where('projectId').equals(project.id).count()).toBe(0)
     expect(await storyDatabase.summaryVersions.where('projectId').equals(project.id).count()).toBe(0)
     expect(await storyDatabase.feedback.where('projectId').equals(project.id).count()).toBe(0)
+  })
+})
+
+describe('failed writing turn persistence', () => {
+  it('atomically preserves partial prose as a failed message without changing chapters or scenes', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写作', false)
+
+    await failWritingTurn(notice.id, '模型没有返回可解析的写作结果', '第一段未完成正文。\n\n第二段仍在生成')
+
+    const messages = await storyDatabase.messages.where('projectId').equals(project.id).sortBy('order')
+    const failedNotice = messages.find((message) => message.id === notice.id)
+    const draft = messages.find((message) => message.kind === 'prose')
+    expect(failedNotice).toMatchObject({ status: 'failed' })
+    expect(failedNotice?.text).toContain('已保留模型已经返回的未完成草稿')
+    expect(draft).toMatchObject({
+      status: 'failed',
+      paragraphs: ['第一段未完成正文。', '第二段仍在生成'],
+      order: notice.order + 1,
+    })
+    expect(userMessage.chapterId).toBeUndefined()
+    expect(await storyDatabase.chapters.count()).toBe(0)
+    expect(await storyDatabase.scenes.count()).toBe(0)
+    expect(await storyDatabase.paragraphs.count()).toBe(0)
+  })
+})
+
+describe('scene ordering', () => {
+  it('uses the previous maximum order plus one even when timestamps are identical', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    try {
+      await completeScene(sceneNotes(), 'new', ['第一轮。'])
+      await completeScene(sceneNotes(), 'continue', ['第二轮。'])
+
+      const scenes = await loadProjectScenes(project.id)
+      expect(scenes.map((scene) => scene.order)).toEqual([1, 2])
+    } finally {
+      now.mockRestore()
+    }
   })
 })
 

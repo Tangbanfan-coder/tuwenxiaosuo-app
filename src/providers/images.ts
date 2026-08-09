@@ -62,22 +62,30 @@ export async function editOpenAiImage(
   const baseUrl = assertImageConfig(config)
   if (!referenceSources.length) return generateOpenAiImage(config, prompt, transport, size)
 
-  const form = new FormData()
-  form.set('model', config.model)
-  form.set('prompt', prompt)
-  form.set('size', size)
-  for (const [index, source] of referenceSources.entries()) {
-    form.append('image', await sourceToBlob(source), `reference-${index + 1}.png`)
-  }
+  try {
+    const form = new FormData()
+    form.set('model', config.model)
+    form.set('prompt', prompt)
+    form.set('size', size)
+    for (const [index, source] of referenceSources.entries()) {
+      form.append('image', await sourceToBlob(source), `reference-${index + 1}.png`)
+    }
 
-  const response = await transport.request<ImageResponse>({
-    url: `${baseUrl}/images/edits`,
-    method: 'POST',
-    auth: { kind: 'bearer', secretRef: config.secretRef },
-    timeoutMs: 180_000,
-    body: form,
-  })
-  return imageSource(response.data)
+    const response = await transport.request<ImageResponse>({
+      url: `${baseUrl}/images/edits`,
+      method: 'POST',
+      auth: { kind: 'bearer', secretRef: config.secretRef },
+      timeoutMs: 180_000,
+      body: form,
+    })
+    return imageSource(response.data)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `参考图生图失败：该功能依赖 OpenAI 兼容的 /images/edits multipart 接口，中转服务可能不支持。原始错误：${detail}`,
+      { cause: error },
+    )
+  }
 }
 
 export function buildCharacterPortraitPrompt(character: CharacterAsset, style?: ProjectStyle, feedback?: string) {
