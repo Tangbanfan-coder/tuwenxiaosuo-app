@@ -8,9 +8,11 @@ import {
   StoryDatabase,
   beginWritingTurn,
   completeWritingTurn,
+  createProject,
   deleteProject,
   failWritingTurn,
   hashText,
+  initializeStoryDatabase,
   listChapterSummaryVersions,
   listMessageFeedback,
   listProjectParagraphs,
@@ -112,6 +114,26 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+})
+
+describe('project defaults', () => {
+  it('initializes an empty project library without creating an unnamed project', async () => {
+    await clearStoryDatabase()
+
+    await initializeStoryDatabase()
+
+    expect(await storyDatabase.projects.count()).toBe(0)
+  })
+
+  it('creates new projects with the unconstrained illustration style', async () => {
+    await clearStoryDatabase()
+
+    const created = await createProject('自由画风测试')
+    const style = await storyDatabase.styles.where('projectId').equals(created.id).first()
+
+    expect(style?.illustrationStyleId).toBe('unconstrained')
+    expect(style?.visualPrompt).toBe('')
+  })
 })
 
 describe('paragraph fingerprint', () => {

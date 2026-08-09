@@ -881,8 +881,7 @@ export async function listRetrievableProjectParagraphs(projectId: string): Promi
 }
 
 export async function initializeStoryDatabase() {
-  if (await storyDatabase.projects.count()) return
-  await createProject('未命名作品')
+  await storyDatabase.open()
 }
 
 export async function listProjects() {

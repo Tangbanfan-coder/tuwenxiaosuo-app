@@ -1,5 +1,6 @@
 ﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  BookPlus,
   BookOpen,
   Check,
   ChevronDown,
@@ -8,6 +9,7 @@ import {
   LoaderCircle,
   Maximize2,
   Menu,
+  Plus,
   RotateCcw,
   Send,
   Settings,
@@ -163,6 +165,7 @@ export default function App() {
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const [appSettingsOpen, setAppSettingsOpen] = useState(false)
   const [characterAssetsOpen, setCharacterAssetsOpen] = useState(false)
+  const [characterAssetsOrigin, setCharacterAssetsOrigin] = useState<'main' | 'reference-image'>('main')
   const [referenceImageOpen, setReferenceImageOpen] = useState(false)
   const [writingInstructionsOpen, setWritingInstructionsOpen] = useState(false)
   const [summaryHistoryOpen, setSummaryHistoryOpen] = useState(false)
@@ -271,6 +274,8 @@ export default function App() {
           await markProjectOpened(initialProject.id)
           const initialWorkspace = await loadProjectWorkspace(initialProject.id)
           if (!cancelled) setWorkspace(initialWorkspace)
+        } else if (!cancelled) {
+          setProjectMenuOpen(true)
         }
       } catch (error) {
         const message = error instanceof Error ? `${error.name}: ${error.message}` : '未知的本地存储错误'
@@ -340,8 +345,13 @@ export default function App() {
           await deleteProject(projectId)
           const remaining = await refreshProjects()
           if (deletingActive) {
-            const nextProject = remaining[0] ?? await createProject('未命名作品')
-            await openProject(nextProject.id)
+            const nextProject = remaining[0]
+            if (nextProject) {
+              await openProject(nextProject.id)
+            } else {
+              setWorkspace(null)
+              setProjectMenuOpen(true)
+            }
           }
           showToast(`已删除作品“${project.title}”`)
         } catch (error) {
@@ -397,6 +407,18 @@ export default function App() {
 
   function closeProviderSettings() {
     setSettingsOpen(false)
+  }
+
+  function openCharacterAssets() {
+    setCharacterAssetsOrigin('main')
+    setCharacterAssetsOpen(true)
+  }
+
+  function closeCharacterAssets() {
+    setCharacterAssetsOpen(false)
+    if (characterAssetsOrigin !== 'reference-image') return
+    setCharacterAssetsOrigin('main')
+    setReferenceImageOpen(true)
   }
 
   async function handleAutoIllustrate(autoIllustrate: boolean) {
@@ -473,6 +495,7 @@ export default function App() {
     if (!character) return
     if (!(await providerIsReady('image'))) {
       setCharacterAssetsOpen(false)
+      setCharacterAssetsOrigin('main')
       openProviderSettings('image')
       showToast('请先完成图片模型配置')
       return
@@ -490,6 +513,7 @@ export default function App() {
       await setCharacterPortraitReady(characterId, storedImage.imageUrl, storedImage.localUri, referenceStyleMode)
       await refreshWorkspace(workspace.project.id)
       setReferenceImageOpen(false)
+      setCharacterAssetsOrigin('reference-image')
       setCharacterAssetsOpen(true)
       showToast('参考图已导入，请确认角色外貌')
     } catch (error) {
@@ -576,7 +600,7 @@ export default function App() {
     const illustration = workspace.illustrations.find((item) => item.id === illustrationId)
     if (!illustration) return
     if (illustration.status === 'generating' || !illustrationReferencesReady(illustration, workspace.characters)) {
-      setCharacterAssetsOpen(true)
+      openCharacterAssets()
       return
     }
     await queueIllustration(illustration, workspace)
@@ -690,10 +714,53 @@ export default function App() {
     )
   }
 
-  if (booting || !workspace) {
+  if (booting) {
     return (
       <main className="app-shell loading-shell" aria-busy="true">
         <div className="loading-mark"><BookOpen size={22} /><span>正在打开作品…</span></div>
+      </main>
+    )
+  }
+
+  if (!workspace) {
+    return (
+      <main className="app-shell" data-appearance={appearanceMode}>
+        <header className="topbar">
+          <button className="icon-button" type="button" aria-label="打开作品列表" onClick={() => setProjectMenuOpen(true)}>
+            <Menu size={21} />
+          </button>
+          <div className="empty-library-title"><BookOpen size={16} /><span>我的作品</span></div>
+          <span className="topbar-spacer" aria-hidden="true" />
+        </header>
+        <section className="empty-library" aria-labelledby="empty-library-title">
+          <BookPlus size={30} aria-hidden="true" />
+          <h1 id="empty-library-title">还没有作品</h1>
+          <p>新建作品后，正文、角色和插画会各自独立保存。</p>
+          <button className="primary-button" type="button" onClick={() => setProjectMenuOpen(true)}>
+            <Plus size={17} aria-hidden="true" />
+            新建作品
+          </button>
+        </section>
+        <ProjectDrawer
+          open={projectMenuOpen}
+          projects={projects}
+          onClose={() => setProjectMenuOpen(false)}
+          onSelect={async (projectId) => {
+            await openProject(projectId)
+            setProjectMenuOpen(false)
+          }}
+          onCreate={handleCreateProject}
+          onDelete={handleDeleteProject}
+          onRename={handleRenameProject}
+        />
+        {toast && (
+          <div className={`app-toast ${toast.kind === 'error' ? 'app-toast-error' : ''}`} role="status">
+            {toast.kind === 'error'
+              ? <TriangleAlert size={17} aria-hidden="true" />
+              : <Check size={17} aria-hidden="true" />}
+            {toast.text}
+          </div>
+        )}
       </main>
     )
   }
@@ -733,7 +800,7 @@ export default function App() {
             className="character-count"
             type="button"
             aria-label={`查看角色资产，共 ${workspace.characters.length} 个角色`}
-            onClick={() => setCharacterAssetsOpen(true)}
+            onClick={openCharacterAssets}
           >
             <UserRound size={18} aria-hidden="true" />
             <span>{workspace.characters.length} 个角色</span>
@@ -764,7 +831,7 @@ export default function App() {
                     imageProviderReady={imageProviderReady}
                     onOpenImageSettings={() => openProviderSettings('image')}
                     characters={workspace.characters}
-                    onOpenCharacterAssets={() => setCharacterAssetsOpen(true)}
+                    onOpenCharacterAssets={openCharacterAssets}
                     onOpenIllustration={(source, title, alt, localUri) => setLightboxImage({ source, title, alt, localUri })}
                   />
                 </div>
@@ -800,7 +867,7 @@ export default function App() {
           />
           <div className="composer-toolbar">
             <div className="composer-tools">
-              <button type="button" onClick={() => setCharacterAssetsOpen(true)}><UserRound size={17} />角色资产</button>
+              <button type="button" onClick={openCharacterAssets}><UserRound size={17} />角色资产</button>
               <button type="button" onClick={() => setReferenceImageOpen(true)}><ImagePlus size={17} />参考图</button>
               <label className="auto-toggle">
                 <input
@@ -929,7 +996,7 @@ export default function App() {
       <CharacterAssetsDrawer
         open={characterAssetsOpen}
         characters={workspace.characters}
-        onClose={() => setCharacterAssetsOpen(false)}
+        onClose={closeCharacterAssets}
         onGenerate={requestCharacterPortrait}
         onConfirm={confirmCharacter}
         onReferenceStyleModeChange={handleReferenceStyleModeChange}

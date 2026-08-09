@@ -157,3 +157,22 @@
 
 - 将当前分支 `codex/context-management-upgrade` 的全部已修改和新增文件统一提交并推送到 `origin`，范围包含上下文入口与设置交互、真机网络与参考图链路、测试、协作配置和变更日志。
 - release keystore、`android/keystore.properties`、构建产物和签名校验副本保持忽略状态，不进入版本库。
+
+## 2026-08-09 — 移动端作品与设置交互修正
+
+- 手机窄屏下“我的作品”抽屉改为全宽，重命名时不再因原先的 `88vw` 宽度在软键盘上方留下右侧空隙；空作品列表新增明确的空状态。
+- 设置中的“本轮上下文用量”底部面板在手机端去除左右边距，并将最大高度与章节摘要等设置二级页统一为 `94svh`，保持同一层级的全宽视觉行为。
+- 参考图导入后进入角色资产页时记录来源；关闭角色资产会返回新的参考图添加界面，直接从主界面进入角色资产时仍返回主界面。
+- 新作品默认插画画风从“写实电影感”改为“自由发挥”。
+- 数据库初始化不再自动创建“未命名作品”，删除最后一部作品后也不再补建；应用会进入可新建作品的空库界面，并自动打开空作品列表。
+- 补充 App 与数据库回归测试，覆盖首次安装空库、删除最后作品、参考图返回路径和新作品默认画风。
+- 验证：`npx vitest run src/App.test.tsx src/data/storyDatabase.test.ts --testTimeout=15000`（2 个文件 / 27 项通过）、`npm run build` 通过、Impeccable detector 返回 `[]`；390×844 浏览器视口确认作品抽屉与上下文底部面板均横向全屏，新作品设置显示“自由发挥”，控制台无错误。
+- 全量测试共 123 项，其中 122 项通过；既有 `ReferenceImageDialog.test.tsx` 的“设备不能解码 HEIC”用例在 15 秒与单独 30 秒运行时均超时，本批改动未触及其实现。
+
+## 2026-08-09 — 移动端修正版 Release 覆盖安装与同步
+
+- 运行 `npm run android:sync`，完成前端 production 构建并同步 Capacitor Android 资源；仅保留既有大 chunk 提示。
+- 使用 `android/keystore.properties` 配置及 `C:\Users\Zhou\Desktop\keystore\xuying-release.keystore` 执行 `gradlew assembleRelease`，生成签名 APK：`android/app/build/outputs/apk/release/app-release.apk`。
+- 通过 Android SDK `apksigner` 比较新 APK 与手机现装 `com.illustratedstory.app` 的 SHA-256 签名证书，结果一致；随后执行 `adb install -r` 覆盖安装并返回 `Success`，保留现有应用数据。
+- 安装后确认设备上的 `versionCode=1`、`versionName=1.0`，`lastUpdateTime` 已更新为本次安装时间。
+- 将本批移动端 UI、交互、默认值、空作品库、测试及变更日志提交并推送到 `origin/codex/context-management-upgrade`。

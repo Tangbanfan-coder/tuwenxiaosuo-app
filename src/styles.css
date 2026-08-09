@@ -65,6 +65,24 @@ label {
 .storage-error h1 { margin: 14px 0 8px; color: #f0e5e6; font-size: 18px; }
 .storage-error p { margin: 0 0 18px; color: #bda4a6; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 
+.empty-library {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px max(32px, env(safe-area-inset-bottom));
+  color: #99968d;
+  text-align: center;
+}
+.empty-library > svg { color: #c1aa72; }
+.empty-library h1 { margin: 16px 0 8px; color: #e8e5dc; font-size: 20px; }
+.empty-library p { max-width: 32ch; margin: 0 0 22px; font-size: 12px; line-height: 1.7; }
+.empty-library .primary-button { min-height: 44px; padding: 0 16px; }
+.empty-library-title { min-height: 44px; display: flex; align-items: center; gap: 8px; color: #f1f0eb; font-weight: 680; }
+.topbar-spacer { width: 44px; height: 44px; }
+
 .topbar {
   min-height: calc(62px + env(safe-area-inset-top));
   padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
@@ -672,6 +690,10 @@ label {
 .drawer-header p, .dialog-header p { margin: 5px 0 0; color: #99968d; font-size: 12px; }
 
 .project-list { flex: 1; min-height: 0; padding: 10px; overflow-y: auto; }
+.empty-project-list { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; color: #8f8c84; text-align: center; }
+.empty-project-list svg { color: #aa9666; }
+.empty-project-list strong { margin-top: 12px; color: #d9d6cc; font-size: 14px; }
+.empty-project-list span { margin-top: 5px; font-size: 11px; }
 .project-list-item-row { display: flex; align-items: stretch; gap: 4px; }
 .project-list-item-row + .project-list-item-row { margin-top: 3px; }
 .project-rename-form { width: 100%; min-height: 68px; display: flex; align-items: center; gap: 4px; padding: 10px; }
@@ -1196,6 +1218,13 @@ label {
 .app-shell[data-appearance="light"] .provider-dialog,
 .app-shell[data-appearance="light"] .reference-dialog,
 .app-shell[data-appearance="light"] .writing-instructions-dialog { border-color: #d3d6cf; background: #fbfbf8; color: #242823; }
+.app-shell[data-appearance="light"] .empty-library { color: #697069; }
+.app-shell[data-appearance="light"] .empty-library > svg,
+.app-shell[data-appearance="light"] .empty-project-list svg { color: #8f7a4e; }
+.app-shell[data-appearance="light"] .empty-library h1,
+.app-shell[data-appearance="light"] .empty-library-title,
+.app-shell[data-appearance="light"] .empty-project-list strong { color: #242823; }
+.app-shell[data-appearance="light"] .empty-project-list { color: #737a72; }
 .app-shell[data-appearance="light"] .drawer-header,
 .app-shell[data-appearance="light"] .dialog-header,
 .app-shell[data-appearance="light"] .new-project-area,
@@ -1344,9 +1373,11 @@ label {
   .auto-toggle input:checked + .switch::after { left: 14px; }
   .context-usage-surface--popover { width: min(400px, calc(100vw - 28px)); }
   .context-usage-dialog { max-height: 60svh; }
-  .context-usage-surface--sheet .context-usage-dialog { width: 100%; max-height: 88svh; border-right: 0; border-left: 0; }
+  .context-usage-surface--sheet { padding-right: 0; padding-left: 0; }
+  .context-usage-surface--sheet .context-usage-dialog { width: 100%; max-height: 94svh; border-right: 0; border-left: 0; }
   .context-usage-dialog-body { padding-right: 15px; padding-left: 15px; }
   .dialog-backdrop { padding: 0; }
+  .project-drawer { width: 100%; border-right: 0; }
   .asset-drawer { width: 100%; border-left: 0; }
   .settings-drawer { width: 100%; border-left: 0; }
   .provider-dialog { width: 100%; max-height: 94svh; border-right: 0; border-bottom: 0; border-left: 0; border-radius: 12px 12px 0 0; }
