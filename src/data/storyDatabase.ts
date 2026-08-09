@@ -1212,6 +1212,7 @@ export async function completeWritingTurn(
       }
 
       const priorScenes = await storyDatabase.scenes.where('projectId').equals(projectId).sortBy('order')
+      const nextSceneOrder = priorScenes.reduce((highest, scene) => Math.max(highest, scene.order), 0) + 1
       const sceneNotes = result.sceneNotes
         ? materializeWritingSceneNotes(result.sceneNotes, priorScenes.map((scene) => scene.notes))
         : emptySceneNotes()
@@ -1219,7 +1220,7 @@ export async function completeWritingTurn(
         id: createId('scene'),
         projectId,
         chapterId: targetChapter.id,
-        order: Date.now(),
+        order: nextSceneOrder,
         createdAt: now,
         notes: sceneNotes,
         excerpt: result.paragraphs.join('\n\n').slice(-6_000),
@@ -1318,10 +1319,30 @@ export async function completeWritingTurn(
   )
 }
 
-export async function failWritingTurn(noticeId: string, message: string) {
-  await storyDatabase.messages.update(noticeId, {
-    text: `写作失败：${message}。没有自动重试，请检查配置后重新发送。`,
-    status: 'failed',
+export async function failWritingTurn(noticeId: string, message: string, partialProse?: string) {
+  const draft = partialProse?.trim()
+  await storyDatabase.transaction('rw', storyDatabase.messages, async () => {
+    const notice = await storyDatabase.messages.get(noticeId)
+    if (!notice) return
+
+    const draftHint = draft ? ' 已保留模型已经返回的未完成草稿，未写入章节正文。' : ''
+    await storyDatabase.messages.update(noticeId, {
+      text: `写作失败：${message}。${draftHint}没有自动重试，请检查配置后重新发送。`,
+      status: 'failed',
+    })
+
+    if (!draft) return
+    const order = (await getLastMessageOrder(notice.projectId)) + 1
+    await storyDatabase.messages.add({
+      id: createId('message'),
+      projectId: notice.projectId,
+      chapterId: notice.chapterId,
+      kind: 'prose',
+      order,
+      createdAt: Date.now(),
+      paragraphs: draft.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean),
+      status: 'failed',
+    })
   })
 }
 

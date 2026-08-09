@@ -33,4 +33,6 @@ Report back with:
 - commands run and their exact outcome;
 - remaining risks, assumptions, or blockers;
 - confirmation that no out-of-scope files were intentionally changed.
+[agents]
+enabled = false
 """

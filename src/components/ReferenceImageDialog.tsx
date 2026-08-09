@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, ImagePlus, LoaderCircle, Upload, X } from 'lucide-react'
+import { Check, ChevronDown, ImagePlus, LoaderCircle, Upload, UserPlus, X } from 'lucide-react'
 import type { CharacterAsset, ReferenceStyleMode } from '../domain/models'
 import { usePresence } from '../hooks/usePresence'
 
@@ -12,6 +12,8 @@ interface Props {
 
 export type ReferenceImageTarget = { characterId: string } | { name: string; role: string }
 
+const NEW_CHARACTER_ID = '__new_character__'
+
 function fileToDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
@@ -19,6 +21,61 @@ function fileToDataUrl(file: File) {
     reader.onerror = () => reject(new Error('无法读取图片'))
     reader.readAsDataURL(file)
   })
+}
+
+export function isHeicReferenceFile(file: File) {
+  const mime = file.type.toLocaleLowerCase()
+  return mime === 'image/heic' || mime === 'image/heif' || /\.hei[cf]$/i.test(file.name)
+}
+
+async function decodeImage(file: File) {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      return await createImageBitmap(file)
+    } catch {
+      // Some WebViews expose createImageBitmap but do not decode HEIC there;
+      // give the platform image decoder a chance before showing the fallback.
+    }
+  }
+
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    const image = new Image()
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve()
+      image.onerror = () => reject(new Error('图片解码失败'))
+      image.src = objectUrl
+    })
+    return image
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+export async function referenceFileToDataUrl(file: File) {
+  if (!isHeicReferenceFile(file)) return fileToDataUrl(file)
+
+  try {
+    const image = await decodeImage(file)
+    const width = 'naturalWidth' in image ? image.naturalWidth : image.width
+    const height = 'naturalHeight' in image ? image.naturalHeight : image.height
+    if (!width || !height) throw new Error('图片尺寸无效')
+
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('设备不支持图片转换')
+    context.drawImage(image, 0, 0)
+    if ('close' in image && typeof image.close === 'function') image.close()
+
+    const png = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG 转换失败')), 'image/png')
+    })
+    return await fileToDataUrl(new File([png], file.name.replace(/\.hei[cf]$/i, '.png'), { type: 'image/png' }))
+  } catch {
+    throw new Error('这台设备无法解码 HEIC/HEIF 图片，请先将图片转换为 JPG、PNG 或 WebP 后再导入')
+  }
 }
 
 export default function ReferenceImageDialog({ open, characters, onClose, onImport }: Props) {
@@ -37,7 +94,7 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
 
   useEffect(() => {
     if (!open) return
-    setCharacterId(characters[0]?.id ?? '')
+    setCharacterId(characters[0]?.id ?? NEW_CHARACTER_ID)
     setCharacterName('')
     setCharacterRole('主要角色')
     setPreview('')
@@ -84,8 +141,8 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
                   onClick={() => setCharacterMenuOpen((value) => !value)}
                 >
                   <span className="theme-select-copy">
-                    <strong>{(characters.find((character) => character.id === characterId)?.name ?? '请选择角色')}</strong>
-                    <small>{characters.find((character) => character.id === characterId)?.role ?? '参考图将绑定到这个角色'}</small>
+                    <strong>{characterId === NEW_CHARACTER_ID ? '新建角色' : (characters.find((character) => character.id === characterId)?.name ?? '请选择角色')}</strong>
+                    <small>{characterId === NEW_CHARACTER_ID ? '创建角色并绑定这张参考图' : (characters.find((character) => character.id === characterId)?.role ?? '参考图将绑定到这个角色')}</small>
                   </span>
                   <ChevronDown size={17} aria-hidden="true" className={characterMenuOpen ? 'rotate-180' : undefined} />
                 </button>
@@ -110,11 +167,26 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
                         </button>
                       )
                     })}
+                    <button
+                      className="theme-select-option"
+                      type="button"
+                      role="option"
+                      aria-selected={characterId === NEW_CHARACTER_ID}
+                      onClick={() => {
+                        setCharacterId(NEW_CHARACTER_ID)
+                        setCharacterMenuOpen(false)
+                      }}
+                    >
+                      <span><strong>新建角色</strong><small>为新角色上传参考图</small></span>
+                      {characterId === NEW_CHARACTER_ID ? <Check size={15} aria-hidden="true" /> : <UserPlus size={15} aria-hidden="true" />}
+                    </button>
                   </div>
                 )}
               </div>
             </div>
-          ) : (
+          ) : null}
+
+          {characterId === NEW_CHARACTER_ID && (
             <div className="reference-character-setup">
               <label className="field">
                 <span>角色名称</span>
@@ -152,30 +224,34 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
           <label className="reference-file-picker">
             <input
               type="file"
-              accept="image/png,image/jpeg,image/webp"
+              aria-label="选择角色参考图片"
+              accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif"
               onChange={(event) => {
                 const file = event.target.files?.[0]
                 if (!file) return
                 if (file.size > 20 * 1024 * 1024) {
+                  setPreview('')
+                  setFileName('')
                   setError('图片不能超过 20 MB')
                   return
                 }
                 setError('')
+                setPreview('')
                 setFileName(file.name)
-                void fileToDataUrl(file).then(setPreview).catch((readError) => setError(readError instanceof Error ? readError.message : '无法读取图片'))
+                void referenceFileToDataUrl(file).then(setPreview).catch((readError) => setError(readError instanceof Error ? readError.message : '无法读取图片'))
               }}
             />
-            {preview ? <img src={preview} alt="待导入的角色参考图预览" /> : <div><ImagePlus size={27} /><strong>选择手机中的图片</strong><span>支持 JPG、PNG、WebP，最大 20 MB</span></div>}
+            {preview ? <img src={preview} alt="待导入的角色参考图预览" /> : <div><ImagePlus size={27} /><strong>选择手机中的图片</strong><span>支持 JPG、PNG、WebP、HEIC/HEIF，最大 20 MB</span></div>}
           </label>
           {fileName && <p className="selected-file">已选择：{fileName}</p>}
           {error && <p className="asset-error" role="alert">{error}</p>}
         </div>
         <footer className="dialog-footer">
-          <span>{characters.length ? '导入后仍需确认，才会用于后续插画' : '角色和图片会一起保存，确认后用于插画'}</span>
-          <button className="save-button" type="button" disabled={!(characters.length ? characterId : characterName.trim()) || !preview || saving} onClick={() => {
-            const target: ReferenceImageTarget = characters.length
-              ? { characterId }
-              : { name: characterName.trim(), role: characterRole.trim() || '主要角色' }
+          <span>{characterId === NEW_CHARACTER_ID ? '角色和图片会一起保存，确认后用于插画' : '导入后仍需确认，才会用于后续插画'}</span>
+          <button className="save-button" type="button" disabled={!(characterId === NEW_CHARACTER_ID ? characterName.trim() : characterId) || !preview || saving} onClick={() => {
+            const target: ReferenceImageTarget = characterId === NEW_CHARACTER_ID
+              ? { name: characterName.trim(), role: characterRole.trim() || '主要角色' }
+              : { characterId }
             setSaving(true)
             void onImport(target, preview, referenceStyleMode).finally(() => setSaving(false))
           }}>

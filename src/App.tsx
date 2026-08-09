@@ -155,8 +155,8 @@ export default function App() {
   const [contextUsagePlan, setContextUsagePlan] = useState<ContextBudgetPlan>()
   const [contextUsageState, setContextUsageState] = useState<ContextUsageState>('empty')
   const [contextUsageError, setContextUsageError] = useState('')
-  const [composerFocused, setComposerFocused] = useState(false)
   const [contextUsageDetailsOpen, setContextUsageDetailsOpen] = useState(false)
+  const [contextUsageDetailsPresentation, setContextUsageDetailsPresentation] = useState<'popover' | 'sheet'>('popover')
   const [booting, setBooting] = useState(true)
   const [bootError, setBootError] = useState('')
   const [sending, setSending] = useState(false)
@@ -168,7 +168,6 @@ export default function App() {
   const [summaryHistoryOpen, setSummaryHistoryOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSlot, setSettingsSlot] = useState<ProviderSlot>('text')
-  const [returnToSettingsDrawer, setReturnToSettingsDrawer] = useState(false)
   const [toast, setToast] = useState<{ text: string; kind: 'success' | 'error' }>()
   const [providerSettings, setProviderSettings] = useState<ProviderSettings>(() => loadProviderSettings())
   const [imageProviderReady, setImageProviderReady] = useState(false)
@@ -391,18 +390,13 @@ export default function App() {
     localStorage.setItem(APPEARANCE_KEY, mode)
   }
 
-  function openProviderSettings(slot: ProviderSlot, returnToDrawer = false) {
+  function openProviderSettings(slot: ProviderSlot) {
     setSettingsSlot(slot)
-    setReturnToSettingsDrawer(returnToDrawer)
-    if (returnToDrawer) setAppSettingsOpen(false)
     setSettingsOpen(true)
   }
 
   function closeProviderSettings() {
     setSettingsOpen(false)
-    if (!returnToSettingsDrawer) return
-    setReturnToSettingsDrawer(false)
-    setAppSettingsOpen(true)
   }
 
   async function handleAutoIllustrate(autoIllustrate: boolean) {
@@ -668,7 +662,8 @@ export default function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
       if (noticeId) {
-        await failWritingTurn(noticeId, message)
+        const partialProse = projectStreamingProse(streamingRawRef.current)
+        await failWritingTurn(noticeId, message, partialProse)
         const nextWorkspace = await loadProjectWorkspace(workspace.project.id)
         if (nextWorkspace) setWorkspace(nextWorkspace)
       } else {
@@ -789,27 +784,6 @@ export default function App() {
       </div>
 
       <footer className="composer-wrap">
-        <ContextUsage
-          plan={contextUsagePlan}
-          state={contextUsageState}
-          error={contextUsageError}
-          composerFocused={composerFocused}
-          detailsOpen={contextUsageDetailsOpen}
-          onDetailsOpenChange={setContextUsageDetailsOpen}
-        />
-        <div className="composer-tools">
-          <button type="button" onClick={() => setCharacterAssetsOpen(true)}><UserRound size={17} />角色资产</button>
-          <button type="button" onClick={() => setReferenceImageOpen(true)}><ImagePlus size={17} />参考图</button>
-          <label className="auto-toggle">
-            <input
-              type="checkbox"
-              checked={workspace.project.autoIllustrate}
-              onChange={(event) => void handleAutoIllustrate(event.target.checked)}
-            />
-            <span className="switch" />
-            自动配图
-          </label>
-        </div>
         <div className="composer">
           <textarea
             rows={1}
@@ -817,8 +791,6 @@ export default function App() {
             placeholder="继续写下去，或告诉 AI 你想看到的画面…"
             aria-label="创作要求"
             onChange={(event) => setDraft(event.target.value)}
-            onFocus={() => setComposerFocused(true)}
-            onBlur={() => setComposerFocused(false)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
@@ -826,9 +798,37 @@ export default function App() {
               }
             }}
           />
-          <button className="send-button" type="button" aria-label="发送" disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>
-            <span className="send-button-surface"><Send size={18} /></span>
-          </button>
+          <div className="composer-toolbar">
+            <div className="composer-tools">
+              <button type="button" onClick={() => setCharacterAssetsOpen(true)}><UserRound size={17} />角色资产</button>
+              <button type="button" onClick={() => setReferenceImageOpen(true)}><ImagePlus size={17} />参考图</button>
+              <label className="auto-toggle">
+                <input
+                  type="checkbox"
+                  checked={workspace.project.autoIllustrate}
+                  onChange={(event) => void handleAutoIllustrate(event.target.checked)}
+                />
+                <span className="switch" />
+                自动配图
+              </label>
+            </div>
+            <div className="composer-actions">
+              <ContextUsage
+                plan={contextUsagePlan}
+                state={contextUsageState}
+                error={contextUsageError}
+                detailsOpen={contextUsageDetailsOpen}
+                detailsPresentation={contextUsageDetailsPresentation}
+                onDetailsOpenChange={(open) => {
+                  if (open) setContextUsageDetailsPresentation('popover')
+                  setContextUsageDetailsOpen(open)
+                }}
+              />
+              <button className="send-button" type="button" aria-label="发送" disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>
+                <span className="send-button-surface"><Send size={18} /></span>
+              </button>
+            </div>
+          </div>
         </div>
       </footer>
 
@@ -848,6 +848,7 @@ export default function App() {
 
       <SettingsDrawer
         open={appSettingsOpen}
+        suspended={writingInstructionsOpen || summaryHistoryOpen || settingsOpen || (contextUsageDetailsOpen && contextUsageDetailsPresentation === 'sheet')}
         projectTitle={workspace.project.title}
         activeThemeId={workspace.project.themeId}
         onClose={() => setAppSettingsOpen(false)}
@@ -857,7 +858,6 @@ export default function App() {
         onIllustrationStyleChange={handleIllustrationStyleChange}
         activeWritingInstructions={workspace.project.writingInstructions ?? ''}
         onEditWritingInstructions={() => {
-          setAppSettingsOpen(false)
           setWritingInstructionsOpen(true)
         }}
         contextBudget={workspace.project.contextBudget ?? 'standard'}
@@ -865,15 +865,14 @@ export default function App() {
         contextUsagePlan={contextUsagePlan}
         contextUsageState={contextUsageState}
         onOpenContextUsage={() => {
-          setAppSettingsOpen(false)
+          setContextUsageDetailsPresentation('sheet')
           setContextUsageDetailsOpen(true)
         }}
         onOpenSummaryHistory={() => {
-          setAppSettingsOpen(false)
           setSummaryHistoryOpen(true)
         }}
         providerSettings={providerSettings}
-        onOpenProviderSettings={(slot) => openProviderSettings(slot, true)}
+        onOpenProviderSettings={openProviderSettings}
         appearanceMode={appearanceMode}
         onAppearanceChange={handleAppearanceChange}
       />
@@ -886,7 +885,6 @@ export default function App() {
         textProvider={providerSettings.text}
         onClose={() => {
           setWritingInstructionsOpen(false)
-          setAppSettingsOpen(true)
         }}
         onSave={handleWritingInstructionsSave}
         onSaveStructure={async (structureJson) => {
@@ -907,7 +905,6 @@ export default function App() {
         chapters={workspace.chapters}
         onClose={() => {
           setSummaryHistoryOpen(false)
-          setAppSettingsOpen(true)
         }}
         listVersions={listChapterSummaryVersions}
         restoreVersion={async (projectId, chapterId, versionId) => {

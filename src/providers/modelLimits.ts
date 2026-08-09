@@ -5,7 +5,10 @@ export interface ModelLimit {
   output?: number
 }
 
-const ONLINE_URL = 'https://raw.githubusercontent.com/Tangbanfan-coder/tuwenxiaosuo-app/main/data/model-limits.min.json'
+export const MODEL_LIMIT_URLS = [
+  'https://cdn.jsdelivr.net/gh/Tangbanfan-coder/tuwenxiaosuo-app@main/data/model-limits.min.json',
+  'https://raw.githubusercontent.com/Tangbanfan-coder/tuwenxiaosuo-app/main/data/model-limits.min.json',
+] as const
 const CACHE_KEY = 'illustrated-story-chat.model-limits.cache.v1'
 const CHECKED_KEY = 'illustrated-story-chat.model-limits.checked.v1'
 const CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
@@ -82,6 +85,7 @@ export function heuristicModelContextTokens(modelId: string) {
   if (id.includes('moonshot') || id.includes('kimi')) return 128_000
   if (id.includes('ernie') || id.includes('文心')) return 128_000
   if (id.includes('minimax')) return 128_000
+  if (id.includes('grok')) return 256_000
   if (id.includes('yi-')) return 32_000
   if (id.includes('llama-3.1') || id.includes('llama-3.3')) return 128_000
   if (id.includes('llama-3')) return 8_000
@@ -129,26 +133,44 @@ export function refreshModelLimits(): Promise<void> {
         const controller = new AbortController()
         const timeout = window.setTimeout(() => controller.abort(), 10_000)
         try {
-          const response = await fetch(ONLINE_URL, {
-            headers: etag ? { 'If-None-Match': etag } : undefined,
-            signal: controller.signal,
-          })
-          if (response.status === 200) {
-            const payload = await response.json() as LimitsPayload
+          for (const url of MODEL_LIMIT_URLS) {
+            let response: Response
+            try {
+              response = await fetch(url, {
+                headers: etag ? { 'If-None-Match': etag } : undefined,
+                signal: controller.signal,
+              })
+            } catch {
+              if (controller.signal.aborted) throw new Error('模型表更新超时')
+              continue
+            }
+            if (response.status === 304) {
+              checked = true
+              break
+            }
+            if (response.status !== 200) continue
+
+            let payload: LimitsPayload
+            try {
+              payload = await response.json() as LimitsPayload
+            } catch {
+              continue
+            }
             const valid = Array.isArray(payload.models) && payload.models.length
               && payload.models.every((model) =>
                 typeof model.m === 'string' && model.m.trim()
                 && typeof model.c === 'number' && Number.isFinite(model.c) && model.c > 0
                 && (model.o === undefined || (typeof model.o === 'number' && Number.isFinite(model.o) && model.o > 0)))
-            if (valid) {
-              runtimeModels = payload.models
-              localStorage.setItem(CACHE_KEY, JSON.stringify({
-                etag: response.headers.get('etag') ?? '',
-                models: payload.models,
-              }))
-            }
+            if (!valid) continue
+
+            runtimeModels = payload.models
+            localStorage.setItem(CACHE_KEY, JSON.stringify({
+              etag: response.headers.get('etag') ?? '',
+              models: payload.models,
+            }))
+            checked = true
+            break
           }
-          checked = response.status === 200 || response.status === 304
         } finally {
           window.clearTimeout(timeout)
         }

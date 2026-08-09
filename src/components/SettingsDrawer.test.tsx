@@ -61,4 +61,37 @@ describe('SettingsDrawer', () => {
     await user.click(screen.getByRole('button', { name: /摘要版本历史/ }))
     expect(onOpenSummaryHistory).toHaveBeenCalledTimes(1)
   })
+
+  it('keeps the settings layer open but ignores Escape while a subpage is above it', async () => {
+    const user = userEvent.setup()
+    const onClose = vi.fn()
+    render(
+      <SettingsDrawer
+        open
+        suspended
+        projectTitle="测试作品"
+        activeThemeId="neutral"
+        onClose={onClose}
+        onThemeChange={vi.fn().mockResolvedValue(undefined)}
+        activeIllustrationStyleId="unconstrained"
+        activeCustomStylePrompt=""
+        onIllustrationStyleChange={vi.fn().mockResolvedValue(undefined)}
+        activeWritingInstructions=""
+        onEditWritingInstructions={vi.fn()}
+        contextBudget="standard"
+        onContextBudgetChange={vi.fn().mockResolvedValue(undefined)}
+        contextUsageState="empty"
+        onOpenContextUsage={vi.fn()}
+        onOpenSummaryHistory={vi.fn()}
+        providerSettings={providerSettings}
+        onOpenProviderSettings={vi.fn()}
+        appearanceMode="dark"
+        onAppearanceChange={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('dialog', { hidden: true }).getAttribute('data-suspended')).toBe('true')
+    await user.keyboard('{Escape}')
+    expect(onClose).not.toHaveBeenCalled()
+  })
 })

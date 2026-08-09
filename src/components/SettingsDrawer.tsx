@@ -10,6 +10,7 @@ import { usePresence } from '../hooks/usePresence'
 
 interface Props {
   open: boolean
+  suspended?: boolean
   projectTitle: string
   activeThemeId: ThemePresetId
   onClose: () => void
@@ -39,6 +40,7 @@ function providerSummary(provider: ProviderConfig) {
 
 export default function SettingsDrawer({
   open,
+  suspended = false,
   projectTitle,
   activeThemeId,
   onClose,
@@ -72,14 +74,14 @@ export default function SettingsDrawer({
   const writingInstructionsPreview = activeWritingInstructions.trim().replace(/\s+/g, ' ')
 
   useEffect(() => {
-    if (!open) return
+    if (!open || suspended) return
     setOpenSelect(null)
     setCustomStyleEditorOpen(false)
     closeButtonRef.current?.focus()
-  }, [open])
+  }, [open, suspended])
 
   useEffect(() => {
-    if (!open) return
+    if (!open || suspended) return
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       if (customStyleEditorOpen) {
@@ -94,7 +96,7 @@ export default function SettingsDrawer({
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [customStyleEditorOpen, onClose, open, openSelect])
+  }, [customStyleEditorOpen, onClose, open, openSelect, suspended])
 
   useEffect(() => {
     if (!openSelect) return
@@ -118,7 +120,14 @@ export default function SettingsDrawer({
     <div className={`settings-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) onClose()
     }}>
-      <aside className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title">
+      <aside
+        className="settings-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-drawer-title"
+        aria-hidden={suspended || undefined}
+        data-suspended={suspended ? 'true' : 'false'}
+      >
         <header className="drawer-header">
           <div>
             <h2 id="settings-drawer-title">设置</h2>
