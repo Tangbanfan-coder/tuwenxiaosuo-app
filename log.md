@@ -192,3 +192,9 @@
 - WebView 流式连接失败时给出中转站 CORS 兼容性提示，并要求用户关闭开关后手动重试；不会自动改用原生 HTTP 重发，避免重复生成和重复计费。Web 环境继续沿用原有流式请求且不显示 Android 专用开关。
 - 新增设置保存与 Web 隐藏、Android SSE 选择、失败不重发以及写作传输模式测试。
 - 验证：定向测试 3 个文件 / 23 项通过；`npm run build` 通过（仅保留既有大 chunk 提示）；Impeccable detector 返回 `[]`。全量测试 130 项中 128 项通过，既有 HEIC 解码失败用例和高压力反馈用例在并行运行时超时；高压力反馈用例单独复测通过，HEIC 解码失败用例单独放宽至 30 秒仍超时，本轮未修改其实现。
+
+## 2026-08-09 — Android 可选流式版本发布安装
+
+- 将 Android 可选流式传输、设置开关、测试和变更日志提交为 `d135b26`，并推送到 `origin/codex/context-management-upgrade`；工作区中既有的 `.codex/agents/luna_worker.toml` 改动未包含在提交中。
+- 运行 `npm run android:sync` 完成 production 构建和 Capacitor Android 资源同步；随后使用 `android/keystore.properties` 的 release 签名配置执行 `gradlew assembleRelease`，生成 `android/app/build/outputs/apk/release/app-release.apk`。
+- 新 APK 与手机现装 `com.illustratedstory.app` 的 SHA-256 签名证书一致；通过 `adb install -r` 覆盖安装并返回 `Success`，保留现有应用数据。安装后确认 `versionCode=1`、`versionName=1.0`。
