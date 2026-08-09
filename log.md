@@ -176,3 +176,11 @@
 - 通过 Android SDK `apksigner` 比较新 APK 与手机现装 `com.illustratedstory.app` 的 SHA-256 签名证书，结果一致；随后执行 `adb install -r` 覆盖安装并返回 `Success`，保留现有应用数据。
 - 安装后确认设备上的 `versionCode=1`、`versionName=1.0`，`lastUpdateTime` 已更新为本次安装时间。
 - 将本批移动端 UI、交互、默认值、空作品库、测试及变更日志提交并推送到 `origin/codex/context-management-upgrade`。
+
+## 2026-08-09 — 设置内打开模型服务的黑屏闪烁修复
+
+- 模型服务从设置抽屉内打开时改用透明的嵌套交互层，不再把设置页已有的 `0.74` 黑色遮罩再叠加一次；下层设置仍保持暂停和轻度变暗，点击二级页外部关闭及返回设置位置的行为不变。
+- 从主界面因模型未配置等场景直接打开模型服务时，继续保留原有全屏遮罩，避免改变独立弹层的层级表现。
+- 新增模型服务弹层层级测试，分别覆盖设置内嵌套打开和独立打开两种状态。
+- 验证：`npm test -- src/components/ProviderSettingsDialog.test.tsx src/components/SettingsDrawer.test.tsx`（2 个文件 / 4 项通过）、`npm run build` 通过（仅保留既有大 chunk 提示）、Impeccable detector 返回 `[]`；390×844 与 1000×800 视口确认嵌套背景为透明且无遮罩动画，移动端底部面板和桌面弹层布局正常。
+- 将本次黑屏闪烁修复、回归测试和变更日志提交并推送到 `origin/codex/context-management-upgrade`；未包含工作区中既有的 `.codex/agents/luna_worker.toml` 改动。

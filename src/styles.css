@@ -632,6 +632,11 @@ label {
 .settings-backdrop.closing,
 .dialog-backdrop.closing { animation: overlay-out 180ms ease-in forwards; }
 
+.dialog-backdrop.nested-dialog-backdrop {
+  background: transparent;
+  animation: none;
+}
+
 .drawer-backdrop { display: flex; justify-content: flex-start; }
 .asset-backdrop,
 .settings-backdrop { display: flex; justify-content: flex-end; }

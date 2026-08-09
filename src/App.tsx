@@ -984,6 +984,7 @@ export default function App() {
 
       <ProviderSettingsDialog
         open={settingsOpen}
+        nested={appSettingsOpen}
         settings={providerSettings}
         initialSlot={settingsSlot}
         onClose={closeProviderSettings}

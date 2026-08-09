@@ -11,6 +11,7 @@ import ConfirmDialog from './ConfirmDialog'
 
 interface Props {
   open: boolean
+  nested?: boolean
   settings: ProviderSettings
   initialSlot?: ProviderSlot
   onClose: () => void
@@ -45,7 +46,7 @@ function validateBaseUrl(value: string, required = false) {
   }
 }
 
-export default function ProviderSettingsDialog({ open, settings, initialSlot = 'text', onClose, onSave }: Props) {
+export default function ProviderSettingsDialog({ open, nested = false, settings, initialSlot = 'text', onClose, onSave }: Props) {
   const dialogRef = useRef<HTMLElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const providerSelectRef = useRef<HTMLDivElement>(null)
@@ -310,7 +311,7 @@ export default function ProviderSettingsDialog({ open, settings, initialSlot = '
   }
 
   return (
-    <div className={`dialog-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
+    <div className={`dialog-backdrop${nested ? ' nested-dialog-backdrop' : ''}${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) void close()
     }}>
       <section
