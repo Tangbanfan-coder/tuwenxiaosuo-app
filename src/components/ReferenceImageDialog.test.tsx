@@ -29,6 +29,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -76,7 +77,31 @@ describe('ReferenceImageDialog', () => {
 
   it('设备不能解码 HEIC 时提示先转换格式', async () => {
     vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('unsupported')))
+    vi.stubGlobal('Image', class {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+
+      set src(_value: string) {
+        queueMicrotask(() => this.onerror?.())
+      }
+    })
     await expect(referenceFileToDataUrl(new File(['heic'], 'portrait.heic', { type: 'image/heic' })))
       .rejects.toThrow('请先将图片转换为 JPG、PNG 或 WebP')
+  })
+
+  it('兜底图片解码器无响应时不会永久等待', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('unsupported')))
+    vi.stubGlobal('Image', class {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      set src(_value: string) {}
+    })
+
+    const conversion = referenceFileToDataUrl(new File(['heic'], 'portrait.heic', { type: 'image/heic' }))
+    const rejection = expect(conversion).rejects.toThrow('请先将图片转换为 JPG、PNG 或 WebP')
+    await vi.runAllTimersAsync()
+
+    await rejection
   })
 })

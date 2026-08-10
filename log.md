@@ -1,5 +1,22 @@
 # 变更记录
 
+## 2026-08-10 — 项目内 Release 签名与手机覆盖安装
+
+- 将 `C:\Users\Zhou\Desktop\keystore\xuying-release.keystore` 复制到项目内 `android/xuying-release.keystore`，源文件与项目副本 SHA-256 一致；沿用项目已有且被忽略的 `android/keystore.properties`，仅把 `storeFile` 改为 `../xuying-release.keystore`，构建不再依赖项目外路径。
+- `android/xuying-release.keystore` 由仓库根目录的 `*.keystore` 规则忽略，`android/keystore.properties` 由 `android/.gitignore` 忽略；密码和密钥均未进入版本控制或命令输出。
+- 运行 `npm run android:sync` 完成 production 构建与 Capacitor Android 资源同步，随后运行 `android/gradlew assembleRelease`，生成签名 APK：`android/app/build/outputs/apk/release/app-release.apk`，SHA-256 为 `0D47C1E9BC10EAD65806622504E52C483B02C37774BCD8BAA3F7E6417658498C`。
+- 新 APK 包名为 `com.illustratedstory.app`，`versionCode=1`、`versionName=1.0`；其签名证书 SHA-256 与手机现装版本一致。执行 `adb install -r` 返回 `Success`，覆盖安装并保留应用数据。
+- 安装后确认 `lastUpdateTime=2026-08-10 10:19:18`，应用进程已启动，`com.illustratedstory.app/.MainActivity` 为手机当前前台 Activity。
+
+## 2026-08-10 — 图片鉴权保存、写作结果恢复与上下文显示修复
+
+- 修复定妆照/插画的 URL 保存链路：移除 Android `Filesystem.downloadFile` 裸 GET。图片接口返回 URL 时改由统一网络传输层读取；与模型服务同源的 URL 携带原 Provider Bearer，跨域 CDN/签名 URL 不发送 API Key，避免凭据泄露。Web 匿名 URL 保持直接展示，不因 CORS 强制读取响应体。
+- 仅对明确支持的 `dall-e-2` / `dall-e-3` 请求 `b64_json`；`gpt-image-*` 和未知兼容模型不附加可能被拒绝的 `response_format`，仍可使用默认 base64 或鉴权 URL 回退，且不会通过重发生成请求来兼容。
+- Android 图片落盘改为 4 字节对齐的 base64 分块写入临时文件，并通过 `stat` 与头尾局部读取校验完整性；同名旧图片采用可回滚替换，保存失败时只恢复本轮开始后生成的文件，不会把旧定妆照误判为本轮成功结果。
+- 写作结构化 JSON 尾部损坏时，仅恢复并保存已经闭合的 `prose.paragraphs`；实时流式显示仍可展示正在生成的末段，完整 JSON 继续保留章节摘要、场景笔记和视觉计划，协议元数据不会被误当正文。
+- 空输入时继续计算并显示当前作品的基础上下文用量；弹层 Presence 在 `open=true` 的当前渲染帧立即呈现，消除从设置进入模型服务时二级页面晚一帧出现造成的闪屏。
+- 验证：相关 Vitest 6 个文件 / 40 项通过；`npm run build` 通过；Impeccable detector 返回 `[]`；桌面与 390×844 移动视口浏览器回归通过，清空输入后上下文用量仍显示。全量 `npm test` 为 146 项通过、4 项 5 秒超时，其中 3 项单文件复跑通过；未触及的 HEIC 解码失败提示用例单独运行仍超时，作为独立既有问题保留。
+
 ## 2026-08-10 — 移除仓库内的本地代理配置
 
 - 从版本控制中移除 `AGENTS.md` 与 `.codex/` 下的代理配置；这些文件当前本地也不再保留。
@@ -203,3 +220,49 @@
 - 将 Android 可选流式传输、设置开关、测试和变更日志提交为 `d135b26`，并推送到 `origin/codex/context-management-upgrade`；工作区中既有的 `.codex/agents/luna_worker.toml` 改动未包含在提交中。
 - 运行 `npm run android:sync` 完成 production 构建和 Capacitor Android 资源同步；随后使用 `android/keystore.properties` 的 release 签名配置执行 `gradlew assembleRelease`，生成 `android/app/build/outputs/apk/release/app-release.apk`。
 - 新 APK 与手机现装 `com.illustratedstory.app` 的 SHA-256 签名证书一致；通过 `adb install -r` 覆盖安装并返回 `Success`，保留现有应用数据。安装后确认 `versionCode=1`、`versionName=1.0`。
+
+## 2026-08-10 — Android 生图完整性误判修复
+
+- 查明 Android 生图保存报“图片文件不完整”的根因：`CapacitorHttp` 对 `arraybuffer` 使用 Android `Base64.DEFAULT` 返回，内容会每 76 个字符带 CR/LF。此前传输层仅把无空白字符串识别为 base64，因而将带换行的完整 base64 再次 `btoa`，把 ASCII base64 文本误写入图片文件。
+- 图片二进制响应、data URL 解析和持久化写入现在都会移除 base64 空白并规范化 URL-safe 字符与 padding；分块写入仍保持 4 字节对齐，文件头尾完整性校验未放宽，截断 PNG 仍会拒绝保存。
+- 新增 Android CR/LF `arraybuffer` 响应、带换行图片 data URL 分块写入和截断 PNG 拒绝测试；同源 Bearer 与跨域匿名 URL 的既有安全边界未改变，未恢复无鉴权 `Filesystem.downloadFile`。
+- 验证：`npx vitest run src/providers/browserTransport.test.ts src/providers/imageAssetStore.test.ts src/providers/images.test.ts`（3 个文件 / 27 项通过），`npm run build` 通过；仍需真机用受保护同源图片 URL 复验一次。
+
+## 2026-08-10 — 模型服务二级页首帧闪屏修复
+
+- 修复从设置页进入模型服务时 Android WebView 短暂露出底层界面的问题：二级页在 `open=true` 的当前渲染帧立即挂载，嵌套模型页改为始终可见的短距离入场动画，不再从屏幕外或透明状态开始。
+- 父设置页挂起时由 `filter: brightness()` 改为稳定的半透明伪元素遮罩，避免 Android WebView 对整层重新栅格化；非嵌套弹层、关闭动画、焦点和 Escape 行为保持不变。
+- 新增父设置页与模型二级页首帧交接、嵌套/非嵌套样式契约及 Presence 同帧挂载测试；完成发行版覆盖安装后继续用真机逐帧复验。
+- 运行受影响范围的 8 个测试文件共 50 项，全部通过；`npm run android:sync`、`gradlew assembleRelease` 和 Impeccable detector 均通过。新 APK SHA-256 为 `8AE858889BEEB237CD3C70E0AD1A13115168088028F539584795AC1CE314FD1A`。
+- `adb install -r` 返回 `Success`，覆盖安装后 `firstInstallTime` 保持不变、`lastUpdateTime=2026-08-10 10:35:59`，说明应用数据已保留。真机按约 45ms 间隔抓取设置到模型接口的切换帧，点击后的下一帧直接呈现模型接口页，未出现主页或空白层；原生日志未见 WebView、Filesystem 或崩溃异常。
+- 用户在发行版手机上完成实际生图保存与模型服务页面切换验收，确认问题均未再复现。
+
+## 2026-08-10 — App 与写作模块第一批职责拆分
+
+- 将时间线消息、插画卡片及正文反馈读取/提交从 `App.tsx` 提取到 `src/components/TimelineMessage.tsx`；保留原有 DOM、CSS class、可访问性文案和交互回调，`App.tsx` 继续负责顶层页面编排与跨功能流程。
+- 将原约 2015 行的 `src/providers/writing.ts` 改为 26 行显式兼容入口，原有导出名称和 `providers/writing` 导入路径不变；内部按职责拆分为 `budget`、`chapterIntent`、`context`、`instructions`、`orchestration`、`prompt`、`result` 七个模块。
+- 写作模块依赖保持单向：基础提示词与结果解析由预算/设定模块复用，上下文模块依赖预算与设定选择，请求编排位于最外层；内部 helper 未通过兼容入口意外公开，未新增依赖或改变请求体、错误文案、token 预算和上下文裁剪行为。
+- 验证：`npx vitest run src/App.test.tsx src/providers/__tests__ --testTimeout=15000`（10 个文件 / 80 项通过）；`npm run build` 通过，仅保留既有大 chunk 提示；`git diff --check` 通过。
+- 全量 `npx vitest run --testTimeout=30000` 共 154 项，其中 153 项通过；唯一失败仍为既有 `ReferenceImageDialog.test.tsx` 的“设备不能解码 HEIC”用例 30 秒超时，本次拆分未触及其实现。
+
+## 2026-08-10 — App 第二批职责拆分
+
+- 将图片查看器从 `App.tsx` 提取为 `src/components/IllustrationLightbox.tsx`，保留原有缩放、双击、拖动、双指捏合、工具栏显隐、Escape、保存、关闭动画及 DOM/class/ARIA 契约；新增直接测试覆盖缩放复位、三种关闭入口、关闭动画和保存成功/失败提示。
+- 新增 `src/hooks/useAppBootstrap.ts`，集中管理项目列表、当前工作区、启动状态、项目打开/刷新，以及数据库初始化、模型限制刷新、中断图片恢复、旧图片完整性审计和 active project 恢复；弹层、写作与图片队列状态仍留在各自边界，没有形成新的万能 Hook。
+- 为启动 Hook 增加直接测试，覆盖 active project 恢复、空库回调、数据库初始化失败和中断插画恢复成功；`App.tsx` 由第一批后的 1330 行进一步降至 919 行。
+- 验证：`npx vitest run src/App.test.tsx src/components/IllustrationLightbox.test.tsx src/hooks/useAppBootstrap.test.tsx src/providers/__tests__ --testTimeout=15000`（12 个文件 / 89 项通过）、`npm run build` 通过、`git diff --check` 通过；仅保留既有大 chunk 提示。
+- 全量 `npx vitest run --testTimeout=30000` 共 163 项，其中 162 项通过；唯一失败仍为既有 HEIC 无法解码用例 30 秒超时。图片查看器的双指捏合与拖动按原逻辑迁移并通过类型检查，仍需后续真机触屏回归。
+
+## 2026-08-10 — HEIC 解码永久等待修复
+
+- 查明反复出现的 HEIC 测试超时并非转换耗时，而是 `createImageBitmap` 失败后进入 `<img>` 兜底解码；JSDOM 不会真正解码图片，也不会自动触发 `load/error`，导致 Promise 永久等待。
+- `<img>` 兜底解码增加 10 秒上限，成功、失败或超时后都会清理定时器和事件处理器；对用户仍统一显示既有的“请先转换为 JPG、PNG 或 WebP”提示，保留部分 WebView 可通过 `<img>` 解码 HEIC 的兼容机会。
+- 测试明确模拟兜底解码器触发 `error`，并新增“解码器完全无响应”场景，通过假定时钟验证不会永久等待。
+- 验证：`npx vitest run src/components/ReferenceImageDialog.test.tsx --testTimeout=15000`（5 项通过）、`npx vitest run --testTimeout=30000`（24 个文件 / 164 项全部通过）、`npm run build` 通过；仅保留既有大 chunk 提示。
+
+## 2026-08-10 — HEIC 修正版 Android Release 覆盖安装
+
+- 运行 `npm run android:sync` 完成前端构建并同步 Capacitor Android 资源；随后在 `android` 目录运行 `gradlew.bat assembleRelease`，构建成功生成 `android/app/build/outputs/apk/release/app-release.apk`。
+- 安装前从手机现装包提取 APK，与新 APK 使用 `apksigner` 比较 SHA-256 签名证书，均为 `7afd7b46942d7d792ad2b47fc5fc62474b3423015b78b73a8c25fa0472318da1`。
+- 对设备 `3B6F66E910B5BALR` 执行 `adb install -r` 覆盖安装并返回 `Success`；`firstInstallTime=2026-08-07 19:46:10` 保持不变，`lastUpdateTime=2026-08-10 12:49:56` 已更新，应用数据未清空。
+- 安装后启动 `com.illustratedstory.app`，进程正常运行，最近 200 行日志未发现 `FATAL EXCEPTION` 或 `AndroidRuntime` 崩溃。

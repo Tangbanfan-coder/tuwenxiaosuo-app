@@ -47,6 +47,13 @@ const databaseMocks = vi.hoisted(() => ({
   },
 }))
 
+const writingMocks = vi.hoisted(() => ({
+  explicitlyRequestsNewChapter: vi.fn(),
+  generateWritingTurn: vi.fn(),
+  previewWritingTurnBudget: vi.fn(),
+  projectStreamingProse: vi.fn(),
+}))
+
 const providerSettings: ProviderSettings = {
   text: {
     id: 'text-provider',
@@ -105,7 +112,9 @@ vi.mock('./components/ReferenceImageDialog', () => ({
     </section>
   ) : null,
 }))
-vi.mock('./components/ContextUsage', () => ({ default: () => null }))
+vi.mock('./components/ContextUsage', () => ({
+  default: ({ state, plan }: { state: string; plan?: unknown }) => <div aria-label="上下文预览状态">{`${state}:${plan ? 'ready' : 'none'}`}</div>,
+}))
 vi.mock('./components/WritingInstructionsDialog', () => ({ default: () => null }))
 vi.mock('./components/ConfirmDialog', () => ({
   default: ({ open, onConfirm }: { open: boolean; onConfirm: () => void }) => open
@@ -159,9 +168,7 @@ vi.mock('./providers/images', () => ({
 }))
 vi.mock('./providers/secretStore', () => ({ secretStore: { has: vi.fn().mockResolvedValue(false) } }))
 vi.mock('./providers/writing', () => ({
-  explicitlyRequestsNewChapter: vi.fn(),
-  generateWritingTurn: vi.fn(),
-  previewWritingTurnBudget: vi.fn(),
+  ...writingMocks,
 }))
 
 import App from './App'
@@ -215,6 +222,11 @@ beforeEach(() => {
     equals: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }),
   })
   databaseMocks.restoreChapterSummaryVersion.mockResolvedValue(undefined)
+  writingMocks.explicitlyRequestsNewChapter.mockReset()
+  writingMocks.generateWritingTurn.mockReset()
+  writingMocks.previewWritingTurnBudget.mockReset()
+  writingMocks.projectStreamingProse.mockReset()
+  providerSettings.text = { ...providerSettings.text, baseUrl: '', model: '' }
   window.requestAnimationFrame = vi.fn(() => 1)
   window.cancelAnimationFrame = vi.fn()
   localStorage.clear()
@@ -250,6 +262,29 @@ describe('empty project library', () => {
     await waitFor(() => expect(databaseMocks.deleteProject).toHaveBeenCalledWith(project.id))
     expect(databaseMocks.createProject).not.toHaveBeenCalled()
     expect(await screen.findByRole('heading', { name: '还没有作品' })).toBeDefined()
+  })
+})
+
+describe('context usage preview', () => {
+  it('keeps the base context preview when a draft is cleared', async () => {
+    const user = userEvent.setup()
+    providerSettings.text = { ...providerSettings.text, model: 'test-model' }
+    writingMocks.previewWritingTurnBudget.mockResolvedValue({
+      isOverLimit: false,
+      estimator: { isFallback: false },
+    })
+
+    render(<App />)
+
+    const input = await screen.findByLabelText('创作要求')
+    await waitFor(() => expect(writingMocks.previewWritingTurnBudget).toHaveBeenCalledWith(workspace, '', providerSettings.text))
+    expect(screen.getByLabelText('上下文预览状态').textContent).toBe('ready:ready')
+
+    await user.type(input, '继续写')
+    await waitFor(() => expect(writingMocks.previewWritingTurnBudget).toHaveBeenLastCalledWith(workspace, '继续写', providerSettings.text))
+    await user.clear(input)
+    await waitFor(() => expect(writingMocks.previewWritingTurnBudget).toHaveBeenLastCalledWith(workspace, '', providerSettings.text))
+    expect(screen.getByLabelText('上下文预览状态').textContent).toBe('ready:ready')
   })
 })
 

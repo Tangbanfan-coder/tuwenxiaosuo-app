@@ -13,6 +13,7 @@ interface Props {
 export type ReferenceImageTarget = { characterId: string } | { name: string; role: string }
 
 const NEW_CHARACTER_ID = '__new_character__'
+const IMAGE_DECODE_TIMEOUT_MS = 10_000
 
 function fileToDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -42,8 +43,20 @@ async function decodeImage(file: File) {
   try {
     const image = new Image()
     await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve()
-      image.onerror = () => reject(new Error('图片解码失败'))
+      let timeoutId: number | undefined
+      let settled = false
+      const settle = (error?: Error) => {
+        if (settled) return
+        settled = true
+        if (timeoutId !== undefined) window.clearTimeout(timeoutId)
+        image.onload = null
+        image.onerror = null
+        if (error) reject(error)
+        else resolve()
+      }
+      image.onload = () => settle()
+      image.onerror = () => settle(new Error('图片解码失败'))
+      timeoutId = window.setTimeout(() => settle(new Error('图片解码超时')), IMAGE_DECODE_TIMEOUT_MS)
       image.src = objectUrl
     })
     return image

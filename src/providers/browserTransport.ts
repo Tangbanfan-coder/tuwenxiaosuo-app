@@ -1,5 +1,5 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core'
-import type { HttpTransport, RequestAuth, TransportRequest } from './types'
+import type { HttpTransport, ImageDownloadRequest, RequestAuth, TransportRequest } from './types'
 import { secretStore } from './secretStore'
 
 interface CapFormDataEntry {
@@ -51,6 +51,33 @@ async function blobToBase64(blob: Blob) {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
   }
   return btoa(binary)
+}
+
+function contentTypeFromHeaders(headers: Record<string, string> | undefined) {
+  const header = Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === 'content-type')?.[1]
+  return header?.split(';', 1)[0] || 'image/png'
+}
+
+function normalizeBase64(value: string) {
+  const compact = value.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
+  const remainder = compact.length % 4
+  return remainder ? `${compact}${'='.repeat(4 - remainder)}` : compact
+}
+
+function binaryToBase64(data: unknown) {
+  if (typeof data === 'string') {
+    const dataUrl = /^data:[^;,]+;base64,(.+)$/s.exec(data)
+    const candidate = normalizeBase64(dataUrl?.[1] ?? data)
+    // Android CapacitorHttp uses Base64.DEFAULT for arraybuffer responses,
+    // which inserts CR/LF every 76 characters. Normalize before deciding it
+    // is not base64, otherwise btoa would encode the base64 text a second time.
+    if (/^[A-Za-z0-9+/]*={0,2}$/.test(candidate)) return candidate
+    return btoa(data)
+  }
+  if (data instanceof ArrayBuffer) return blobToBase64(new Blob([data]))
+  if (ArrayBuffer.isView(data)) return blobToBase64(new Blob([data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)]))
+  if (data instanceof Blob) return blobToBase64(data)
+  throw new TransportError('图片下载没有返回二进制数据')
 }
 
 async function convertFormData(form: FormData): Promise<CapFormDataEntry[]> {
@@ -153,6 +180,49 @@ export class BrowserFetchTransport implements HttpTransport {
         throw new TransportError('连接超时，请检查 API URL')
       }
       throw new TransportError('无法连接接口；Web 预览也可能受到 CORS 限制')
+    } finally {
+      window.clearTimeout(timeout)
+    }
+  }
+
+  async resolveImageSource({ url, auth, timeoutMs = 120_000 }: ImageDownloadRequest) {
+    // Public CDN and signed URLs render directly in browsers even when CORS
+    // blocks fetch. Preserve that path; native still needs data for local save.
+    if (!Capacitor.isNativePlatform() && !auth) return url
+    const requestHeaders = await this.prepareRequest({ auth })
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const response = await CapacitorHttp.request({
+          url,
+          method: 'GET',
+          headers: requestHeaders,
+          connectTimeout: timeoutMs,
+          readTimeout: timeoutMs,
+          responseType: 'arraybuffer',
+        })
+        if (response.status < 200 || response.status >= 300) {
+          const detail = errorDetail(response.data)
+          throw new TransportError(`图片下载返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`, response.status)
+        }
+        return `data:${contentTypeFromHeaders(response.headers)};base64,${await binaryToBase64(response.data)}`
+      } catch (error) {
+        if (error instanceof TransportError) throw error
+        if (isTimeoutError(error)) throw new TransportError('下载图片超时')
+        throw new TransportError('无法下载图片，请检查网络或图片 URL')
+      }
+    }
+
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const response = await fetch(url, { method: 'GET', headers: requestHeaders, signal: controller.signal })
+      if (!response.ok) throw new TransportError(`图片下载返回 HTTP ${response.status}`, response.status)
+      const blob = await response.blob()
+      return `data:${blob.type || response.headers.get('content-type')?.split(';', 1)[0] || 'image/png'};base64,${await blobToBase64(blob)}`
+    } catch (error) {
+      if (error instanceof TransportError) throw error
+      if (error instanceof DOMException && error.name === 'AbortError') throw new TransportError('下载图片超时')
+      throw new TransportError('无法下载图片；Web 预览也可能受到 CORS 限制')
     } finally {
       window.clearTimeout(timeout)
     }

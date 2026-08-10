@@ -317,7 +317,7 @@ export default function ProviderSettingsDialog({ open, nested = false, settings,
     }}>
       <section
         ref={dialogRef}
-        className="provider-dialog"
+        className={`provider-dialog${nested ? ' nested-provider-dialog' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="provider-settings-title"

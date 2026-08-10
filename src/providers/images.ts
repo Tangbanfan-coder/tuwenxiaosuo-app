@@ -1,7 +1,7 @@
 import type { CharacterAsset, ProjectStyle } from '../domain/models'
 import { resolveProjectIllustrationStyle } from '../domain/illustrationStyles'
 import { normalizeBaseUrl } from './openAiCompatible'
-import type { HttpTransport, ProviderConfig } from './types'
+import type { HttpTransport, ProviderConfig, RequestAuth } from './types'
 
 interface ImageResponse {
   data?: Array<{
@@ -10,10 +10,33 @@ interface ImageResponse {
   }>
 }
 
-function imageSource(response: ImageResponse) {
+function resolveImageUrl(url: string, providerBaseUrl: string) {
+  try {
+    const resolved = new URL(url, providerBaseUrl)
+    return { url: resolved.toString(), usesProviderAuth: resolved.origin === new URL(providerBaseUrl).origin }
+  } catch {
+    throw new Error('图片模型返回的图片 URL 无效')
+  }
+}
+
+async function imageSource(response: ImageResponse, baseUrl: string, config: ProviderConfig, transport: HttpTransport) {
   const image = response.data?.[0]
-  if (typeof image?.url === 'string' && image.url) return image.url
   if (typeof image?.b64_json === 'string' && image.b64_json) return `data:image/png;base64,${image.b64_json}`
+  if (typeof image?.url === 'string' && image.url) {
+    if (!transport.resolveImageSource) throw new Error('当前网络通道不支持读取图片 URL；请让服务返回 b64_json')
+    const resolved = resolveImageUrl(image.url, baseUrl)
+    const usesProviderAuth = resolved.usesProviderAuth
+    const auth: RequestAuth | undefined = usesProviderAuth ? { kind: 'bearer', secretRef: config.secretRef } : undefined
+    try {
+      return await transport.resolveImageSource({ url: resolved.url, auth, timeoutMs: 120_000 })
+    } catch (error) {
+      const status = typeof error === 'object' && error ? (error as { status?: unknown }).status : undefined
+      if (!usesProviderAuth && (status === 401 || status === 403)) {
+        throw new Error('图片 URL 位于第三方地址且拒绝匿名读取。为避免泄露 API Key，应用不会向该地址发送凭据；请让服务返回 b64_json 或可公开读取的签名 URL。', { cause: error })
+      }
+      throw new Error('图片已生成，但无法下载图片数据。请让服务返回 b64_json，或检查图片 URL 是否可访问。', { cause: error })
+    }
+  }
   throw new Error('图片模型没有返回 URL 或图片数据')
 }
 
@@ -22,6 +45,12 @@ function assertImageConfig(config: ProviderConfig) {
   if (!baseUrl) throw new Error('请先配置图片模型的 API URL')
   if (!config.model.trim()) throw new Error('请先选择图片模型')
   return baseUrl
+}
+
+function supportsB64ResponseFormat(model: string) {
+  // DALL-E is the only explicitly known OpenAI-compatible family here. GPT
+  // Image and unknown gateways may reject this optional parameter outright.
+  return /^dall-e-(?:2|3)$/i.test(model.trim())
 }
 
 export async function generateOpenAiImage(
@@ -37,9 +66,14 @@ export async function generateOpenAiImage(
     headers: { 'Content-Type': 'application/json' },
     auth: { kind: 'bearer', secretRef: config.secretRef },
     timeoutMs: 180_000,
-    body: JSON.stringify({ model: config.model, prompt, size }),
+    body: JSON.stringify({
+      model: config.model,
+      prompt,
+      size,
+      ...(supportsB64ResponseFormat(config.model) ? { response_format: 'b64_json' } : {}),
+    }),
   })
-  return imageSource(response.data)
+  return imageSource(response.data, baseUrl, config, transport)
 }
 
 async function sourceToBlob(source: string) {
@@ -67,6 +101,7 @@ export async function editOpenAiImage(
     form.set('model', config.model)
     form.set('prompt', prompt)
     form.set('size', size)
+    if (supportsB64ResponseFormat(config.model)) form.set('response_format', 'b64_json')
     for (const [index, source] of referenceSources.entries()) {
       form.append('image', await sourceToBlob(source), `reference-${index + 1}.png`)
     }
@@ -78,7 +113,7 @@ export async function editOpenAiImage(
       timeoutMs: 180_000,
       body: form,
     })
-    return imageSource(response.data)
+    return imageSource(response.data, baseUrl, config, transport)
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     throw new Error(
