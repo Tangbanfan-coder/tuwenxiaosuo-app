@@ -51,7 +51,15 @@ export interface TransportResponse<T> {
   data: T
 }
 
+export interface ImageDownloadRequest {
+  url: string
+  auth?: RequestAuth
+  timeoutMs?: number
+}
+
 export interface HttpTransport {
   request<T>(request: TransportRequest): Promise<TransportResponse<T>>
   stream(request: TransportRequest, onDelta: (delta: string) => void): Promise<string>
+  /** Resolves an image URL to a usable source without exposing credentials to callers. */
+  resolveImageSource?(request: ImageDownloadRequest): Promise<string>
 }

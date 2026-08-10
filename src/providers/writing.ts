@@ -198,14 +198,54 @@ function stripJsonFragments(content: string) {
  * UI needs this protocol-aware view while the final parser still validates
  * the complete response.
  */
-export function projectStreamingProse(content: string) {
-  const paragraphsKey = /"paragraphs"\s*:\s*\[/i.exec(content)
-  if (!paragraphsKey || paragraphsKey.index === undefined) {
-    const trimmed = content.trimStart()
-    return trimmed.startsWith('{') || trimmed.startsWith('```') ? '' : content
+function proseParagraphsArrayStart(content: string) {
+  const proseKey = /"prose"\s*:\s*\{/i.exec(content)
+  if (!proseKey || proseKey.index === undefined) return undefined
+  const proseStart = content.indexOf('{', proseKey.index)
+  if (proseStart < 0) return undefined
+
+  let depth = 1
+  let inString = false
+  let escaped = false
+  for (let index = proseStart + 1; index < content.length; index++) {
+    const character = content[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') {
+      const keyStart = index + 1
+      let keyEnd = keyStart
+      let keyEscaped = false
+      for (; keyEnd < content.length; keyEnd++) {
+        const keyCharacter = content[keyEnd]
+        if (keyEscaped) keyEscaped = false
+        else if (keyCharacter === '\\') keyEscaped = true
+        else if (keyCharacter === '"') break
+      }
+      const key = content.slice(keyStart, keyEnd)
+      const afterKey = content.slice(keyEnd + 1)
+      if (depth === 1 && key === 'paragraphs') {
+        const arrayOffset = /^\s*:\s*\[/.exec(afterKey)?.[0].lastIndexOf('[')
+        if (arrayOffset !== undefined && arrayOffset >= 0) return keyEnd + 1 + arrayOffset
+      }
+      index = keyEnd
+      continue
+    }
+    if (character === '{') depth++
+    else if (character === '}') {
+      depth--
+      if (depth === 0) return undefined
+    }
   }
-  const arrayStart = content.indexOf('[', paragraphsKey.index)
-  if (arrayStart < 0) return ''
+  return undefined
+}
+
+function projectedProseParagraphs(content: string, includePartial: boolean) {
+  const arrayStart = proseParagraphsArrayStart(content)
+  if (arrayStart === undefined) return []
 
   const values: string[] = []
   let raw = ''
@@ -252,8 +292,17 @@ export function projectStreamingProse(content: string) {
     }
   }
 
-  if (inString && raw) values.push(decodeFragment(raw))
-  return values.filter((value) => value.trim()).join('\n\n')
+  if (includePartial && inString && raw) values.push(decodeFragment(raw))
+  return values.filter((value) => value.trim())
+}
+
+export function projectStreamingProse(content: string) {
+  const paragraphs = projectedProseParagraphs(content, true)
+  if (!paragraphs.length) {
+    const trimmed = content.trimStart()
+    return trimmed.startsWith('{') || trimmed.startsWith('```') ? '' : content
+  }
+  return paragraphs.join('\n\n')
 }
 
 function normalizeSceneNotes(value: RawWritingResult['scene_notes']): WritingSceneNotes | undefined {
@@ -325,6 +374,14 @@ export function parseWritingResult(content: string): WritingTurnResult {
       chapterSummary: stringValue(parsed.chapter_summary) || undefined,
       sceneNotes: normalizeSceneNotes(parsed.scene_notes),
       visualPlan: normalizeVisualPlan(parsed.visual_plan),
+    }
+  }
+  const projectedParagraphs = projectedProseParagraphs(content, false)
+  if (projectedParagraphs.length) {
+    return {
+      assistantNote: '模型的结构化结果不完整，已保存可确认的正文；本轮没有自动创建视觉计划。',
+      chapterAction: 'continue',
+      paragraphs: projectedParagraphs,
     }
   }
   const paragraphs = stripJsonFragments(content).split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean)

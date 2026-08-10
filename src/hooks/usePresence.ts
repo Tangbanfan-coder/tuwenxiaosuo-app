@@ -30,5 +30,7 @@ export function usePresence(open: boolean, onClose: () => void, exitDurationMs: 
 
   useEffect(() => () => window.clearTimeout(timerRef.current), [])
 
-  return { present, closing }
+  // Effects run after commit. Reflect an opening prop during this render so a
+  // suspended parent cannot briefly reveal the page below its child dialog.
+  return { present: open || present, closing }
 }

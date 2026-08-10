@@ -194,7 +194,7 @@ export default function App() {
   useEffect(() => {
     const userRequest = draft.trim()
     const textProvider = providerSettings.text
-    if (!workspace || !userRequest || !textProvider.model.trim()) {
+    if (!workspace || !textProvider.model.trim()) {
       setContextUsagePlan(undefined)
       setContextUsageError('')
       setContextUsageState('empty')

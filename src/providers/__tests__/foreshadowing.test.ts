@@ -88,3 +88,50 @@ describe('stable foreshadowing model contract', () => {
     expect(context.context).toContain('仅可按 ID 核销')
   })
 })
+
+describe('writing result recovery', () => {
+  it('keeps every metadata field from a complete structured response', () => {
+    const result = parseWritingResult(JSON.stringify({
+      assistant_note: '本轮推进完成。',
+      chapter_action: 'new',
+      prose: { chapter_title: '第二章', paragraphs: ['第一段正文。'] },
+      chapter_summary: '章节摘要。',
+      scene_notes: { events: ['发生了事件'] },
+      visual_plan: { title: '雨夜', prompt: '雨夜的街道', characters: [] },
+    }))
+
+    expect(result).toMatchObject({
+      assistantNote: '本轮推进完成。',
+      chapterAction: 'new',
+      chapterTitle: '第二章',
+      paragraphs: ['第一段正文。'],
+      chapterSummary: '章节摘要。',
+      visualPlan: { title: '雨夜', prompt: '雨夜的街道' },
+    })
+    expect(result.sceneNotes?.events).toEqual(['发生了事件'])
+  })
+
+  it('recovers only completed prose paragraphs when trailing structured JSON is truncated', () => {
+    const result = parseWritingResult('{"assistant_note":"说明","prose":{"chapter_title":"第一章","paragraphs":["完整第一段。","完整第二段。","未完成的半句')
+
+    expect(result).toMatchObject({
+      chapterAction: 'continue',
+      paragraphs: ['完整第一段。', '完整第二段。'],
+    })
+    expect(result.chapterTitle).toBeUndefined()
+    expect(result.sceneNotes).toBeUndefined()
+    expect(result.visualPlan).toBeUndefined()
+  })
+
+  it('does not treat JSON metadata as prose when no prose paragraphs are available', () => {
+    expect(() => parseWritingResult('{"assistant_note":"只是说明","scene_notes":{"events":["事件"]}}'))
+      .toThrow('模型没有返回可解析的写作结果')
+  })
+
+  it('keeps ordinary non-JSON text on the compatibility path', () => {
+    expect(parseWritingResult('第一段普通文本。\n\n第二段普通文本。')).toMatchObject({
+      paragraphs: ['第一段普通文本。', '第二段普通文本。'],
+      chapterAction: 'continue',
+    })
+  })
+})

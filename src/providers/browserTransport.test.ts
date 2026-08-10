@@ -52,6 +52,53 @@ describe('BrowserFetchTransport', () => {
     }))
   })
 
+  it('原生图片下载使用 CapacitorHttp，并按调用方提供的认证头获取二进制数据', async () => {
+    mocks.nativeRequest.mockResolvedValue({
+      status: 200,
+      data: 'AQID',
+      headers: { 'content-type': 'image/jpeg' },
+      url: 'https://api.test/image',
+    })
+
+    await expect(new BrowserFetchTransport().resolveImageSource({
+      url: 'https://api.test/image',
+      auth: { kind: 'bearer', secretRef: 'provider-key' },
+    })).resolves.toBe('data:image/jpeg;base64,AQID')
+
+    expect(mocks.nativeRequest).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'GET',
+      headers: { Authorization: 'Bearer native-key' },
+      responseType: 'arraybuffer',
+    }))
+  })
+
+  it('原生 arraybuffer 的 CR/LF 包装 base64 会规范化而不会被二次编码', async () => {
+    mocks.nativeRequest.mockResolvedValue({
+      status: 200,
+      data: 'iVBORw0KGgoAAAANSUhEUgAAAAE\r\nAAAABCAIAAACQd1Pe\n',
+      headers: { 'content-type': 'image/png' },
+      url: 'https://api.test/image',
+    })
+
+    await expect(new BrowserFetchTransport().resolveImageSource({
+      url: 'https://api.test/image',
+      auth: { kind: 'bearer', secretRef: 'provider-key' },
+    })).resolves.toBe('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1Pe')
+  })
+
+  it('Web 匿名图片 URL 直接透传，不因 CORS 强制读取响应体', async () => {
+    mocks.native = false
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await expect(new BrowserFetchTransport().resolveImageSource({
+      url: 'https://cdn.test/signed-image.png',
+    })).resolves.toBe('https://cdn.test/signed-image.png')
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(mocks.nativeRequest).not.toHaveBeenCalled()
+  })
+
   it('原生 HTTP 错误保留中文详情和状态码', async () => {
     mocks.nativeRequest.mockResolvedValue({
       status: 400,

@@ -9,6 +9,8 @@ export interface StoredImageSource {
 
 const IMAGE_SAVE_TIMEOUT_MS = 120_000
 const IMAGE_VALIDATION_TIMEOUT_MS = 10_000
+const IMAGE_WRITE_CHUNK_SIZE = 512 * 1024
+const IMAGE_VALIDATION_CHUNK_SIZE = 64
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'webp', 'gif', 'heic', 'avif'] as const
 
 type ImageFormat = typeof IMAGE_EXTENSIONS[number]
@@ -48,7 +50,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 function dataUrlParts(dataUrl: string) {
   const match = /^data:([^;,]+);base64,(.+)$/s.exec(dataUrl)
   if (!match) throw new Error('图片数据格式不正确')
-  return { mimeType: match[1], base64: match[2] }
+  return { mimeType: match[1], base64: normalizedBase64(match[2]) }
 }
 
 function blobToDataUrl(blob: Blob) {
@@ -70,8 +72,14 @@ function extensionForMime(mimeType: string) {
   return undefined
 }
 
+function normalizedBase64(value: string) {
+  const compact = value.replace(/^data:[^;,]+;base64,/, '').replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
+  const remainder = compact.length % 4
+  return remainder ? `${compact}${'='.repeat(4 - remainder)}` : compact
+}
+
 function decodedImageBytes(base64: string) {
-  const normalized = base64.replace(/^data:[^;,]+;base64,/, '').replace(/\s/g, '')
+  const normalized = normalizedBase64(base64)
   try {
     const binary = atob(normalized)
     return Uint8Array.from(binary, (character) => character.charCodeAt(0))
@@ -117,16 +125,96 @@ function completeImageFormat(base64: string): ImageFormat | undefined {
   return format
 }
 
-async function persistedImageIsComplete(path: string) {
+async function persistedImageFormat(path: string): Promise<ImageFormat | undefined> {
   try {
-    const result = await withTimeout(
-      Filesystem.readFile({ path, directory: Directory.Data }),
+    const stat = await withTimeout(
+      Filesystem.stat({ path, directory: Directory.Data }),
       IMAGE_VALIDATION_TIMEOUT_MS,
       '校验图片文件超时',
     )
-    return typeof result.data === 'string' && Boolean(completeImageFormat(result.data))
+    if (stat.type !== 'file' || stat.size < 12) return undefined
+    const headLength = Math.min(stat.size, IMAGE_VALIDATION_CHUNK_SIZE)
+    const tailLength = Math.min(stat.size, IMAGE_VALIDATION_CHUNK_SIZE)
+    const [headResult, tailResult] = await Promise.all([
+      withTimeout(
+        Filesystem.readFile({ path, directory: Directory.Data, offset: 0, length: headLength }),
+        IMAGE_VALIDATION_TIMEOUT_MS,
+        '校验图片文件超时',
+      ),
+      withTimeout(
+        Filesystem.readFile({ path, directory: Directory.Data, offset: Math.max(0, stat.size - tailLength), length: tailLength }),
+        IMAGE_VALIDATION_TIMEOUT_MS,
+        '校验图片文件超时',
+      ),
+    ])
+    if (typeof headResult.data !== 'string' || typeof tailResult.data !== 'string') return undefined
+    const head = decodedImageBytes(headResult.data)
+    const tail = decodedImageBytes(tailResult.data)
+    if (!head || !tail) return undefined
+    const format = detectImageFormat(head)
+    if (!format) return undefined
+    if (format === 'png' && !bytesEndWith(tail, [73, 69, 78, 68, 174, 66, 96, 130])) return undefined
+    if (format === 'jpg' && !bytesEndWith(tail, [255, 217])) return undefined
+    if (format === 'gif' && !bytesEndWith(tail, [59])) return undefined
+    return format
   } catch {
-    return false
+    return undefined
+  }
+}
+
+async function persistedImageIsComplete(path: string) {
+  return Boolean(await persistedImageFormat(path))
+}
+
+async function writeBase64InChunks(path: string, base64: string) {
+  const firstChunk = base64.slice(0, IMAGE_WRITE_CHUNK_SIZE)
+  const result = await Filesystem.writeFile({
+    path,
+    data: firstChunk,
+    directory: Directory.Data,
+    recursive: true,
+  })
+  for (let offset = IMAGE_WRITE_CHUNK_SIZE; offset < base64.length; offset += IMAGE_WRITE_CHUNK_SIZE) {
+    await Filesystem.appendFile({
+      path,
+      data: base64.slice(offset, offset + IMAGE_WRITE_CHUNK_SIZE),
+      directory: Directory.Data,
+    })
+  }
+  return result
+}
+
+async function replaceTemporaryImage(temporaryPath: string, path: string) {
+  try {
+    await Filesystem.rename({ from: temporaryPath, to: path, directory: Directory.Data })
+    return
+  } catch (initialError) {
+    const backupPath = `${temporaryPath}.previous`
+    try {
+      await Filesystem.deleteFile({ path: backupPath, directory: Directory.Data })
+    } catch {
+      // No stale backup from an earlier interrupted replacement.
+    }
+    try {
+      await Filesystem.rename({ from: path, to: backupPath, directory: Directory.Data })
+    } catch {
+      throw initialError
+    }
+    try {
+      await Filesystem.rename({ from: temporaryPath, to: path, directory: Directory.Data })
+    } catch (replacementError) {
+      try {
+        await Filesystem.rename({ from: backupPath, to: path, directory: Directory.Data })
+      } catch {
+        // The original replacement error remains the most actionable failure.
+      }
+      throw replacementError
+    }
+    try {
+      await Filesystem.deleteFile({ path: backupPath, directory: Directory.Data })
+    } catch {
+      // The new complete image is already safely in place; leave cleanup for later.
+    }
   }
 }
 
@@ -138,7 +226,7 @@ export async function recoverPersistedImageAsset(projectId: string, assetId: str
     try {
       const stat = await Filesystem.stat({ path, directory: Directory.Data })
       const modifiedAt = Math.max(stat.mtime || 0, stat.ctime || 0)
-      if (stat.type !== 'file' || stat.size <= 0 || modifiedAt + 5_000 < minModifiedAt) continue
+      if (stat.type !== 'file' || stat.size <= 0 || modifiedAt < minModifiedAt) continue
       if (!(await persistedImageIsComplete(path))) continue
       const localUri = stat.uri || (await Filesystem.getUri({ path, directory: Directory.Data })).uri
       return { imageUrl: '', localUri }
@@ -165,48 +253,7 @@ export async function persistImageAsset(source: string, projectId: string, asset
     })
   }
 
-  if (!source.startsWith('data:')) {
-    const temporaryPath = imagePathFor(projectId, assetId, 'tmp')
-    const saveStartedAt = Date.now()
-    try {
-      // Native download runs outside the WebView, so providers do not need to
-      // expose temporary image URLs to the app's CORS origin.
-      await withTimeout(
-        Filesystem.downloadFile({
-          url: source,
-          path: temporaryPath,
-          directory: Directory.Data,
-          recursive: true,
-        }),
-        IMAGE_SAVE_TIMEOUT_MS,
-        '保存图片超过 120 秒仍未完成',
-      )
-      const stored = await Filesystem.readFile({ path: temporaryPath, directory: Directory.Data })
-      const format = typeof stored.data === 'string' ? completeImageFormat(stored.data) : undefined
-      if (!format) throw new Error('无法识别图片格式')
-      const path = imagePathFor(projectId, assetId, format)
-      if (temporaryPath !== path) {
-        try {
-          await Filesystem.deleteFile({ path, directory: Directory.Data })
-        } catch {
-          // No previous file at the target path.
-        }
-        await Filesystem.rename({ from: temporaryPath, to: path, directory: Directory.Data })
-      }
-      const localUri = (await Filesystem.getUri({ path, directory: Directory.Data })).uri
-      return { imageUrl: source, localUri }
-    } catch (error) {
-      try {
-        await Filesystem.deleteFile({ path: temporaryPath, directory: Directory.Data })
-      } catch {
-        // Temporary file already moved or removed.
-      }
-      const recovered = await recoverPersistedImageAsset(projectId, assetId, saveStartedAt)
-      if (recovered?.localUri) return { imageUrl: source, localUri: recovered.localUri }
-      const detail = error instanceof Error && error.message ? `（${error.message}）` : ''
-      throw new Error(`图片已生成，但无法保存到手机本地${detail}`)
-    }
-  }
+  if (!source.startsWith('data:')) throw new Error('图片数据尚未下载为可保存的格式')
 
   const dataUrl = source
 
@@ -215,20 +262,18 @@ export async function persistImageAsset(source: string, projectId: string, asset
   const extension = detected ?? extensionForMime(mimeType)
   if (!extension) throw new Error('图片数据不完整，无法识别格式')
   const path = imagePathFor(projectId, assetId, extension)
+  const temporaryPath = imagePathFor(projectId, assetId, 'tmp')
   const saveStartedAt = Date.now()
   try {
-    const result = await withTimeout(
-      Filesystem.writeFile({
-        path,
-        data: base64,
-        directory: Directory.Data,
-        recursive: true,
-      }),
+    await withTimeout(
+      writeBase64InChunks(temporaryPath, base64),
       IMAGE_SAVE_TIMEOUT_MS,
       '保存图片超过 120 秒仍未完成',
     )
-    if (detected && !(await persistedImageIsComplete(path))) throw new Error('图片文件不完整')
-    return { imageUrl: source, localUri: result.uri }
+    if (!(await persistedImageIsComplete(temporaryPath))) throw new Error('图片文件不完整')
+    await replaceTemporaryImage(temporaryPath, path)
+    const localUri = (await Filesystem.getUri({ path, directory: Directory.Data })).uri
+    return { imageUrl: source, localUri }
   } catch (error) {
     const recovered = await recoverPersistedImageAsset(projectId, assetId, saveStartedAt)
     if (recovered?.localUri) return { imageUrl: source, localUri: recovered.localUri }
