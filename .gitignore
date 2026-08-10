@@ -25,6 +25,8 @@ Thumbs.db
 
 # Local product/design working files
 .agents/
+.codex/
+AGENTS.md
 .impeccable/
 PRODUCT.md
 
