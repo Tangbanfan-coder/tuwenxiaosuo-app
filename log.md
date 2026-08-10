@@ -236,3 +236,19 @@
 - 运行受影响范围的 8 个测试文件共 50 项，全部通过；`npm run android:sync`、`gradlew assembleRelease` 和 Impeccable detector 均通过。新 APK SHA-256 为 `8AE858889BEEB237CD3C70E0AD1A13115168088028F539584795AC1CE314FD1A`。
 - `adb install -r` 返回 `Success`，覆盖安装后 `firstInstallTime` 保持不变、`lastUpdateTime=2026-08-10 10:35:59`，说明应用数据已保留。真机按约 45ms 间隔抓取设置到模型接口的切换帧，点击后的下一帧直接呈现模型接口页，未出现主页或空白层；原生日志未见 WebView、Filesystem 或崩溃异常。
 - 用户在发行版手机上完成实际生图保存与模型服务页面切换验收，确认问题均未再复现。
+
+## 2026-08-10 — App 与写作模块第一批职责拆分
+
+- 将时间线消息、插画卡片及正文反馈读取/提交从 `App.tsx` 提取到 `src/components/TimelineMessage.tsx`；保留原有 DOM、CSS class、可访问性文案和交互回调，`App.tsx` 继续负责顶层页面编排与跨功能流程。
+- 将原约 2015 行的 `src/providers/writing.ts` 改为 26 行显式兼容入口，原有导出名称和 `providers/writing` 导入路径不变；内部按职责拆分为 `budget`、`chapterIntent`、`context`、`instructions`、`orchestration`、`prompt`、`result` 七个模块。
+- 写作模块依赖保持单向：基础提示词与结果解析由预算/设定模块复用，上下文模块依赖预算与设定选择，请求编排位于最外层；内部 helper 未通过兼容入口意外公开，未新增依赖或改变请求体、错误文案、token 预算和上下文裁剪行为。
+- 验证：`npx vitest run src/App.test.tsx src/providers/__tests__ --testTimeout=15000`（10 个文件 / 80 项通过）；`npm run build` 通过，仅保留既有大 chunk 提示；`git diff --check` 通过。
+- 全量 `npx vitest run --testTimeout=30000` 共 154 项，其中 153 项通过；唯一失败仍为既有 `ReferenceImageDialog.test.tsx` 的“设备不能解码 HEIC”用例 30 秒超时，本次拆分未触及其实现。
+
+## 2026-08-10 — App 第二批职责拆分
+
+- 将图片查看器从 `App.tsx` 提取为 `src/components/IllustrationLightbox.tsx`，保留原有缩放、双击、拖动、双指捏合、工具栏显隐、Escape、保存、关闭动画及 DOM/class/ARIA 契约；新增直接测试覆盖缩放复位、三种关闭入口、关闭动画和保存成功/失败提示。
+- 新增 `src/hooks/useAppBootstrap.ts`，集中管理项目列表、当前工作区、启动状态、项目打开/刷新，以及数据库初始化、模型限制刷新、中断图片恢复、旧图片完整性审计和 active project 恢复；弹层、写作与图片队列状态仍留在各自边界，没有形成新的万能 Hook。
+- 为启动 Hook 增加直接测试，覆盖 active project 恢复、空库回调、数据库初始化失败和中断插画恢复成功；`App.tsx` 由第一批后的 1330 行进一步降至 919 行。
+- 验证：`npx vitest run src/App.test.tsx src/components/IllustrationLightbox.test.tsx src/hooks/useAppBootstrap.test.tsx src/providers/__tests__ --testTimeout=15000`（12 个文件 / 89 项通过）、`npm run build` 通过、`git diff --check` 通过；仅保留既有大 chunk 提示。
+- 全量 `npx vitest run --testTimeout=30000` 共 163 项，其中 162 项通过；唯一失败仍为既有 HEIC 无法解码用例 30 秒超时。图片查看器的双指捏合与拖动按原逻辑迁移并通过类型检查，仍需后续真机触屏回归。
