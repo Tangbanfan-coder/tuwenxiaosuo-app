@@ -252,3 +252,17 @@
 - 为启动 Hook 增加直接测试，覆盖 active project 恢复、空库回调、数据库初始化失败和中断插画恢复成功；`App.tsx` 由第一批后的 1330 行进一步降至 919 行。
 - 验证：`npx vitest run src/App.test.tsx src/components/IllustrationLightbox.test.tsx src/hooks/useAppBootstrap.test.tsx src/providers/__tests__ --testTimeout=15000`（12 个文件 / 89 项通过）、`npm run build` 通过、`git diff --check` 通过；仅保留既有大 chunk 提示。
 - 全量 `npx vitest run --testTimeout=30000` 共 163 项，其中 162 项通过；唯一失败仍为既有 HEIC 无法解码用例 30 秒超时。图片查看器的双指捏合与拖动按原逻辑迁移并通过类型检查，仍需后续真机触屏回归。
+
+## 2026-08-10 — HEIC 解码永久等待修复
+
+- 查明反复出现的 HEIC 测试超时并非转换耗时，而是 `createImageBitmap` 失败后进入 `<img>` 兜底解码；JSDOM 不会真正解码图片，也不会自动触发 `load/error`，导致 Promise 永久等待。
+- `<img>` 兜底解码增加 10 秒上限，成功、失败或超时后都会清理定时器和事件处理器；对用户仍统一显示既有的“请先转换为 JPG、PNG 或 WebP”提示，保留部分 WebView 可通过 `<img>` 解码 HEIC 的兼容机会。
+- 测试明确模拟兜底解码器触发 `error`，并新增“解码器完全无响应”场景，通过假定时钟验证不会永久等待。
+- 验证：`npx vitest run src/components/ReferenceImageDialog.test.tsx --testTimeout=15000`（5 项通过）、`npx vitest run --testTimeout=30000`（24 个文件 / 164 项全部通过）、`npm run build` 通过；仅保留既有大 chunk 提示。
+
+## 2026-08-10 — HEIC 修正版 Android Release 覆盖安装
+
+- 运行 `npm run android:sync` 完成前端构建并同步 Capacitor Android 资源；随后在 `android` 目录运行 `gradlew.bat assembleRelease`，构建成功生成 `android/app/build/outputs/apk/release/app-release.apk`。
+- 安装前从手机现装包提取 APK，与新 APK 使用 `apksigner` 比较 SHA-256 签名证书，均为 `7afd7b46942d7d792ad2b47fc5fc62474b3423015b78b73a8c25fa0472318da1`。
+- 对设备 `3B6F66E910B5BALR` 执行 `adb install -r` 覆盖安装并返回 `Success`；`firstInstallTime=2026-08-07 19:46:10` 保持不变，`lastUpdateTime=2026-08-10 12:49:56` 已更新，应用数据未清空。
+- 安装后启动 `com.illustratedstory.app`，进程正常运行，最近 200 行日志未发现 `FATAL EXCEPTION` 或 `AndroidRuntime` 崩溃。
