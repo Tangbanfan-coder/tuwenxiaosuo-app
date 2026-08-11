@@ -104,6 +104,7 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
   const [fileName, setFileName] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [createSaving, setCreateSaving] = useState(false)
   const [referenceStyleMode, setReferenceStyleMode] = useState<ReferenceStyleMode>('project')
   const [characterMenuOpen, setCharacterMenuOpen] = useState(false)
   const characterSelectRef = useRef<HTMLDivElement>(null)
@@ -118,6 +119,7 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
     setPreview('')
     setFileName('')
     setError('')
+    setCreateSaving(false)
     setReferenceStyleMode('project')
     setCharacterMenuOpen(false)
     window.requestAnimationFrame(() => closeButtonRef.current?.focus())
@@ -135,7 +137,7 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
   if (!present) return null
 
   return (
-    <div className={`dialog-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
+    <div className={`dialog-backdrop reference-dialog-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target && !saving) onClose()
     }}>
       <section className="reference-dialog" role="dialog" aria-modal="true" aria-labelledby="reference-dialog-title">
@@ -275,22 +277,28 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
         </div>
         <footer className="dialog-footer">
           <span>{characterId === NEW_CHARACTER_ID ? '可先只保存角色，之后再上传或用 AI 生成定妆照' : '导入后仍需确认，才会用于后续插画'}</span>
-          {characterId === NEW_CHARACTER_ID && onCreate && (
-            <button className="quiet-button" type="button" disabled={!characterName.trim() || saving} onClick={() => {
+          <div className="reference-dialog-actions">
+            {characterId === NEW_CHARACTER_ID && onCreate && (
+              <button className="reference-create-character-button" type="button" aria-busy={createSaving} disabled={!characterName.trim() || saving} onClick={() => {
+                setSaving(true)
+                setCreateSaving(true)
+                void onCreate({ name: characterName.trim(), role: characterRole.trim() || '主要角色' }).finally(() => {
+                  setSaving(false)
+                  setCreateSaving(false)
+                })
+              }}>{createSaving ? <LoaderCircle className="spin" size={18} /> : <UserPlus size={18} />}{createSaving ? '正在创建…' : '只创建角色'}</button>
+            )}
+            <button className="save-button" type="button" disabled={!(characterId === NEW_CHARACTER_ID ? characterName.trim() : characterId) || !preview || saving} onClick={() => {
+              const target: ReferenceImageTarget = characterId === NEW_CHARACTER_ID
+                ? { name: characterName.trim(), role: characterRole.trim() || '主要角色' }
+                : { characterId }
               setSaving(true)
-              void onCreate({ name: characterName.trim(), role: characterRole.trim() || '主要角色' }).finally(() => setSaving(false))
-            }}><UserPlus size={18} />只创建角色</button>
-          )}
-          <button className="save-button" type="button" disabled={!(characterId === NEW_CHARACTER_ID ? characterName.trim() : characterId) || !preview || saving} onClick={() => {
-            const target: ReferenceImageTarget = characterId === NEW_CHARACTER_ID
-              ? { name: characterName.trim(), role: characterRole.trim() || '主要角色' }
-              : { characterId }
-            setSaving(true)
-            void onImport(target, preview, referenceStyleMode).finally(() => setSaving(false))
-          }}>
-            {saving ? <LoaderCircle className="spin" size={18} /> : <Upload size={18} />}
-            {saving ? '正在导入…' : '导入参考图'}
-          </button>
+              void onImport(target, preview, referenceStyleMode).finally(() => setSaving(false))
+            }}>
+              {saving ? <LoaderCircle className="spin" size={18} /> : <Upload size={18} />}
+              {saving ? '正在导入…' : '导入参考图'}
+            </button>
+          </div>
         </footer>
       </section>
     </div>

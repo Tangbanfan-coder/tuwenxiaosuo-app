@@ -67,6 +67,10 @@ const imageAssetMocks = vi.hoisted(() => ({
   saveImageToDevice: vi.fn(),
 }))
 
+const secretStoreMocks = vi.hoisted(() => ({
+  has: vi.fn(),
+}))
+
 const providerSettings: ProviderSettings = {
   text: {
     id: 'text-provider',
@@ -202,7 +206,7 @@ vi.mock('./providers/images', () => ({
   editOpenAiImage: vi.fn(),
   generateOpenAiImage: vi.fn(),
 }))
-vi.mock('./providers/secretStore', () => ({ secretStore: { has: vi.fn().mockResolvedValue(false) } }))
+vi.mock('./providers/secretStore', () => ({ secretStore: secretStoreMocks }))
 vi.mock('./providers/writing', () => ({
   ...writingMocks,
 }))
@@ -267,7 +271,10 @@ beforeEach(() => {
   configMocks.saveProviderSettings.mockClear()
   imageAssetMocks.persistImageAsset.mockClear()
   providerSettings.text = { ...providerSettings.text, baseUrl: '', model: '', reasoningEffort: undefined }
+  providerSettings.image = { ...providerSettings.image, baseUrl: '', model: '' }
   providerSettings.textProviders = []
+  secretStoreMocks.has.mockReset()
+  secretStoreMocks.has.mockResolvedValue(false)
   window.requestAnimationFrame = vi.fn(() => 1)
   window.cancelAnimationFrame = vi.fn()
   localStorage.clear()
@@ -418,6 +425,23 @@ describe('composer asset and illustration controls', () => {
     await user.click(button)
     await waitFor(() => expect(databaseMocks.updateAutoIllustrate).toHaveBeenCalledWith(project.id, false))
     expect(screen.getByRole('button', { name: '自动配图：关闭' })).toBeDefined()
+  })
+
+  it('enables auto illustration optimistically without reloading the workspace', async () => {
+    const user = userEvent.setup()
+    providerSettings.image = { ...providerSettings.image, baseUrl: 'https://example.test', model: 'image-test' }
+    secretStoreMocks.has.mockResolvedValue(true)
+    render(<App />)
+
+    const button = await screen.findByRole('button', { name: '自动配图：关闭' })
+    databaseMocks.loadProjectWorkspace.mockClear()
+    secretStoreMocks.has.mockClear()
+    await user.click(button)
+
+    expect(databaseMocks.updateAutoIllustrate).toHaveBeenCalledWith(project.id, true)
+    expect(screen.getByRole('button', { name: '自动配图：自动' })).toBeDefined()
+    expect(secretStoreMocks.has).toHaveBeenCalledWith('provider:image')
+    expect(databaseMocks.loadProjectWorkspace).not.toHaveBeenCalled()
   })
 })
 

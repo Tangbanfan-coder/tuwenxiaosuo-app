@@ -342,19 +342,21 @@ export default function App() {
 
   async function handleAutoIllustrate(autoIllustrate: boolean) {
     if (!workspace) return
+    const nextWorkspace: ProjectWorkspace = {
+      ...workspace,
+      project: { ...workspace.project, autoIllustrate },
+    }
     setWorkspace((current) => current ? {
       ...current,
       project: { ...current.project, autoIllustrate },
     } : current)
     await updateAutoIllustrate(workspace.project.id, autoIllustrate)
     if (!autoIllustrate) return
-    const refreshed = await refreshWorkspace(workspace.project.id)
-    if (!refreshed) return
     if (!(await providerIsReady('image'))) {
       showToast('自动配图已开启；请先配置图片模型，待生成角色会保留在角色资产中')
       return
     }
-    const pendingPortraits = refreshed.characters.filter((character) => (character.portraitStatus ?? 'planned') === 'planned')
+    const pendingPortraits = nextWorkspace.characters.filter((character) => (character.portraitStatus ?? 'planned') === 'planned')
     if (!pendingPortraits.length) return
     portraitGenerationCancelledRef.current = false
     setPortraitGenerationActive(true)
@@ -362,7 +364,7 @@ export default function App() {
       try {
         for (const character of pendingPortraits) {
           if (portraitGenerationCancelledRef.current) break
-          await generateCharacterPortrait(character, refreshed)
+          await generateCharacterPortrait(character, nextWorkspace)
         }
       } finally {
         setPortraitGenerationActive(false)

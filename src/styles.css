@@ -561,9 +561,10 @@ label {
 .composer-tools { min-width: 0; display: flex; align-items: center; gap: 2px; }
 .composer-tool-button,
 .composer-assets-menu > .composer-tool-button { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 6px; padding: 0 9px; border: 0; border-radius: 9px; background: transparent; color: #aaa9a1; font-size: 11px; white-space: nowrap; }
-.composer-tool-button:hover,
-.composer-tool-button[aria-expanded="true"],
-.composer-tool-button[aria-pressed="true"] { background: #272724; color: #efeee9; }
+.composer-tool-button[aria-expanded="true"] { background: #272724; color: #efeee9; }
+@media (hover: hover) {
+  .composer-tool-button:hover { background: #272724; color: #efeee9; }
+}
 .composer-tool-button svg { flex: none; }
 .composer-tool-button strong { color: #d7c18d; font-weight: 650; }
 
@@ -580,8 +581,8 @@ label {
 .reasoning-effort-quick-menu button:focus-visible { outline: 2px solid #d7c18d; outline-offset: -2px; }
 
 .composer-assets-menu { flex: none; }
-.composer-assets-menu-surface { position: fixed; z-index: 32; inset: 0; display: grid; place-items: end center; padding: max(18px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left)); background: rgba(6, 6, 5, 0.56); animation: overlay-in 180ms ease-out; }
-.composer-assets-menu-dialog { width: min(100%, 560px); overflow: hidden; border: 1px solid #484740; border-bottom: 0; border-radius: 14px 14px 0 0; background: #1b1b18; box-shadow: 0 22px 60px rgba(0, 0, 0, 0.46); animation: sheet-in 260ms cubic-bezier(0.16, 1, 0.3, 1); }
+.composer-assets-menu-surface { position: fixed; z-index: 32; inset: 0; display: grid; place-items: end center; padding: max(18px, env(safe-area-inset-top)) 0 0; background: rgba(6, 6, 5, 0.56); animation: overlay-in 180ms ease-out; }
+.composer-assets-menu-dialog { width: min(100%, 720px); overflow: hidden; border: 1px solid #484740; border-bottom: 0; border-radius: 14px 14px 0 0; background: #1b1b18; box-shadow: 0 22px 60px rgba(0, 0, 0, 0.46); animation: sheet-in 260ms cubic-bezier(0.16, 1, 0.3, 1); }
 .composer-assets-menu-dialog > header { min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 12px 12px 18px; border-bottom: 1px solid #33332f; }
 .composer-assets-menu-dialog h2 { margin: 0; color: #f2f0e9; font-size: 17px; }
 .composer-assets-menu-dialog p { margin: 4px 0 0; color: #99968d; font-size: 11px; }
@@ -652,7 +653,7 @@ label {
 }
 
 .drawer-backdrop { display: flex; justify-content: flex-start; }
-.asset-backdrop,
+.asset-backdrop { display: flex; justify-content: center; }
 .settings-backdrop { display: flex; justify-content: flex-end; }
 
 .project-drawer {
@@ -669,7 +670,7 @@ label {
 .drawer-backdrop.closing .project-drawer { animation: drawer-out 180ms cubic-bezier(0.4, 0, 1, 1) forwards; }
 
 .asset-drawer {
-  width: min(94vw, 480px);
+  width: min(100%, 720px);
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -1005,7 +1006,8 @@ label {
 .provider-dialog { width: min(100%, 620px); max-height: min(780px, calc(100svh - 36px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #41403a; border-radius: 12px; background: #1b1b18; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.58); animation: dialog-in 220ms cubic-bezier(0.16, 1, 0.3, 1); }
 .provider-dialog.nested-provider-dialog { animation: nested-dialog-in 180ms cubic-bezier(0.16, 1, 0.3, 1); }
 .dialog-backdrop.closing .provider-dialog { animation: dialog-out 180ms cubic-bezier(0.4, 0, 1, 1) forwards; }
-.reference-dialog { width: min(100%, 520px); max-height: min(720px, calc(100svh - 36px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #41403a; border-radius: 12px; background: #1b1b18; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.58); animation: dialog-in 220ms cubic-bezier(0.16, 1, 0.3, 1); }
+.reference-dialog-backdrop { padding-right: 0; padding-left: 0; }
+.reference-dialog { width: min(100%, 720px); max-height: min(720px, calc(100svh - 36px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #41403a; border-radius: 12px; background: #1b1b18; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.58); animation: dialog-in 220ms cubic-bezier(0.16, 1, 0.3, 1); }
 .dialog-backdrop.closing .reference-dialog { animation: dialog-out 180ms cubic-bezier(0.4, 0, 1, 1) forwards; }
 .writing-instructions-dialog { width: min(100%, 560px); max-height: min(720px, calc(100svh - 36px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #41403a; border-radius: 12px; background: #1b1b18; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.58); animation: dialog-in 220ms cubic-bezier(0.16, 1, 0.3, 1); }
 .dialog-backdrop.closing .writing-instructions-dialog { animation: dialog-out 180ms cubic-bezier(0.4, 0, 1, 1) forwards; }
@@ -1113,6 +1115,15 @@ label {
 
 .dialog-footer { min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 17px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid #33332f; color: #8e8b83; font-size: 11px; }
 .save-button { min-width: 112px; }
+.reference-dialog .dialog-footer { display: grid; grid-template-columns: minmax(0, 1fr); }
+.reference-dialog-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; width: 100%; }
+.reference-dialog-actions .save-button,
+.reference-create-character-button { width: 100%; }
+.reference-create-character-button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 13px; border: 1px solid #56544d; border-radius: 8px; background: #35342f; color: #e2dfd5; font-weight: 680; }
+@media (hover: hover) {
+  .reference-create-character-button:hover { border-color: #777260; background: #403e37; color: #f4f1e8; }
+}
+.reference-create-character-button:disabled { border-color: #46453f; background: #292925; color: #77756e; }
 .spin { animation: spin 800ms linear infinite; }
 
 [aria-labelledby="summary-history-dialog-title"] { width: min(100%, 620px); }
@@ -1204,9 +1215,10 @@ label {
 
 .app-shell[data-appearance="light"] .composer-wrap { box-shadow: 0 -12px 28px rgba(43, 47, 42, 0.08); }
 .app-shell[data-appearance="light"] .composer-tool-button { color: #626861; }
-.app-shell[data-appearance="light"] .composer-tool-button:hover,
-.app-shell[data-appearance="light"] .composer-tool-button[aria-expanded="true"],
-.app-shell[data-appearance="light"] .composer-tool-button[aria-pressed="true"] { background: #eceee9; color: #202520; }
+.app-shell[data-appearance="light"] .composer-tool-button[aria-expanded="true"] { background: #eceee9; color: #202520; }
+@media (hover: hover) {
+  .app-shell[data-appearance="light"] .composer-tool-button:hover { background: #eceee9; color: #202520; }
+}
 .app-shell[data-appearance="light"] .composer-tool-button strong { color: #8a7040; }
 .app-shell[data-appearance="light"] .composer-assets-menu-dialog { border-color: #d3d6cf; background: #fbfbf8; box-shadow: 0 22px 60px rgba(43, 47, 42, 0.19); }
 .app-shell[data-appearance="light"] .composer-assets-menu-dialog > header { border-color: #d9dbd5; }
@@ -1362,6 +1374,11 @@ label {
 .app-shell[data-appearance="light"] .reference-file-picker span,
 .app-shell[data-appearance="light"] .selected-file { color: #697069; }
 .app-shell[data-appearance="light"] .reference-file-picker img { background: #eef0eb; }
+.app-shell[data-appearance="light"] .reference-create-character-button { border-color: #c4c8c1; background: #eceee8; color: #3f463f; }
+@media (hover: hover) {
+  .app-shell[data-appearance="light"] .reference-create-character-button:hover { border-color: #b7a66f; background: #f0f2ed; color: #242823; }
+}
+.app-shell[data-appearance="light"] .reference-create-character-button:disabled { border-color: #d5d8d2; background: #e0e3de; color: #929890; }
 .app-shell[data-appearance="light"] .writing-instructions-form > label { color: #646b64; }
 .app-shell[data-appearance="light"] .writing-instructions-form > textarea { border-color: #c4c8c1; background: #ffffff; color: #232723; }
 .app-shell[data-appearance="light"] .writing-instructions-form > p,

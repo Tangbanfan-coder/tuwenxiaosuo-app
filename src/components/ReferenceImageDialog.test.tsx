@@ -53,6 +53,28 @@ function dataUrlBytes(dataUrl: string) {
 }
 
 describe('ReferenceImageDialog', () => {
+  it('uses a dedicated full-width secondary action to create a character without a reference image', async () => {
+    const user = userEvent.setup()
+    let finishCreate: (() => void) | undefined
+    const onCreate = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { finishCreate = resolve }))
+    render(<ReferenceImageDialog open characters={[]} onClose={vi.fn()} onImport={vi.fn()} onCreate={onCreate} />)
+
+    await user.type(screen.getByPlaceholderText('请使用故事中会出现的名字'), '顾遥')
+    const createButton = screen.getByRole('button', { name: '只创建角色' })
+    expect(createButton.classList.contains('reference-create-character-button')).toBe(true)
+    expect(createButton.hasAttribute('disabled')).toBe(false)
+    expect(screen.getByRole('button', { name: '导入参考图' }).hasAttribute('disabled')).toBe(true)
+
+    await user.click(createButton)
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ name: '顾遥', role: '主要角色' }))
+    const creatingButton = screen.getByRole('button', { name: '正在创建…' })
+    expect(creatingButton.getAttribute('aria-busy')).toBe('true')
+    expect(creatingButton.hasAttribute('disabled')).toBe(true)
+
+    finishCreate?.()
+    await waitFor(() => expect(screen.getByRole('button', { name: '只创建角色' }).getAttribute('aria-busy')).toBe('false'))
+  })
+
   it('已有角色时仍可新建第二个角色并上传参考图', async () => {
     const user = userEvent.setup()
     const onImport = vi.fn().mockResolvedValue(undefined)

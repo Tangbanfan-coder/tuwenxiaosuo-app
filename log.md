@@ -1,5 +1,16 @@
 # 变更记录
 
+## 2026-08-11 — 素材界面状态、全宽布局与自动配图切换优化
+
+- 主工具栏“配图”继续保留 `aria-pressed` 开关语义和“自动/关闭”文字，但不再用常驻深灰背景表示开启；悬停背景仅在真正支持 hover 的设备生效，避免触屏点击后背景粘住。
+- 素材底部面板、角色资产抽屉和参考图对话框统一对齐应用的 720px 内容列，移动端保持 100% 全宽且无左右缝隙。
+- “只创建角色”改为独立全宽次级操作；创建期间显示加载图标与“正在创建…”并暴露 `aria-busy`，不再只呈现发黑的禁用状态。
+- 开启自动配图时复用乐观更新后的当前工作区快照检查图片模型并排队待生成角色，不再为单个开关重载整份消息、角色和图片数据，消除切换时的主要卡顿来源。
+- 验证：`npm test -- --testTimeout=15000` 为 26 个文件 / 182 项全部通过；`npm run build` 通过（仅保留既有大 chunk 提示）；Impeccable detector 返回 `[]`；`git diff --check` 通过。浏览器在 1280x720 与 390x844 视口确认三处素材界面全宽、工具栏无常驻灰底、创建角色按钮无黑色粘滞态，且页面无横向溢出。
+- 运行 `npm run android:sync` 同步 production 前端资源，随后在 `android/` 目录执行 `gradlew.bat assembleRelease`，构建签名 APK：`android/app/build/outputs/apk/release/app-release.apk`，SHA-256 为 `CD82E88CD66181B1BB5664422100C5A01B66161BCA73E192E808B61CA871CD34`。
+- APK 元数据保持 `application-label='叙影'`、`applicationId=com.illustratedstory.app`、`versionCode=1`、`versionName=1.0`；新 APK 与手机现装版本的签名证书 SHA-256 均为 `7afd7b46942d7d792ad2b47fc5fc62474b3423015b78b73a8c25fa0472318da1`。
+- 对设备 `3B6F66E910B5BALR` 执行 `adb install -r` 返回 `Success`，覆盖安装并保留应用数据；`firstInstallTime=2026-08-07 19:46:10` 保持不变，`lastUpdateTime=2026-08-11 16:39:38` 已更新。应用进程 PID 为 `22750`，`MainActivity` 已处于前台，最近日志未发现 `FATAL EXCEPTION` 或应用相关 `AndroidRuntime` 崩溃。
+
 ## 2026-08-11 — 参考图导入统一 PNG 归一化
 
 - 参考图导入现在会对所有本机可解码的图片执行 Canvas 解码并重新编码为 PNG，不再只处理 HEIC/HEIF；可容错解码但 JPEG 文件尾不标准的历史图片也会产出完整 PNG 再保存。
