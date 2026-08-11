@@ -279,11 +279,13 @@ function buildProjectContextWithBudget(
   const latestScene = scenes.length ? scenes[scenes.length - 1] : undefined
 
   const writingInstructions = workspace.project.writingInstructions?.trim()
+  const globalWritingInstructions = workspace.globalWritingInstructions?.trim()
   const structure = parseWritingStructure(workspace.project)
   const illustrationLine = `插画画风：${illustrationStyle.label}${illustrationStyle.visualPrompt ? `（${illustrationStyle.visualPrompt}）` : ''}`
-  const coreRules = structure?.core || writingInstructions || ''
-  const instructionsFull = coreRules ? `长期创作设定（核心规则）：\n${coreRules}` : ''
-  const fullInstructionsText = [instructionsFull, illustrationLine].filter(Boolean).join('\n')
+  const projectCoreRules = structure?.core || writingInstructions || ''
+  const globalRules = globalWritingInstructions ? `全局创作设定（低优先级默认）：\n${globalWritingInstructions}` : ''
+  const projectRules = projectCoreRules ? `当前作品局部创作设定（优先覆盖全局设定）：\n${projectCoreRules}` : ''
+  const fullInstructionsText = [globalRules, projectRules, illustrationLine].filter(Boolean).join('\n')
   const boundedInstructions = untrimmed ? fullInstructionsText : fullInstructionsText.slice(0, CORE_RULES_MAX_CHARS)
   const rulesBudget = untrimmed ? measure(boundedInstructions) : Math.min(normalizedBudget, measure(boundedInstructions))
   const instructionsText = truncateTextToBudget(boundedInstructions, rulesBudget, 'head', measure)

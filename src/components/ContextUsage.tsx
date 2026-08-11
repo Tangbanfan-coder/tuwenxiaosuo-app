@@ -15,6 +15,7 @@ interface ContextUsageProps extends ContextUsageDetailsProps {
   detailsOpen?: boolean
   onDetailsOpenChange?: (open: boolean) => void
   detailsPresentation?: 'popover' | 'sheet'
+  showTrigger?: boolean
 }
 
 function formatTokens(value: number) {
@@ -187,6 +188,7 @@ export default function ContextUsage({
   detailsOpen,
   onDetailsOpenChange,
   detailsPresentation = 'popover',
+  showTrigger = true,
 }: ContextUsageProps) {
   const [internalDetailsOpen, setInternalDetailsOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -246,18 +248,20 @@ export default function ContextUsage({
       data-compression-stage={plan?.compressionStage}
       data-details-presentation={detailsPresentation}
     >
-      <button
-        className="context-usage-trigger"
-        type="button"
-        aria-label={`${summary}，查看本轮上下文用量明细`}
-        aria-expanded={isDetailsOpen}
-        aria-haspopup="dialog"
-        onClick={() => setDetailsOpen(true)}
-      >
-        {state === 'loading' ? <LoaderCircle size={14} className="context-usage-spinner" aria-hidden="true" /> : <Gauge size={14} aria-hidden="true" />}
-        <span>{compactSummary}</span>
-        {state === 'over-limit' && <AlertTriangle size={14} aria-label="预算超限警告" />}
-      </button>
+      {showTrigger && (
+        <button
+          className="context-usage-trigger"
+          type="button"
+          aria-label={`${summary}，查看本轮上下文用量明细`}
+          aria-expanded={isDetailsOpen}
+          aria-haspopup="dialog"
+          onClick={() => setDetailsOpen(true)}
+        >
+          {state === 'loading' ? <LoaderCircle size={14} className="context-usage-spinner" aria-hidden="true" /> : <Gauge size={14} aria-hidden="true" />}
+          <span>{compactSummary}</span>
+          {state === 'over-limit' && <AlertTriangle size={14} aria-label="预算超限警告" />}
+        </button>
+      )}
 
       {isDetailsOpen && (
         <div className={`context-usage-surface context-usage-surface--${detailsPresentation}`} role="presentation" onMouseDown={(event) => {

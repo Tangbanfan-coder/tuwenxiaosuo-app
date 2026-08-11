@@ -8,6 +8,7 @@ interface Props {
   characters: CharacterAsset[]
   onClose: () => void
   onImport: (target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode) => Promise<void>
+  onCreate?: (target: { name: string; role: string }) => Promise<void>
 }
 
 export type ReferenceImageTarget = { characterId: string } | { name: string; role: string }
@@ -66,10 +67,9 @@ async function decodeImage(file: File) {
 }
 
 export async function referenceFileToDataUrl(file: File) {
-  if (!isHeicReferenceFile(file)) return fileToDataUrl(file)
-
+  let image: Awaited<ReturnType<typeof decodeImage>> | undefined
   try {
-    const image = await decodeImage(file)
+    image = await decodeImage(file)
     const width = 'naturalWidth' in image ? image.naturalWidth : image.width
     const height = 'naturalHeight' in image ? image.naturalHeight : image.height
     if (!width || !height) throw new Error('图片尺寸无效')
@@ -80,19 +80,23 @@ export async function referenceFileToDataUrl(file: File) {
     const context = canvas.getContext('2d')
     if (!context) throw new Error('设备不支持图片转换')
     context.drawImage(image, 0, 0)
-    if ('close' in image && typeof image.close === 'function') image.close()
 
     const png = await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG 转换失败')), 'image/png')
     })
-    return await fileToDataUrl(new File([png], file.name.replace(/\.hei[cf]$/i, '.png'), { type: 'image/png' }))
-  } catch {
-    throw new Error('这台设备无法解码 HEIC/HEIF 图片，请先将图片转换为 JPG、PNG 或 WebP 后再导入')
+    const pngName = /\.[^.]+$/.test(file.name) ? file.name.replace(/\.[^.]+$/, '.png') : `${file.name || 'reference'}.png`
+    return await fileToDataUrl(new File([png], pngName, { type: 'image/png' }))
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? error.message : '图片解码或转换失败'
+    throw new Error(`无法导入此图片：${detail}。请先转换为 JPG、PNG 或 WebP 后重试`)
+  } finally {
+    if (image && 'close' in image && typeof image.close === 'function') image.close()
   }
 }
 
-export default function ReferenceImageDialog({ open, characters, onClose, onImport }: Props) {
+export default function ReferenceImageDialog({ open, characters, onClose, onImport, onCreate }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const selectionRequestRef = useRef(0)
   const [characterId, setCharacterId] = useState('')
   const [characterName, setCharacterName] = useState('')
   const [characterRole, setCharacterRole] = useState('主要角色')
@@ -106,6 +110,7 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
   const { present, closing } = usePresence(open, onClose, 180)
 
   useEffect(() => {
+    selectionRequestRef.current += 1
     if (!open) return
     setCharacterId(characters[0]?.id ?? NEW_CHARACTER_ID)
     setCharacterName('')
@@ -238,8 +243,9 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
             <input
               type="file"
               aria-label="选择角色参考图片"
-              accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif"
+              accept="image/*,.heic,.heif"
               onChange={(event) => {
+                const selectionRequest = ++selectionRequestRef.current
                 const file = event.target.files?.[0]
                 if (!file) return
                 if (file.size > 20 * 1024 * 1024) {
@@ -251,16 +257,30 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
                 setError('')
                 setPreview('')
                 setFileName(file.name)
-                void referenceFileToDataUrl(file).then(setPreview).catch((readError) => setError(readError instanceof Error ? readError.message : '无法读取图片'))
+                void referenceFileToDataUrl(file)
+                  .then((dataUrl) => {
+                    if (selectionRequest !== selectionRequestRef.current) return
+                    setPreview(dataUrl)
+                  })
+                  .catch((readError) => {
+                    if (selectionRequest !== selectionRequestRef.current) return
+                    setError(readError instanceof Error ? readError.message : '无法读取图片')
+                  })
               }}
             />
-            {preview ? <img src={preview} alt="待导入的角色参考图预览" /> : <div><ImagePlus size={27} /><strong>选择手机中的图片</strong><span>支持 JPG、PNG、WebP、HEIC/HEIF，最大 20 MB</span></div>}
+            {preview ? <img src={preview} alt="待导入的角色参考图预览" /> : <div><ImagePlus size={27} /><strong>选择手机中的图片</strong><span>支持本机可解码的图片，导入后统一转为 PNG，最大 20 MB</span></div>}
           </label>
           {fileName && <p className="selected-file">已选择：{fileName}</p>}
           {error && <p className="asset-error" role="alert">{error}</p>}
         </div>
         <footer className="dialog-footer">
-          <span>{characterId === NEW_CHARACTER_ID ? '角色和图片会一起保存，确认后用于插画' : '导入后仍需确认，才会用于后续插画'}</span>
+          <span>{characterId === NEW_CHARACTER_ID ? '可先只保存角色，之后再上传或用 AI 生成定妆照' : '导入后仍需确认，才会用于后续插画'}</span>
+          {characterId === NEW_CHARACTER_ID && onCreate && (
+            <button className="quiet-button" type="button" disabled={!characterName.trim() || saving} onClick={() => {
+              setSaving(true)
+              void onCreate({ name: characterName.trim(), role: characterRole.trim() || '主要角色' }).finally(() => setSaving(false))
+            }}><UserPlus size={18} />只创建角色</button>
+          )}
           <button className="save-button" type="button" disabled={!(characterId === NEW_CHARACTER_ID ? characterName.trim() : characterId) || !preview || saving} onClick={() => {
             const target: ReferenceImageTarget = characterId === NEW_CHARACTER_ID
               ? { name: characterName.trim(), role: characterRole.trim() || '主要角色' }

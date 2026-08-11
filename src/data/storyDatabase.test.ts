@@ -22,6 +22,7 @@ import {
   restoreChapterSummaryVersion,
   storyDatabase,
   toggleFeedback,
+  toggleFeedbackBatch,
   upsertFeedback,
   upsertChapterParagraphs,
 } from './storyDatabase'
@@ -650,6 +651,19 @@ describe('chapter summary versions', () => {
 })
 
 describe('paragraph persistence', () => {
+  it('keeps visual plans and characters when automatic illustration is disabled', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '请开始写作', false)
+    const result: WritingTurnResult = {
+      ...writingResult,
+      visualPlan: {
+        title: '雨夜', prompt: '雨夜街头', stylePrompt: '', negativePrompt: '',
+        characters: [{ name: '林昭', role: '主角', ageAndBuild: '青年', fixedTraits: ['黑发'], defaultLook: '清瘦', wardrobe: '灰外套' }],
+      },
+    }
+    await completeWritingTurn(project.id, userMessage.id, notice.id, result, false)
+    expect(await storyDatabase.characters.where('projectId').equals(project.id).count()).toBe(1)
+    expect(await storyDatabase.illustrations.where('projectId').equals(project.id).count()).toBe(1)
+  })
   it('writes a prose message and its paragraph rows in one transaction', async () => {
     const [userMessage, notice] = await beginWritingTurn(project.id, '请开始写作', false)
 

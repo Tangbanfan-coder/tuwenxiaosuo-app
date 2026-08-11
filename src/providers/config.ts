@@ -1,6 +1,7 @@
 import type { ProviderConfig, ProviderSettings, ProviderSlot } from './types'
 
 const SETTINGS_KEY = 'illustrated-story-chat.provider-settings.v1'
+const GLOBAL_WRITING_INSTRUCTIONS_KEY = 'illustrated-story-chat.global-writing-instructions.v1'
 
 const DEFAULT_TEXT_PROVIDER: ProviderConfig = {
   id: 'custom-text',
@@ -75,6 +76,21 @@ export function loadProviderSettings(): ProviderSettings {
 
 export function saveProviderSettings(settings: ProviderSettings) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+}
+
+export function loadGlobalWritingInstructions() {
+  if (typeof localStorage === 'undefined') return ''
+  return localStorage.getItem(GLOBAL_WRITING_INSTRUCTIONS_KEY) ?? ''
+}
+
+export function saveGlobalWritingInstructions(value: string) {
+  const normalized = value.trim()
+  if (normalized.length > 50_000) throw new Error('全局创作设定不能超过 50000 字')
+  if (typeof localStorage !== 'undefined') {
+    if (normalized) localStorage.setItem(GLOBAL_WRITING_INSTRUCTIONS_KEY, normalized)
+    else localStorage.removeItem(GLOBAL_WRITING_INSTRUCTIONS_KEY)
+  }
+  return normalized
 }
 
 export function createProviderConfig(slot: ProviderSlot): ProviderConfig {

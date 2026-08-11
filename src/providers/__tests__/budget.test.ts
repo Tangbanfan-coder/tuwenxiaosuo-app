@@ -140,6 +140,14 @@ describe('上下文预算', () => {
     expect(body).not.toHaveProperty('max_completion_tokens')
   })
 
+  it('思考等级默认不发送，显式设置时透传 reasoning_effort', async () => {
+    let body: Record<string, unknown> = {}
+    await generateWritingTurn(emptyWorkspace(), '写一章', textProvider, captureRequestBody((value) => { body = value }))
+    expect(body).not.toHaveProperty('reasoning_effort')
+    await generateWritingTurn(emptyWorkspace(), '写一章', { ...textProvider, reasoningEffort: 'high' }, captureRequestBody((value) => { body = value }))
+    expect(body.reasoning_effort).toBe('high')
+  })
+
   it('按文本供应商配置选择 Android 写作传输模式', async () => {
     let defaultRequest: TransportRequest | undefined
     let streamingRequest: TransportRequest | undefined

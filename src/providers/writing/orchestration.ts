@@ -161,7 +161,7 @@ export async function generateWritingTurn(
 
   const prepared = await prepareWritingTurnContext(workspace, userRequest, config, options, true)
   if (prepared.rulesTruncated) {
-    throw new Error('长期创作设定超过核心预算，本轮已阻止生成。请在“长期创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
+    throw new Error('局部创作设定超过核心预算，本轮已阻止生成。请在“局部创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
   }
   if (prepared.finalPlan.isOverLimit) {
     throw new Error('最终请求的输入仍超过模型上下文窗口（真实 token 硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
@@ -170,6 +170,7 @@ export async function generateWritingTurn(
   const body = JSON.stringify({
     model: config.model,
     stream: true,
+    ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
     ...outputTokenParameter(config, prepared.initialPlan.outputReserveTokens),
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },

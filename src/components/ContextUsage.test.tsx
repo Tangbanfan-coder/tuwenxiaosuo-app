@@ -105,6 +105,13 @@ describe('ContextUsage', () => {
     expect(container.querySelector('.context-usage-trigger')?.textContent).toContain('1.9k / 14.5k')
   })
 
+  it('can render a controlled sheet without adding a context trigger', () => {
+    render(<ContextUsage plan={plan()} state="ready" detailsOpen detailsPresentation="sheet" showTrigger={false} />)
+
+    expect(screen.queryByRole('button', { name: /查看本轮上下文用量明细/ })).toBeNull()
+    expect(screen.getByRole('dialog', { name: '本轮上下文用量' })).toBeDefined()
+  })
+
   it('renders loading, empty, over-limit, fallback and error states without blocking details', async () => {
     const user = userEvent.setup()
     const { rerender } = render(<ContextUsage state="loading" />)

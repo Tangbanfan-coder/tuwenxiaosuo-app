@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ImagePlus, LoaderCircle, Maximize2, Sparkles, ThumbsDown, ThumbsUp, TriangleAlert, X } from 'lucide-react'
-import { listMessageFeedback, storyDatabase, toggleFeedback } from '../data/storyDatabase'
+import { listMessageFeedback, storyDatabase, toggleFeedbackBatch } from '../data/storyDatabase'
 import type { CharacterAsset, ConversationMessage, Feedback, FeedbackScope, FeedbackVerdict, IllustrationAsset, StoredParagraph } from '../domain/models'
 import { createParagraphFingerprint } from '../domain/paragraphs'
 import { resolveImageSource } from '../providers/imageAssetStore'
@@ -57,7 +57,7 @@ export default function TimelineMessage({
 }) {
   const [showVisualPrompt, setShowVisualPrompt] = useState(false)
   const referencesReady = Boolean(illustration && illustrationReferencesReady(illustration, characters))
-  const canGenerate = Boolean(illustration && imageProviderReady && referencesReady && (illustration.status === 'planned' || illustration.status === 'failed'))
+  const canGenerate = Boolean(illustration && imageProviderReady && (illustration.status === 'planned' || illustration.status === 'failed'))
   const imageSource = illustration ? resolveImageSource(illustration.imageUrl, illustration.localUri) : undefined
 
   if (message.kind === 'user') {
@@ -103,7 +103,7 @@ export default function TimelineMessage({
                 : !imageProviderReady
                    ? '请先配置图片模型'
                    : !referencesReady
-                     ? '请先确认角色定妆照'
+                     ? '可按角色档案生成，确认定妆照后会更稳定'
                      : '点击下方按钮生成插画'}
             </span>
           </div>
@@ -208,7 +208,7 @@ function FeedbackPanel({
   refreshFeedback: () => Promise<void>
 }) {
   const [scope, setScope] = useState<FeedbackScope>('message')
-  const [paragraphIndex, setParagraphIndex] = useState<number>()
+  const [paragraphIndexes, setParagraphIndexes] = useState<number[]>([])
   const [verdict, setVerdict] = useState<FeedbackVerdict>(initialVerdict)
   const [reason, setReason] = useState('')
   const [customNote, setCustomNote] = useState('')
@@ -246,38 +246,45 @@ function FeedbackPanel({
     return () => { cancelled = true }
   }, [message])
 
-  const current = feedback.find((item) => item.scope === scope && (scope === 'message' || item.paragraphIndex === paragraphIndex))
+  const current = feedback.find((item) => item.scope === scope && (scope === 'message' || paragraphIndexes.includes(item.paragraphIndex ?? -1)))
 
   async function submit() {
     if (!message.chapterId) {
       setSaveError('当前正文缺少章节锚点，暂时无法提交反馈')
       return
     }
-    if (scope === 'paragraph' && paragraphIndex === undefined) {
-      setSaveError('请选择一个段落')
+    const chapterId = message.chapterId
+    if (scope === 'paragraph' && paragraphIndexes.length === 0) {
+      setSaveError('请选择至少一个段落')
       return
     }
-    const anchor = paragraphIndex === undefined ? undefined : paragraphs.find((item) => item.index === paragraphIndex)
-    if (scope === 'paragraph' && !anchor) {
+    const anchors = paragraphIndexes.map((index) => paragraphs.find((item) => item.index === index)).filter((item): item is ParagraphAnchor => Boolean(item))
+    if (scope === 'paragraph' && anchors.length !== paragraphIndexes.length) {
       setSaveError('段落锚点无效，请重新打开反馈面板')
       return
     }
     setSaving(true)
     setSaveError('')
     try {
+      const targets = scope === 'message'
+        ? [{ projectId: message.projectId, messageId: message.id, chapterId: message.chapterId, scope }]
+        : anchors.map((anchor) => ({
+          projectId: message.projectId,
+          messageId: message.id,
+          chapterId,
+          scope,
+          paragraphId: anchor.id,
+          paragraphIndex: anchor.index,
+          paragraphFingerprint: anchor.fingerprint,
+        }))
       const input = {
-        projectId: message.projectId,
-        messageId: message.id,
-        chapterId: message.chapterId,
-        scope,
-        ...(anchor ? { paragraphId: anchor.id, paragraphIndex: anchor.index, paragraphFingerprint: anchor.fingerprint } : {}),
+        targets,
         verdict,
         reason: reason || undefined,
         customNote: customNote.trim() || undefined,
       }
-      const next = await toggleFeedback(input)
+      await toggleFeedbackBatch(input)
       await refreshFeedback()
-      if (next === null) await refreshFeedback()
       onSaved(await listMessageFeedback(message.projectId, message.id))
       onClose()
     } catch (cause) {
@@ -297,11 +304,14 @@ function FeedbackPanel({
         <button type="button" className={verdict === 'down' ? 'selected' : ''} onClick={() => setVerdict('down')}><ThumbsDown size={15} />点踩</button>
       </div>
       <div className="feedback-scope" role="group" aria-label="反馈范围">
-        <label><input type="radio" checked={scope === 'message'} onChange={() => { setScope('message'); setParagraphIndex(undefined) }} />整条正文</label>
+        <label><input type="radio" checked={scope === 'message'} onChange={() => { setScope('message'); setParagraphIndexes([]) }} />整条正文</label>
         <label><input type="radio" checked={scope === 'paragraph'} onChange={() => setScope('paragraph')} />仅针对某段</label>
       </div>
       {scope === 'paragraph' && <div className="feedback-paragraphs" role="listbox" aria-label="选择段落">
-        {paragraphs.map((paragraph) => <button key={paragraph.id} type="button" role="option" aria-selected={paragraphIndex === paragraph.index} className={paragraphIndex === paragraph.index ? 'selected' : ''} onClick={() => setParagraphIndex(paragraph.index)}><span>第 {paragraph.index + 1} 段</span><small>{paragraph.text.slice(0, 44)}{paragraph.text.length > 44 ? '…' : ''}</small></button>)}
+        {paragraphs.map((paragraph) => {
+          const selected = paragraphIndexes.includes(paragraph.index)
+          return <button key={paragraph.id} type="button" role="option" aria-selected={selected} className={selected ? 'selected' : ''} onClick={() => setParagraphIndexes((current) => selected ? current.filter((index) => index !== paragraph.index) : [...current, paragraph.index].sort((a, b) => a - b))}><span>第 {paragraph.index + 1} 段</span><small>{paragraph.text.slice(0, 44)}{paragraph.text.length > 44 ? '…' : ''}</small></button>
+        })}
       </div>}
       {verdict === 'down' && <div className="feedback-reasons"><span>点踩原因（可选）</span><div>{['剧情方向', '人物塑造', '节奏', '语言表达', '其他'].map((item) => <button key={item} type="button" className={reason === item ? 'selected' : ''} onClick={() => setReason(reason === item ? '' : item)}>{item}</button>)}</div></div>}
       <label className="feedback-note">补充说明（可选）<textarea value={customNote} onChange={(event) => setCustomNote(event.target.value)} rows={2} placeholder="告诉我们更多想法…" /></label>

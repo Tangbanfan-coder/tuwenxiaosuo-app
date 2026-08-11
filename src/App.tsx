@@ -19,6 +19,8 @@ import ProviderSettingsDialog from './components/ProviderSettingsDialog'
 import ReferenceImageDialog, { type ReferenceImageTarget } from './components/ReferenceImageDialog'
 import SettingsDrawer from './components/SettingsDrawer'
 import ContextUsage, { type ContextUsageState } from './components/ContextUsage'
+import ComposerAssetsMenu from './components/ComposerAssetsMenu'
+import ReasoningEffortQuickControl from './components/ReasoningEffortQuickControl'
 import IllustrationLightbox, { type LightboxImage } from './components/IllustrationLightbox'
 import TimelineMessage from './components/TimelineMessage'
 import WritingInstructionsDialog from './components/WritingInstructionsDialog'
@@ -53,12 +55,13 @@ import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
 import type { AppearanceMode, CharacterAsset, ContextBudget, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, ThemePresetId } from './domain/models'
 import { browserTransport } from './providers/browserTransport'
 import { loadProviderSettings, saveProviderSettings } from './providers/config'
+import { loadGlobalWritingInstructions, saveGlobalWritingInstructions } from './providers/config'
 import { persistImageAsset, resolveImageSource } from './providers/imageAssetStore'
 import { useAppBootstrap } from './hooks/useAppBootstrap'
 import ConfirmDialog from './components/ConfirmDialog'
 import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage } from './providers/images'
 import { secretStore } from './providers/secretStore'
-import type { ProviderSettings, ProviderSlot } from './providers/types'
+import type { ProviderSettings, ProviderSlot, ReasoningEffort } from './providers/types'
 import { explicitlyRequestsNewChapter, generateWritingTurn, previewWritingTurnBudget, projectStreamingProse, type ContextBudgetPlan } from './providers/writing'
 
 const APPEARANCE_KEY = 'illustrated-story-chat.appearance.v1'
@@ -90,7 +93,6 @@ export default function App() {
   const [contextUsageState, setContextUsageState] = useState<ContextUsageState>('empty')
   const [contextUsageError, setContextUsageError] = useState('')
   const [contextUsageDetailsOpen, setContextUsageDetailsOpen] = useState(false)
-  const [contextUsageDetailsPresentation, setContextUsageDetailsPresentation] = useState<'popover' | 'sheet'>('popover')
   const [sending, setSending] = useState(false)
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const [appSettingsOpen, setAppSettingsOpen] = useState(false)
@@ -98,6 +100,10 @@ export default function App() {
   const [characterAssetsOrigin, setCharacterAssetsOrigin] = useState<'main' | 'reference-image'>('main')
   const [referenceImageOpen, setReferenceImageOpen] = useState(false)
   const [writingInstructionsOpen, setWritingInstructionsOpen] = useState(false)
+  const [globalWritingInstructionsOpen, setGlobalWritingInstructionsOpen] = useState(false)
+  const [globalWritingInstructions, setGlobalWritingInstructions] = useState(() => loadGlobalWritingInstructions())
+  const portraitGenerationCancelledRef = useRef(false)
+  const [portraitGenerationActive, setPortraitGenerationActive] = useState(false)
   const [summaryHistoryOpen, setSummaryHistoryOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSlot, setSettingsSlot] = useState<ProviderSlot>('text')
@@ -135,6 +141,10 @@ export default function App() {
     onEmptyLibrary: () => setProjectMenuOpen(true),
     onToast: showToast,
   })
+
+  useEffect(() => {
+    setWorkspace((current) => current ? { ...current, globalWritingInstructions } : current)
+  }, [globalWritingInstructions, setWorkspace])
 
   useEffect(() => {
     const userRequest = draft.trim()
@@ -283,9 +293,9 @@ export default function App() {
       await updateWritingInstructions(workspace.project.id, value)
       await refreshWorkspace(workspace.project.id)
       await refreshProjects()
-      showToast(value.trim() ? '长期创作设定已保存' : '长期创作设定已清除')
+      showToast(value.trim() ? '局部创作设定已保存' : '局部创作设定已清除')
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '长期创作设定保存失败', 'error')
+      showToast(error instanceof Error ? error.message : '局部创作设定保存失败', 'error')
       throw error
     }
   }
@@ -302,6 +312,20 @@ export default function App() {
 
   function closeProviderSettings() {
     setSettingsOpen(false)
+  }
+
+  function handleReasoningEffortChange(reasoningEffort: ReasoningEffort) {
+    const nextTextProvider = { ...providerSettings.text, reasoningEffort }
+    const hasActiveProvider = providerSettings.textProviders.some((provider) => provider.id === nextTextProvider.id)
+    const nextSettings: ProviderSettings = {
+      ...providerSettings,
+      text: nextTextProvider,
+      textProviders: hasActiveProvider
+        ? providerSettings.textProviders.map((provider) => provider.id === nextTextProvider.id ? nextTextProvider : provider)
+        : [nextTextProvider, ...providerSettings.textProviders],
+    }
+    saveProviderSettings(nextSettings)
+    setProviderSettings(nextSettings)
   }
 
   function openCharacterAssets() {
@@ -323,6 +347,28 @@ export default function App() {
       project: { ...current.project, autoIllustrate },
     } : current)
     await updateAutoIllustrate(workspace.project.id, autoIllustrate)
+    if (!autoIllustrate) return
+    const refreshed = await refreshWorkspace(workspace.project.id)
+    if (!refreshed) return
+    if (!(await providerIsReady('image'))) {
+      showToast('自动配图已开启；请先配置图片模型，待生成角色会保留在角色资产中')
+      return
+    }
+    const pendingPortraits = refreshed.characters.filter((character) => (character.portraitStatus ?? 'planned') === 'planned')
+    if (!pendingPortraits.length) return
+    portraitGenerationCancelledRef.current = false
+    setPortraitGenerationActive(true)
+    void enqueueImageTask(async () => {
+      try {
+        for (const character of pendingPortraits) {
+          if (portraitGenerationCancelledRef.current) break
+          await generateCharacterPortrait(character, refreshed)
+        }
+      } finally {
+        setPortraitGenerationActive(false)
+      }
+    })
+    showToast(`自动配图已开启，${pendingPortraits.length} 个角色定妆照进入队列`)
   }
 
   async function handleContextBudgetChange(contextBudget: ContextBudget) {
@@ -343,6 +389,11 @@ export default function App() {
     const queued = imageQueueRef.current.then(task, task)
     imageQueueRef.current = queued.catch(() => undefined)
     return queued
+  }
+
+  function cancelPortraitGeneration() {
+    portraitGenerationCancelledRef.current = true
+    showToast('已停止后续定妆照生成；当前请求结束后不会继续排队')
   }
 
   function queueIllustration(illustration: IllustrationAsset, sourceWorkspace: ProjectWorkspace) {
@@ -398,7 +449,7 @@ export default function App() {
       const characterId = 'characterId' in target
         ? target.characterId
         : (await createCharacterDraft(workspace.project.id, target.name, target.role)).id
-      const storedImage = await persistImageAsset(dataUrl, workspace.project.id, characterId)
+      const storedImage = await persistImageAsset(dataUrl, workspace.project.id, characterId, 'imported')
       await setCharacterPortraitReady(characterId, storedImage.imageUrl, storedImage.localUri, referenceStyleMode)
       await refreshWorkspace(workspace.project.id)
       setReferenceImageOpen(false)
@@ -480,6 +531,15 @@ export default function App() {
     }
   }
 
+  async function createCharacterWithoutReference(target: { name: string; role: string }) {
+    if (!workspace) return
+    await createCharacterDraft(workspace.project.id, target.name, target.role)
+    await refreshWorkspace(workspace.project.id)
+    setReferenceImageOpen(false)
+    setCharacterAssetsOpen(true)
+    showToast('角色已创建，可在角色资产中生成定妆照')
+  }
+
   async function retryIllustration(illustrationId: string) {
     if (!workspace || !(await providerIsReady('image'))) {
       openProviderSettings('image')
@@ -488,7 +548,7 @@ export default function App() {
     }
     const illustration = workspace.illustrations.find((item) => item.id === illustrationId)
     if (!illustration) return
-    if (illustration.status === 'generating' || !illustrationReferencesReady(illustration, workspace.characters)) {
+    if (illustration.status === 'generating') {
       openCharacterAssets()
       return
     }
@@ -545,7 +605,7 @@ export default function App() {
       setStreamingText('')
       const nextWorkspace = await refreshWorkspace(workspace.project.id)
       await refreshProjects()
-      if (result.visualPlan && workspace.project.autoIllustrate && nextWorkspace) {
+      if (result.visualPlan && nextWorkspace) {
         const newCharacterNames = new Set(result.visualPlan.characters.map((character) => character.name.toLocaleLowerCase()))
         const portraits = nextWorkspace.characters.filter((character) =>
           newCharacterNames.has(character.name.toLocaleLowerCase()) && (character.portraitStatus ?? 'planned') === 'planned',
@@ -555,11 +615,22 @@ export default function App() {
         const readyIllustrations = newIllustrations.filter((illustration) => (
           illustration.status === 'planned' && illustrationReferencesReady(illustration, nextWorkspace.characters)
         ))
-        if (portraits.length && imageReady) {
+        if (portraits.length && imageReady && workspace.project.autoIllustrate) {
+          portraitGenerationCancelledRef.current = false
+          setPortraitGenerationActive(true)
           void enqueueImageTask(async () => {
-            for (const character of portraits) await generateCharacterPortrait(character, nextWorkspace)
+            try {
+              for (const character of portraits) {
+                if (portraitGenerationCancelledRef.current) break
+                await generateCharacterPortrait(character, nextWorkspace)
+              }
+            } finally {
+              setPortraitGenerationActive(false)
+            }
           })
           showToast('正文已保存，定妆照已进入生成队列')
+        } else if (!workspace.project.autoIllustrate) {
+          showToast('正文和视觉计划已保存；自动配图未开启，可稍后手动生成')
         } else if (!imageReady) {
           showToast('正文和视觉计划已保存；请先配置图片模型')
         } else if (readyIllustrations.length) {
@@ -754,34 +825,26 @@ export default function App() {
           />
           <div className="composer-toolbar">
             <div className="composer-tools">
-              <button type="button" onClick={openCharacterAssets}><UserRound size={17} />角色资产</button>
-              <button type="button" onClick={() => setReferenceImageOpen(true)}><ImagePlus size={17} />参考图</button>
-              <label className="auto-toggle">
-                <input
-                  type="checkbox"
-                  checked={workspace.project.autoIllustrate}
-                  onChange={(event) => void handleAutoIllustrate(event.target.checked)}
-                />
-                <span className="switch" />
-                自动配图
-              </label>
-            </div>
-            <div className="composer-actions">
-              <ContextUsage
-                plan={contextUsagePlan}
-                state={contextUsageState}
-                error={contextUsageError}
-                detailsOpen={contextUsageDetailsOpen}
-                detailsPresentation={contextUsageDetailsPresentation}
-                onDetailsOpenChange={(open) => {
-                  if (open) setContextUsageDetailsPresentation('popover')
-                  setContextUsageDetailsOpen(open)
-                }}
+              <ComposerAssetsMenu
+                onOpenCharacterAssets={openCharacterAssets}
+                onOpenReferenceImage={() => setReferenceImageOpen(true)}
               />
-              <button className="send-button" type="button" aria-label="发送" disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>
-                <span className="send-button-surface"><Send size={18} /></span>
+              <ReasoningEffortQuickControl value={providerSettings.text.reasoningEffort} onChange={handleReasoningEffortChange} />
+              <button
+                className="composer-tool-button auto-illustrate-button"
+                type="button"
+                aria-pressed={workspace.project.autoIllustrate}
+                aria-label={`自动配图：${workspace.project.autoIllustrate ? '自动' : '关闭'}`}
+                onClick={() => void handleAutoIllustrate(!workspace.project.autoIllustrate)}
+              >
+                <ImagePlus size={17} aria-hidden="true" />
+                <span>配图</span>
+                <strong>{workspace.project.autoIllustrate ? '自动' : '关闭'}</strong>
               </button>
             </div>
+            <button className="send-button" type="button" aria-label="发送" disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>
+              <span className="send-button-surface"><Send size={18} /></span>
+            </button>
           </div>
         </div>
       </footer>
@@ -802,7 +865,7 @@ export default function App() {
 
       <SettingsDrawer
         open={appSettingsOpen}
-        suspended={writingInstructionsOpen || summaryHistoryOpen || settingsOpen || (contextUsageDetailsOpen && contextUsageDetailsPresentation === 'sheet')}
+        suspended={writingInstructionsOpen || globalWritingInstructionsOpen || summaryHistoryOpen || settingsOpen || contextUsageDetailsOpen}
         projectTitle={workspace.project.title}
         activeThemeId={workspace.project.themeId}
         onClose={() => setAppSettingsOpen(false)}
@@ -814,12 +877,13 @@ export default function App() {
         onEditWritingInstructions={() => {
           setWritingInstructionsOpen(true)
         }}
+        globalWritingInstructions={globalWritingInstructions}
+        onEditGlobalWritingInstructions={() => setGlobalWritingInstructionsOpen(true)}
         contextBudget={workspace.project.contextBudget ?? 'standard'}
         onContextBudgetChange={handleContextBudgetChange}
         contextUsagePlan={contextUsagePlan}
         contextUsageState={contextUsageState}
         onOpenContextUsage={() => {
-          setContextUsageDetailsPresentation('sheet')
           setContextUsageDetailsOpen(true)
         }}
         onOpenSummaryHistory={() => {
@@ -829,6 +893,16 @@ export default function App() {
         onOpenProviderSettings={openProviderSettings}
         appearanceMode={appearanceMode}
         onAppearanceChange={handleAppearanceChange}
+      />
+
+      <ContextUsage
+        showTrigger={false}
+        plan={contextUsagePlan}
+        state={contextUsageState}
+        error={contextUsageError}
+        detailsOpen={contextUsageDetailsOpen}
+        detailsPresentation="sheet"
+        onDetailsOpenChange={setContextUsageDetailsOpen}
       />
 
       <WritingInstructionsDialog
@@ -851,6 +925,21 @@ export default function App() {
             throw error
           }
         }}
+      />
+      <WritingInstructionsDialog
+        open={globalWritingInstructionsOpen}
+        projectTitle="所有作品"
+        value={globalWritingInstructions}
+        isGlobal
+        onClose={() => setGlobalWritingInstructionsOpen(false)}
+        onSave={async (value) => {
+          const next = saveGlobalWritingInstructions(value)
+          setGlobalWritingInstructions(next)
+          setGlobalWritingInstructionsOpen(false)
+          showToast(next ? '全局创作设定已保存' : '全局创作设定已清除')
+        }}
+        onSaveStructure={async () => undefined}
+        textProvider={providerSettings.text}
       />
 
       <SummaryHistoryDialog
@@ -889,12 +978,19 @@ export default function App() {
         onConfirm={confirmCharacter}
         onReferenceStyleModeChange={handleReferenceStyleModeChange}
         onUpdateProfile={handleUpdateCharacterProfile}
+        onCreateCharacter={() => {
+          setCharacterAssetsOpen(false)
+          setReferenceImageOpen(true)
+        }}
+        onCancelGeneration={cancelPortraitGeneration}
+        generationActive={portraitGenerationActive}
       />
       <ReferenceImageDialog
         open={referenceImageOpen}
         characters={workspace.characters}
         onClose={() => setReferenceImageOpen(false)}
         onImport={importCharacterReference}
+        onCreate={createCharacterWithoutReference}
       />
       <IllustrationLightbox image={lightboxImage} onClose={() => setLightboxImage(undefined)} onToast={showToast} />
       <ConfirmDialog

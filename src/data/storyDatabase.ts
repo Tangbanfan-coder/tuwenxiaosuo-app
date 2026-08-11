@@ -5,6 +5,7 @@ import type {
   ContextBudget,
   ConversationMessage,
   Feedback,
+  FeedbackBatchInput,
   FeedbackScope,
   FeedbackTargetInput,
   Foreshadowing,
@@ -24,6 +25,7 @@ import type {
 import { DEFAULT_ILLUSTRATION_STYLE_ID, getIllustrationStylePreset } from '../domain/illustrationStyles'
 import { materializeWritingSceneNotes, reconcileForeshadowing } from '../domain/foreshadowing'
 import { createParagraphFingerprint, hashText as hashTextImpl, normalizeText as normalizeParagraphText } from '../domain/paragraphs'
+import { loadGlobalWritingInstructions } from '../providers/config'
 
 export { hashText, normalizeText } from '../domain/paragraphs'
 
@@ -571,7 +573,7 @@ function normalizeFeedbackScope(value: unknown): FeedbackScope {
   throw new Error('反馈范围必须是 message 或 paragraph')
 }
 
-function normalizeFeedbackPayload(input: UpsertFeedbackInput) {
+function normalizeFeedbackPayload(input: Pick<UpsertFeedbackInput, 'verdict' | 'reason' | 'customNote'>) {
   if (input.verdict !== 'up' && input.verdict !== 'down') {
     throw new Error('反馈结论必须是 up 或 down')
   }
@@ -765,6 +767,38 @@ export async function toggleFeedback(input: UpsertFeedbackInput): Promise<Feedba
   )
 }
 
+/** Applies one verdict to multiple exact paragraph/message targets atomically. */
+export async function toggleFeedbackBatch(input: FeedbackBatchInput): Promise<Feedback[]> {
+  if (!Array.isArray(input.targets) || input.targets.length === 0) throw new Error('至少选择一个反馈目标')
+  const payload = normalizeFeedbackPayload(input)
+  const now = Date.now()
+  return storyDatabase.transaction(
+    'rw',
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs, storyDatabase.feedback],
+    async () => {
+      const changed: Feedback[] = []
+      for (const targetInput of input.targets) {
+        const target = await resolveFeedbackTarget(targetInput)
+        const existing = await findFeedbackForTarget(target)
+        if (existing?.verdict === payload.verdict) {
+          await storyDatabase.feedback.delete(existing.id)
+          continue
+        }
+        if (existing) {
+          const updated = updateFeedbackRecord(existing, payload, now)
+          await storyDatabase.feedback.put(updated)
+          changed.push(updated)
+        } else {
+          const feedback = createFeedbackRecord(target, payload, now)
+          await storyDatabase.feedback.add(feedback)
+          changed.push(feedback)
+        }
+      }
+      return changed
+    },
+  )
+}
+
 /** Removes one exact, still-valid feedback target and reports whether it existed. */
 export async function removeFeedback(input: FeedbackTargetInput) {
   return storyDatabase.transaction(
@@ -900,7 +934,10 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
     storyDatabase.styles.where('projectId').equals(projectId).first(),
   ])
 
-  return { project, messages, chapters, characters, illustrations, style }
+  const globalWritingInstructions = loadGlobalWritingInstructions()
+  return globalWritingInstructions
+    ? { project, globalWritingInstructions, messages, chapters, characters, illustrations, style }
+    : { project, messages, chapters, characters, illustrations, style }
 }
 
 export async function listGeneratingImageAssets() {
@@ -1078,7 +1115,7 @@ export async function updateAutoIllustrate(projectId: string, autoIllustrate: bo
 
 export async function updateWritingInstructions(projectId: string, writingInstructions: string) {
   const normalized = writingInstructions.trim()
-  if (normalized.length > 50_000) throw new Error('长期创作设定不能超过 50000 个字')
+  if (normalized.length > 50_000) throw new Error('局部创作设定不能超过 50000 个字')
   await storyDatabase.projects.update(projectId, {
     writingInstructions: normalized,
     writingStructure: '',
@@ -1247,7 +1284,10 @@ export async function completeWritingTurn(
       await upsertChapterParagraphs(targetChapter)
       if (generatedSummary) await appendGeneratedChapterSummaryVersion(targetChapter, generatedSummary, now)
 
-      if (autoIllustrate && result.visualPlan) {
+      // Visual planning and character continuity are durable writing metadata.
+      // The auto-illustrate switch controls paid generation only, never whether
+      // characters or a recoverable illustration plan are recorded.
+      if (result.visualPlan) {
         const referenceCharacterIds: string[] = []
         for (const characterPlan of result.visualPlan.characters) {
           const existingCharacters = await storyDatabase.characters.where('projectId').equals(projectId).toArray()

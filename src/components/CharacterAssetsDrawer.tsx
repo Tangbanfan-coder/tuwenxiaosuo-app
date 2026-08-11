@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { CheckCircle2, ImagePlus, LoaderCircle, Pencil, RefreshCw, Save, UserRound, X } from 'lucide-react'
+import { CheckCircle2, ImagePlus, LoaderCircle, Pencil, RefreshCw, Save, UserPlus, X } from 'lucide-react'
 import type { CharacterAsset, ReferenceStyleMode } from '../domain/models'
 import { resolveImageSource } from '../providers/imageAssetStore'
 import { usePresence } from '../hooks/usePresence'
@@ -12,6 +12,9 @@ interface Props {
   onConfirm: (characterId: string) => Promise<void>
   onReferenceStyleModeChange: (characterId: string, referenceStyleMode: ReferenceStyleMode) => Promise<void>
   onUpdateProfile: (characterId: string, profile: { ageAndBuild: string; fixedTraits: string[]; defaultLook: string; wardrobe: string }) => Promise<void>
+  onCreateCharacter: () => void
+  onCancelGeneration: () => void
+  generationActive: boolean
 }
 
 interface ProfileDraft {
@@ -21,7 +24,7 @@ interface ProfileDraft {
   wardrobe: string
 }
 
-export default function CharacterAssetsDrawer({ open, characters, onClose, onGenerate, onConfirm, onReferenceStyleModeChange, onUpdateProfile }: Props) {
+export default function CharacterAssetsDrawer({ open, characters, onClose, onGenerate, onConfirm, onReferenceStyleModeChange, onUpdateProfile, onCreateCharacter, onCancelGeneration, generationActive }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const [feedbackCharacterId, setFeedbackCharacterId] = useState<string>()
   const [feedback, setFeedback] = useState('')
@@ -83,8 +86,12 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
         </header>
 
         <div className="character-assets-list">
+          <div className="asset-toolbar">
+            <button className="quiet-button" type="button" onClick={onCreateCharacter}><UserPlus size={16} />新建角色</button>
+            {generationActive && <button className="quiet-button danger" type="button" onClick={onCancelGeneration}>停止后续生成</button>}
+          </div>
           {characters.length === 0 && (
-            <div className="empty-assets"><UserRound size={28} /><h3>还没有角色</h3><p>写作模型识别出新角色后，会在这里建立独立资产。</p></div>
+            <div className="empty-assets"><UserPlus size={28} /><h3>还没有角色</h3><p>可主动创建角色；写作模型识别到新角色后也会记录在这里。</p></div>
           )}
           {characters.map((character) => {
             const status = character.portraitStatus ?? (character.status === 'confirmed' ? 'confirmed' : 'planned')
@@ -140,6 +147,7 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
                     <dl>
                       <div><dt>身份锚点</dt><dd>{character.identity.ageAndBuild || '待补充'}</dd></div>
                       <div><dt>固定特征</dt><dd>{character.identity.fixedTraits.join('、') || '待补充'}</dd></div>
+                      <div><dt>默认外貌</dt><dd>{character.appearance.defaultLook || '待补充'}</dd></div>
                       <div><dt>当前服装</dt><dd>{character.appearance.wardrobe || '待补充'}</dd></div>
                     </dl>
                   )}

@@ -7,10 +7,11 @@ import {
   loadProjectWorkspace,
   listProjects,
 } from '../../data/storyDatabase'
-import { buildProjectContext, parseChapterOrder, parseWritingStructure, structureWritingInstructions } from '../writing'
+import { buildProjectContext, buildProjectContextForTokenBudget, parseChapterOrder, parseWritingStructure, structureWritingInstructions } from '../writing'
 import type { StoredScene } from '../../data/storyDatabase'
 import type { ProjectWorkspace } from '../../domain/models'
 import type { HttpTransport, ProviderConfig, TransportRequest } from '../types'
+import { resolveTokenEstimator } from '../tokenEstimator'
 
 beforeEach(async () => {
   await Promise.all([
@@ -50,7 +51,14 @@ function makeWorkspace(overrides: Partial<ProjectWorkspace['project']> = {}): Pr
   }
 }
 
-describe('长期创作设定三层结构', () => {
+describe('局部创作设定三层结构', () => {
+  it('全局创作设定作为低优先级默认并与作品设定同时注入', () => {
+    const workspace = makeWorkspace({ writingInstructions: '作品规则' })
+    workspace.globalWritingInstructions = '通用规则'
+    const context = buildProjectContextForTokenBudget(workspace, [], 20_000, '继续写', resolveTokenEstimator({ protocol: 'openai-compatible', providerId: 'test', model: 'test' }))
+    expect(context.context).toContain('全局创作设定（低优先级默认）')
+    expect(context.context).toContain('当前作品局部创作设定（优先覆盖全局设定）')
+  })
   it('原文更新后旧结构必须失效（含 sourceHash 绑定）', async () => {
     await updateWritingInstructions('project-1', '原文第一版')
     await updateWritingStructure('project-1', JSON.stringify({

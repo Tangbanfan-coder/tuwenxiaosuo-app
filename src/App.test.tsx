@@ -32,6 +32,7 @@ const databaseMocks = vi.hoisted(() => ({
   setIllustrationGenerating: vi.fn(),
   setIllustrationReady: vi.fn(),
   toggleFeedback: vi.fn(),
+  toggleFeedbackBatch: vi.fn(),
   updateAutoIllustrate: vi.fn(),
   updateCharacterProfile: vi.fn(),
   updateCharacterReferenceStyleMode: vi.fn(),
@@ -52,6 +53,18 @@ const writingMocks = vi.hoisted(() => ({
   generateWritingTurn: vi.fn(),
   previewWritingTurnBudget: vi.fn(),
   projectStreamingProse: vi.fn(),
+}))
+
+const configMocks = vi.hoisted(() => ({
+  saveGlobalWritingInstructions: vi.fn((value: string) => value.trim()),
+  saveProviderSettings: vi.fn(),
+}))
+
+const imageAssetMocks = vi.hoisted(() => ({
+  persistImageAsset: vi.fn().mockResolvedValue({ imageUrl: 'data:image/png;base64,dGVzdA==', localUri: 'local://reference.png' }),
+  recoverPersistedImageAsset: vi.fn(),
+  resolveImageSource: vi.fn(),
+  saveImageToDevice: vi.fn(),
 }))
 
 const providerSettings: ProviderSettings = {
@@ -113,7 +126,20 @@ vi.mock('./components/ReferenceImageDialog', () => ({
   ) : null,
 }))
 vi.mock('./components/ContextUsage', () => ({
-  default: ({ state, plan }: { state: string; plan?: unknown }) => <div aria-label="上下文预览状态">{`${state}:${plan ? 'ready' : 'none'}`}</div>,
+  default: ({
+    state,
+    plan,
+    detailsOpen,
+    onDetailsOpenChange,
+  }: {
+    state: string
+    plan?: unknown
+    detailsOpen?: boolean
+    onDetailsOpenChange?: (open: boolean) => void
+  }) => <>
+    <div aria-label="上下文预览状态">{`${state}:${plan ? 'ready' : 'none'}`}</div>
+    {detailsOpen && <section role="dialog" aria-label="上下文用量测试明细"><button type="button" onClick={() => onDetailsOpenChange?.(false)}>关闭上下文用量测试明细</button></section>}
+  </>,
 }))
 vi.mock('./components/WritingInstructionsDialog', () => ({ default: () => null }))
 vi.mock('./components/ConfirmDialog', () => ({
@@ -122,8 +148,19 @@ vi.mock('./components/ConfirmDialog', () => ({
     : null,
 }))
 vi.mock('./components/SettingsDrawer', () => ({
-  default: ({ open, onOpenSummaryHistory }: { open: boolean; onOpenSummaryHistory: () => void }) => (
-    open ? <button type="button" onClick={onOpenSummaryHistory}>打开摘要版本历史</button> : null
+  default: ({
+    open,
+    onOpenContextUsage,
+    onOpenSummaryHistory,
+  }: {
+    open: boolean
+    onOpenContextUsage: () => void
+    onOpenSummaryHistory: () => void
+  }) => (
+    open ? <>
+      <button type="button" onClick={onOpenContextUsage}>查看本轮上下文用量</button>
+      <button type="button" onClick={onOpenSummaryHistory}>打开摘要版本历史</button>
+    </> : null
   ),
 }))
 vi.mock('./components/SummaryHistoryDialog', () => ({
@@ -151,14 +188,13 @@ vi.mock('./domain/illustrationStyles', () => ({
 }))
 vi.mock('./providers/config', () => ({
   loadProviderSettings: () => providerSettings,
-  saveProviderSettings: vi.fn(),
+  loadGlobalWritingInstructions: () => '',
+  saveGlobalWritingInstructions: configMocks.saveGlobalWritingInstructions,
+  saveProviderSettings: configMocks.saveProviderSettings,
 }))
 vi.mock('./providers/modelLimits', () => ({ refreshModelLimits: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('./providers/imageAssetStore', () => ({
-  persistImageAsset: vi.fn().mockResolvedValue({ imageUrl: 'data:image/png;base64,dGVzdA==', localUri: 'local://reference.png' }),
-  recoverPersistedImageAsset: vi.fn(),
-  resolveImageSource: vi.fn(),
-  saveImageToDevice: vi.fn(),
+  ...imageAssetMocks,
 }))
 vi.mock('./providers/browserTransport', () => ({ browserTransport: {} }))
 vi.mock('./providers/images', () => ({
@@ -218,6 +254,7 @@ beforeEach(() => {
   databaseMocks.listChapterSummaryVersions.mockResolvedValue([])
   databaseMocks.listMessageFeedback.mockResolvedValue([])
   databaseMocks.toggleFeedback.mockResolvedValue({ id: 'feedback-1', verdict: 'down' })
+  databaseMocks.toggleFeedbackBatch.mockResolvedValue([])
   databaseMocks.storyDatabase.paragraphs.where.mockReturnValue({
     equals: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }),
   })
@@ -226,7 +263,11 @@ beforeEach(() => {
   writingMocks.generateWritingTurn.mockReset()
   writingMocks.previewWritingTurnBudget.mockReset()
   writingMocks.projectStreamingProse.mockReset()
-  providerSettings.text = { ...providerSettings.text, baseUrl: '', model: '' }
+  configMocks.saveGlobalWritingInstructions.mockClear()
+  configMocks.saveProviderSettings.mockClear()
+  imageAssetMocks.persistImageAsset.mockClear()
+  providerSettings.text = { ...providerSettings.text, baseUrl: '', model: '', reasoningEffort: undefined }
+  providerSettings.textProviders = []
   window.requestAnimationFrame = vi.fn(() => 1)
   window.cancelAnimationFrame = vi.fn()
   localStorage.clear()
@@ -286,6 +327,33 @@ describe('context usage preview', () => {
     await waitFor(() => expect(writingMocks.previewWritingTurnBudget).toHaveBeenLastCalledWith(workspace, '', providerSettings.text))
     expect(screen.getByLabelText('上下文预览状态').textContent).toBe('ready:ready')
   })
+
+  it('keeps context details out of the main toolbar while settings can open the shared sheet', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(screen.queryByRole('button', { name: /上下文.*明细/ })).toBeNull()
+    await user.click(await screen.findByRole('button', { name: '打开设置' }))
+    await user.click(screen.getByRole('button', { name: '查看本轮上下文用量' }))
+    expect(await screen.findByRole('dialog', { name: '上下文用量测试明细' })).toBeDefined()
+  })
+})
+
+describe('quick reasoning effort control', () => {
+  it('updates and persists the active text provider without opening model settings', async () => {
+    const user = userEvent.setup()
+    providerSettings.textProviders = [{ ...providerSettings.text }]
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '文本模型思考等级：自动' }))
+    await user.click(screen.getByRole('menuitemradio', { name: '高' }))
+
+    expect(configMocks.saveProviderSettings).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.objectContaining({ id: 'text-provider', reasoningEffort: 'high' }),
+      textProviders: [expect.objectContaining({ id: 'text-provider', reasoningEffort: 'high' })],
+    }))
+    expect(screen.getByRole('button', { name: '文本模型思考等级：高' })).toBeDefined()
+  })
 })
 
 describe('reference image navigation', () => {
@@ -310,12 +378,46 @@ describe('reference image navigation', () => {
 
     render(<App />)
 
-    await user.click(await screen.findByRole('button', { name: '参考图' }))
+    await user.click(await screen.findByRole('button', { name: '素材' }))
+    await user.click(screen.getByRole('button', { name: /参考图/ }))
     await user.click(await screen.findByRole('button', { name: '导入测试参考图' }))
+    await waitFor(() => expect(imageAssetMocks.persistImageAsset).toHaveBeenCalledWith(
+      'data:image/png;base64,dGVzdA==',
+      project.id,
+      'character-1',
+      'imported',
+    ))
     expect(await screen.findByRole('dialog', { name: '角色资产测试入口' })).toBeDefined()
 
     await user.click(screen.getByRole('button', { name: '关闭角色资产' }))
     expect(await screen.findByRole('dialog', { name: '参考图测试入口' })).toBeDefined()
+  })
+})
+
+describe('composer asset and illustration controls', () => {
+  it('opens character assets through the material menu', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '素材' }))
+    await user.click(screen.getByRole('button', { name: /人物资产/ }))
+    expect(await screen.findByRole('dialog', { name: '角色资产测试入口' })).toBeDefined()
+  })
+
+  it('shows the explicit auto-illustration state and keeps its persistence flow', async () => {
+    const user = userEvent.setup()
+    databaseMocks.loadProjectWorkspace.mockResolvedValue({
+      ...workspace,
+      project: { ...project, autoIllustrate: true },
+    })
+    render(<App />)
+
+    const button = await screen.findByRole('button', { name: '自动配图：自动' })
+    expect(button.textContent).toContain('配图')
+    expect(button.textContent).toContain('自动')
+    await user.click(button)
+    await waitFor(() => expect(databaseMocks.updateAutoIllustrate).toHaveBeenCalledWith(project.id, false))
+    expect(screen.getByRole('button', { name: '自动配图：关闭' })).toBeDefined()
   })
 })
 
@@ -375,22 +477,30 @@ describe('prose feedback UI', () => {
       fingerprint: createParagraphFingerprint(proseMessage.paragraphs[1]),
       createdAt: 2,
     }
+    const storedParagraphFirst = {
+      ...storedParagraph,
+      id: 'paragraph-message-message-1-0',
+      index: 0,
+      text: proseMessage.paragraphs[0],
+      fingerprint: createParagraphFingerprint(proseMessage.paragraphs[0]),
+    }
     databaseMocks.storyDatabase.paragraphs.where.mockReturnValue({
-      equals: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([storedParagraph]) }),
+      equals: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([storedParagraphFirst, storedParagraph]) }),
     })
     renderProse()
     await user.click(await screen.findByRole('button', { name: '点踩这条正文' }))
     await user.click(screen.getByLabelText('仅针对某段'))
+    await user.click(screen.getByRole('option', { name: /第 1 段/ }))
     await user.click(screen.getByRole('option', { name: /第 2 段/ }))
     await user.click(screen.getByRole('button', { name: '节奏' }))
     await user.type(screen.getByPlaceholderText('告诉我们更多想法…'), '冲突推进得太快')
     await user.click(screen.getByRole('button', { name: '提交反馈' }))
-    await waitFor(() => expect(databaseMocks.toggleFeedback).toHaveBeenCalled())
-    expect(databaseMocks.toggleFeedback).toHaveBeenLastCalledWith(expect.objectContaining({
-      scope: 'paragraph',
-      paragraphId: storedParagraph.id,
-      paragraphIndex: 1,
-      paragraphFingerprint: storedParagraph.fingerprint,
+    await waitFor(() => expect(databaseMocks.toggleFeedbackBatch).toHaveBeenCalled())
+    expect(databaseMocks.toggleFeedbackBatch).toHaveBeenLastCalledWith(expect.objectContaining({
+      targets: [
+        expect.objectContaining({ scope: 'paragraph', paragraphIndex: 0, paragraphId: storedParagraphFirst.id }),
+        expect.objectContaining({ scope: 'paragraph', paragraphIndex: 1, paragraphId: storedParagraph.id, paragraphFingerprint: storedParagraph.fingerprint }),
+      ],
       verdict: 'down',
       reason: '节奏',
       customNote: '冲突推进得太快',
@@ -402,16 +512,16 @@ describe('prose feedback UI', () => {
     renderProse()
     await user.click(await screen.findByRole('button', { name: '点赞这条正文' }))
     await user.click(screen.getByRole('button', { name: '提交反馈' }))
-    await waitFor(() => expect(databaseMocks.toggleFeedback).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(databaseMocks.toggleFeedbackBatch).toHaveBeenCalledTimes(1))
 
     await user.click(await screen.findByRole('button', { name: '点赞这条正文' }))
     await user.click(screen.getByRole('button', { name: '提交反馈' }))
-    await waitFor(() => expect(databaseMocks.toggleFeedback).toHaveBeenCalledTimes(2))
-    expect(databaseMocks.toggleFeedback.mock.calls[1][0]).toEqual(expect.objectContaining({ scope: 'message', verdict: 'up' }))
+    await waitFor(() => expect(databaseMocks.toggleFeedbackBatch).toHaveBeenCalledTimes(2))
+    expect(databaseMocks.toggleFeedbackBatch.mock.calls[1][0]).toEqual(expect.objectContaining({ targets: [expect.objectContaining({ scope: 'message' })], verdict: 'up' }))
 
     await user.click(await screen.findByRole('button', { name: '点踩这条正文' }))
     await user.click(screen.getByRole('button', { name: '提交反馈' }))
-    await waitFor(() => expect(databaseMocks.toggleFeedback).toHaveBeenCalledTimes(3))
-    expect(databaseMocks.toggleFeedback.mock.calls[2][0]).toEqual(expect.objectContaining({ scope: 'message', verdict: 'down' }))
+    await waitFor(() => expect(databaseMocks.toggleFeedbackBatch).toHaveBeenCalledTimes(3))
+    expect(databaseMocks.toggleFeedbackBatch.mock.calls[2][0]).toEqual(expect.objectContaining({ targets: [expect.objectContaining({ scope: 'message' })], verdict: 'down' }))
   })
 })

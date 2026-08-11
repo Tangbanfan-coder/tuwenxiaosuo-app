@@ -1,5 +1,6 @@
 export type ProviderSlot = 'text' | 'image'
 export type SecretRef = string
+export type ReasoningEffort = 'auto' | 'low' | 'medium' | 'high'
 
 export type RequestAuth = { kind: 'bearer'; secretRef: SecretRef }
 
@@ -15,6 +16,7 @@ export interface ProviderConfig {
   manualContextLength?: number
   manualMaxOutputTokens?: number
   androidStreamingEnabled?: boolean
+  reasoningEffort?: ReasoningEffort
 }
 
 export interface ProviderSettings {

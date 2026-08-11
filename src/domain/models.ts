@@ -113,6 +113,13 @@ export interface FeedbackInput extends FeedbackTargetInput {
   customNote?: string
 }
 
+export interface FeedbackBatchInput {
+  targets: FeedbackTargetInput[]
+  verdict: FeedbackVerdict
+  reason?: string
+  customNote?: string
+}
+
 export type UpsertFeedbackInput = FeedbackInput
 
 export interface WritingCharacterPlan {
@@ -265,6 +272,8 @@ export interface ProjectStyle {
 
 export interface ProjectWorkspace {
   project: StoryProject
+  /** App-level defaults applied before the current project's own rules. */
+  globalWritingInstructions?: string
   messages: ConversationMessage[]
   chapters: Chapter[]
   characters: CharacterAsset[]

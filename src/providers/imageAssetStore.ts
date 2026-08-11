@@ -7,6 +7,8 @@ export interface StoredImageSource {
   localUri?: string
 }
 
+export type ImageAssetOrigin = 'generated' | 'imported'
+
 const IMAGE_SAVE_TIMEOUT_MS = 120_000
 const IMAGE_VALIDATION_TIMEOUT_MS = 10_000
 const IMAGE_WRITE_CHUNK_SIZE = 512 * 1024
@@ -238,7 +240,7 @@ export async function recoverPersistedImageAsset(projectId: string, assetId: str
   return undefined
 }
 
-export async function persistImageAsset(source: string, projectId: string, assetId: string): Promise<StoredImageSource> {
+export async function persistImageAsset(source: string, projectId: string, assetId: string, origin: ImageAssetOrigin = 'generated'): Promise<StoredImageSource> {
   if (!Capacitor.isNativePlatform()) return { imageUrl: source }
 
   const imageDirectory = imageDirectoryFor(projectId)
@@ -278,7 +280,8 @@ export async function persistImageAsset(source: string, projectId: string, asset
     const recovered = await recoverPersistedImageAsset(projectId, assetId, saveStartedAt)
     if (recovered?.localUri) return { imageUrl: source, localUri: recovered.localUri }
     const detail = error instanceof Error && error.message ? `（${error.message}）` : ''
-    throw new Error(`图片已生成，但无法保存到手机本地${detail}`)
+    const action = origin === 'imported' ? '参考图' : '图片已生成，但'
+    throw new Error(`${action}无法保存到手机本地${detail}`)
   }
 }
 

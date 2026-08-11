@@ -1,5 +1,52 @@
 # 变更记录
 
+## 2026-08-11 — 参考图导入统一 PNG 归一化
+
+- 参考图导入现在会对所有本机可解码的图片执行 Canvas 解码并重新编码为 PNG，不再只处理 HEIC/HEIF；可容错解码但 JPEG 文件尾不标准的历史图片也会产出完整 PNG 再保存。
+- 无法解码、尺寸无效或 Canvas 转换失败时会停止导入并提示可恢复的中文错误，不再把原始文件直接传给本地存储；文件选择器同步放宽为本机可解码的图片类型。
+- `persistImageAsset` 新增可选来源语境，参考图导入失败会提示“参考图无法保存到手机本地”，生成图片仍保留原有“图片已生成”文案和严格完整性校验。
+- 新增 JPEG、缺尾 JPEG、HEIC 成功/失败、任意格式解码失败、导入与生成存储错误文案的回归测试。
+- 为异步解码增加最后一次选择令牌，快速连续选择、超限选择及对话框重置都会使旧任务失效，避免迟到结果覆盖当前参考图。
+
+## 2026-08-10 — 写作输入区职责收敛与发送按钮防溢出
+
+- 将输入区的“人物资产”和“参考图”合并为单一“素材”入口，点击后通过可键盘操作的底部菜单进入原有两条流程；菜单支持遮罩关闭、`Escape` 关闭、焦点循环与返回。
+- 主工具栏收敛为“素材 / 思考状态 / 配图状态 / 发送”四项；自动配图改为显示“配图 自动/关闭”的状态按钮，思考等级继续显示当前值，发送按钮固定为独立的 44×44 网格列，不参与压缩。
+- 上下文用量只从主工具栏移除；预算预览仍持续计算，设置页“查看本轮上下文用量”入口与原明细底部面板完整保留，并复用同一份 `ContextBudgetPlan`。
+- 补充素材菜单、上下文受控面板、主工具栏入口、自动配图状态和思考等级切换回归测试；修复工具组裁剪会遮挡思考菜单的风险。
+- 验证：`npx vitest run --testTimeout=15000` 为 26 个文件 / 175 项全部通过；`npm run build` 通过（仅保留既有大 chunk 提示）；Impeccable detector 返回 `[]`；`git diff --check` 通过，仅有既有 Windows 行尾提示。浏览器在 390×844 与 1000×800 视口确认发送按钮完整、页面无横向溢出、素材与思考菜单未裁切，且设置页仍可打开上下文明细。
+
+## 2026-08-10 — 应用正式更名“叙影”并覆盖安装发行版
+
+- 将 Capacitor `appName` 与 Android 启动器/Activity 显示名从“图文小说”统一更名为“叙影”；网页标题原已为“叙影”。保持 `com.illustratedstory.app`、版本号、数据库名、本地存储键和安全存储前缀不变，以便覆盖安装时继续使用原有作品与配置。
+- 运行 `npm run android:sync` 同步 production 前端资源与 Capacitor Android 配置，随后执行 `android/gradlew.bat assembleRelease`，生成签名 APK：`android/app/build/outputs/apk/release/app-release.apk`，SHA-256 为 `0047DB42592495AEAAE593521400920185BFD8811415345E6DEE8C4BC6B4523E`。
+- APK 元数据确认 `application-label='叙影'`、`applicationId=com.illustratedstory.app`、`versionCode=1`、`versionName=1.0`；新 APK 与手机现装版本的签名证书 SHA-256 均为 `7afd7b46942d7d792ad2b47fc5fc62474b3423015b78b73a8c25fa0472318da1`。
+- 对设备 `3B6F66E910B5BALR` 执行 `adb install -r` 返回 `Success`。安装后 `firstInstallTime=2026-08-07 19:46:10` 保持不变，`lastUpdateTime=2026-08-10 20:09:46` 已更新；应用进程已启动，最近日志未发现 `FATAL EXCEPTION` 或应用相关 `AndroidRuntime` 崩溃。
+
+## 2026-08-10 — 创作设定分层、角色对齐与思考等级快捷入口
+
+- 将“通用创作设定”统一更名为“全局创作设定”，将作品内的“长期创作设定”更名为“局部创作设定”；设置页中全局设定现在是独立栏目，不再与“摘要版本历史”同组。
+- 角色档案的标签列保持稳定宽度，标签与内容改为首行文字基线对齐，修复“身份锚点”与描述文字上下错位。
+- 在写作输入区工具栏新增思考等级快捷菜单，可直接切换自动/低/中/高；选择会同步当前文本供应商配置并立即持久化，与模型设置页共用同一状态。
+
+## 2026-08-10 — UI 与功能优化版 Android Release 覆盖安装
+
+- 运行 `npm run android:sync` 完成 production 构建与 Capacitor Android 资源同步；随后运行 `android/gradlew.bat assembleRelease`，构建成功生成签名 APK：`android/app/build/outputs/apk/release/app-release.apk`，SHA-256 为 `978CD4174B4A684AEA82CFC2B92BE6F2F01706023A1986BDFBF8965C39A7636C`。
+- 从当前连接设备 `3B6F66E910B5BALR` 拉取现装 `com.illustratedstory.app` 的 APK，仅用于签名校验；新旧 APK 的签名证书 SHA-256 均为 `7afd7b46942d7d792ad2b47fc5fc62474b3423015b78b73a8c25fa0472318da1`。
+- 执行 `adb install -r` 返回 `Success`，未卸载应用、未清空数据。安装后 `firstInstallTime=2026-08-07 19:46:10` 保持不变，`lastUpdateTime=2026-08-10 13:46:45` 已更新；版本仍为 `versionCode=1`、`versionName=1.0`。
+- 启动 `com.illustratedstory.app/.MainActivity` 后进程 PID 为 `13472`，该 Activity 已成为 `topResumedActivity`；最近日志未发现 `FATAL EXCEPTION` 或应用相关 `AndroidRuntime` 崩溃。
+
+## 2026-08-10 — 角色、反馈、配图、通用设定与模型思考等级优化
+
+- 修复角色资产档案显示：非编辑态补回“默认外貌”，并将身份锚点、固定特征、默认外貌、当前服装统一为固定标签列和自适应内容列，避免标签与描述错位。
+- 正文反馈的“仅针对某段”升级为多选；一次提交会在同一数据库事务中对每个稳定段落锚点分别切换反馈，保留既有指纹校验、唯一 targetKey、同结论再次提交撤销和近期反馈上下文注入语义。
+- “自动配图”只控制付费图片生成，不再决定是否保存视觉计划、角色资产和待生成插画。关闭自动配图写作时仍会记录角色数量和可恢复的插画计划，时间线可手动生成 planned/failed 插画；缺少已确认定妆照时允许按角色档案直接生成，并提示一致性风险。
+- 批量定妆照队列新增“停止后续生成”：不会继续启动剩余角色请求；已发出的当前图片请求仍会完成，避免把无法撤回的供应商计费伪装成可取消。角色资产保留单角色手动生成/重试，历史 planned/failed 插画继续提供手动生成入口。
+- 参考图入口新增“只创建角色”，无需先选图片；创建后可在角色资产编辑档案并调用图片模型生成定妆照。角色资产页也新增“新建角色”入口。
+- 设置页新增“通用创作设定”，独立存储并应用于所有作品；写作上下文明确按“通用默认 → 当前作品覆盖 → 本轮要求覆盖”的优先级组合，作品删除不影响通用设定。
+- 文本模型设置新增“思考等级”自动/低/中/高。此前应用没有设置 `reasoning_effort`，也不是默认最高；现在“自动”仍不发送该字段，低/中/高分别透传给 OpenAI 兼容接口，普通写作和长期设定结构化请求保持一致。不支持该参数的供应商应保持“自动”。
+- 验证：`npm run build` 通过（仅保留既有大 chunk 提示）；`npx vitest run --testTimeout=30000` 为 24 个文件 / 167 项全部通过；Impeccable detector 对本批 UI 文件返回 `[]`；`git diff --check` 通过，仅有仓库既有 Windows 行尾提示。
+
 ## 2026-08-10 — 项目内 Release 签名与手机覆盖安装
 
 - 将 `C:\Users\Zhou\Desktop\keystore\xuying-release.keystore` 复制到项目内 `android/xuying-release.keystore`，源文件与项目副本 SHA-256 一致；沿用项目已有且被忽略的 `android/keystore.properties`，仅把 `storeFile` 改为 `../xuying-release.keystore`，构建不再依赖项目外路径。

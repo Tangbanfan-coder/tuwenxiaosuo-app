@@ -147,6 +147,13 @@ describe('persistImageAsset', () => {
       .rejects.toThrow('图片已生成，但无法保存到手机本地（图片文件不完整）')
   })
 
+  it('reports import storage failures without claiming that the image was generated', async () => {
+    const truncated = pngBase64().slice(0, -8)
+
+    await expect(persistImageAsset(`data:image/png;base64,${truncated}`, 'project-1', 'asset-1', 'imported'))
+      .rejects.toThrow('参考图无法保存到手机本地（图片文件不完整）')
+  })
+
   it('rejects a URL that was not downloaded through the authenticated provider channel', async () => {
     await expect(persistImageAsset('https://example.test/image', 'project-1', 'asset-1'))
       .rejects.toThrow('图片数据尚未下载为可保存的格式')
