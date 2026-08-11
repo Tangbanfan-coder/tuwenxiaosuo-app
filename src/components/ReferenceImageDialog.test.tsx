@@ -70,6 +70,7 @@ describe('ReferenceImageDialog', () => {
     const creatingButton = screen.getByRole('button', { name: '正在创建…' })
     expect(creatingButton.getAttribute('aria-busy')).toBe('true')
     expect(creatingButton.hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '导入参考图' }).getAttribute('aria-busy')).toBe('false')
 
     finishCreate?.()
     await waitFor(() => expect(screen.getByRole('button', { name: '只创建角色' }).getAttribute('aria-busy')).toBe('false'))

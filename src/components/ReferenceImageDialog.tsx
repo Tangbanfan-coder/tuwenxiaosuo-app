@@ -135,6 +135,7 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
   }, [characterMenuOpen])
 
   if (!present) return null
+  const importSaving = saving && !createSaving
 
   return (
     <div className={`dialog-backdrop reference-dialog-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
@@ -288,15 +289,15 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
                 })
               }}>{createSaving ? <LoaderCircle className="spin" size={18} /> : <UserPlus size={18} />}{createSaving ? '正在创建…' : '只创建角色'}</button>
             )}
-            <button className="save-button" type="button" disabled={!(characterId === NEW_CHARACTER_ID ? characterName.trim() : characterId) || !preview || saving} onClick={() => {
+            <button className="save-button" type="button" aria-busy={importSaving} disabled={!(characterId === NEW_CHARACTER_ID ? characterName.trim() : characterId) || !preview || saving} onClick={() => {
               const target: ReferenceImageTarget = characterId === NEW_CHARACTER_ID
                 ? { name: characterName.trim(), role: characterRole.trim() || '主要角色' }
                 : { characterId }
               setSaving(true)
               void onImport(target, preview, referenceStyleMode).finally(() => setSaving(false))
             }}>
-              {saving ? <LoaderCircle className="spin" size={18} /> : <Upload size={18} />}
-              {saving ? '正在导入…' : '导入参考图'}
+              {importSaving ? <LoaderCircle className="spin" size={18} /> : <Upload size={18} />}
+              {importSaving ? '正在导入…' : '导入参考图'}
             </button>
           </div>
         </footer>

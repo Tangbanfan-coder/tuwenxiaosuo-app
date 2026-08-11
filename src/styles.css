@@ -1084,7 +1084,7 @@ label {
 .model-list button > svg { flex: none; color: #d2b975; }
 .model-list > p { margin: 0; padding: 20px 12px; color: #8c8981; text-align: center; font-size: 12px; }
 
-.reference-dialog-body { padding: 17px 19px 20px; overflow-y: auto; }
+.reference-dialog-body { min-height: 0; flex: 1; padding: 17px 19px 20px; overflow-y: auto; }
 .character-select { position: relative; }
 .character-select .theme-select-menu { position: absolute; top: calc(100% + 6px); right: 0; left: 0; z-index: 5; max-height: 230px; overflow-y: auto; box-shadow: 0 14px 30px rgba(0, 0, 0, 0.38); }
 .reference-character-setup { margin-bottom: 17px; padding: 13px 13px 1px; border: 1px solid #3f3e38; border-radius: 10px; background: #171715; }
@@ -1115,8 +1115,9 @@ label {
 
 .dialog-footer { min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 17px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid #33332f; color: #8e8b83; font-size: 11px; }
 .save-button { min-width: 112px; }
-.reference-dialog .dialog-footer { display: grid; grid-template-columns: minmax(0, 1fr); }
-.reference-dialog-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; width: 100%; }
+.reference-dialog .dialog-footer { flex: none; display: grid; grid-template-columns: minmax(0, 1fr); }
+.reference-dialog-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+.reference-dialog-actions > :only-child { grid-column: 1 / -1; }
 .reference-dialog-actions .save-button,
 .reference-create-character-button { width: 100%; }
 .reference-create-character-button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 13px; border: 1px solid #56544d; border-radius: 8px; background: #35342f; color: #e2dfd5; font-weight: 680; }
