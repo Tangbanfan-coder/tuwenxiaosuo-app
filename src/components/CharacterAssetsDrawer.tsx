@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { CheckCircle2, ImagePlus, LoaderCircle, Pencil, RefreshCw, Save, UserPlus, X } from 'lucide-react'
-import type { CharacterAsset, ReferenceStyleMode } from '../domain/models'
+import type { CharacterAsset, NarrativePronoun, ReferenceStyleMode } from '../domain/models'
 import { resolveImageSource } from '../providers/imageAssetStore'
 import { usePresence } from '../hooks/usePresence'
 
@@ -11,20 +11,22 @@ interface Props {
   onGenerate: (characterId: string, feedback?: string) => Promise<void>
   onConfirm: (characterId: string) => Promise<void>
   onReferenceStyleModeChange: (characterId: string, referenceStyleMode: ReferenceStyleMode) => Promise<void>
-  onUpdateProfile: (characterId: string, profile: { ageAndBuild: string; fixedTraits: string[]; defaultLook: string; wardrobe: string }) => Promise<void>
+  onUpdateProfile: (characterId: string, profile: { narrativePronoun?: NarrativePronoun; ageAndBuild: string; fixedTraits: string[]; defaultLook: string; wardrobe: string }) => Promise<void>
+  onAnalyzeReference: (characterId: string) => Promise<void>
   onCreateCharacter: () => void
   onCancelGeneration: () => void
   generationActive: boolean
 }
 
 interface ProfileDraft {
+  narrativePronoun?: NarrativePronoun
   ageAndBuild: string
   fixedTraitsText: string
   defaultLook: string
   wardrobe: string
 }
 
-export default function CharacterAssetsDrawer({ open, characters, onClose, onGenerate, onConfirm, onReferenceStyleModeChange, onUpdateProfile, onCreateCharacter, onCancelGeneration, generationActive }: Props) {
+export default function CharacterAssetsDrawer({ open, characters, onClose, onGenerate, onConfirm, onReferenceStyleModeChange, onUpdateProfile, onAnalyzeReference, onCreateCharacter, onCancelGeneration, generationActive }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const [feedbackCharacterId, setFeedbackCharacterId] = useState<string>()
   const [feedback, setFeedback] = useState('')
@@ -48,6 +50,7 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
   function startEditing(character: CharacterAsset) {
     setEditingCharacterId(character.id)
     setProfileDraft({
+      narrativePronoun: character.narrativePronoun,
       ageAndBuild: character.identity.ageAndBuild ?? '',
       fixedTraitsText: character.identity.fixedTraits.join('、'),
       defaultLook: character.appearance.defaultLook ?? '',
@@ -60,6 +63,7 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
     setSavingProfile(true)
     try {
       await onUpdateProfile(characterId, {
+        narrativePronoun: profileDraft.narrativePronoun,
         ageAndBuild: profileDraft.ageAndBuild,
         fixedTraits: profileDraft.fixedTraitsText.split(/[、,，]/).map((trait) => trait.trim()).filter(Boolean),
         defaultLook: profileDraft.defaultLook,
@@ -117,6 +121,12 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
                       void saveProfile(character.id)
                     }}>
                       <label>
+                        <span>叙事代词</span>
+                        <select aria-label="叙事代词" value={profileDraft.narrativePronoun ?? ''} onChange={(event) => setProfileDraft({ ...profileDraft, narrativePronoun: event.target.value as NarrativePronoun || undefined })}>
+                          <option value="">请选择</option><option value="she">她</option><option value="he">他</option><option value="ta">TA</option><option value="name">仅使用姓名</option>
+                        </select>
+                      </label>
+                      <label>
                         <span>身份锚点</span>
                         <input value={profileDraft.ageAndBuild} placeholder="年龄感与体型" onChange={(event) => setProfileDraft({ ...profileDraft, ageAndBuild: event.target.value })} />
                       </label>
@@ -145,6 +155,7 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
                     </form>
                   ) : (
                     <dl>
+                      <div><dt>叙事代词</dt><dd>{pronounLabel(character.narrativePronoun)}</dd></div>
                       <div><dt>身份锚点</dt><dd>{character.identity.ageAndBuild || '待补充'}</dd></div>
                       <div><dt>固定特征</dt><dd>{character.identity.fixedTraits.join('、') || '待补充'}</dd></div>
                       <div><dt>默认外貌</dt><dd>{character.appearance.defaultLook || '待补充'}</dd></div>
@@ -171,12 +182,13 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
                       <p>{referenceStyleMode === 'project'
                         ? '后续插画只参考外貌，并统一转换为作品画风。'
                         : '后续插画会保留该角色参考图的原有画风。'}</p>
+                      <button className="quiet-button" type="button" onClick={() => void onAnalyzeReference(character.id)}><RefreshCw size={16} />识别参考图</button>
                     </div>
                   )}
 
                   {status === 'review' && !isFeedbackOpen && (
                     <div className="asset-actions">
-                      <button className="confirm-asset-button" type="button" onClick={() => void onConfirm(character.id)}><CheckCircle2 size={17} />确认并作为参考</button>
+                      <button className="confirm-asset-button" type="button" disabled={!character.narrativePronoun} title={!character.narrativePronoun ? '请先补充叙事代词' : undefined} onClick={() => void onConfirm(character.id)}><CheckCircle2 size={17} />确认并作为参考</button>
                       <button className="quiet-button" type="button" onClick={() => {
                         setFeedbackCharacterId(character.id)
                         setFeedback('')
@@ -229,4 +241,12 @@ function statusLabel(status: CharacterAsset['portraitStatus']) {
   if (status === 'failed') return '失败'
   if (status === 'confirmed') return '已确认'
   return '待生成'
+}
+
+function pronounLabel(pronoun: NarrativePronoun | undefined) {
+  if (pronoun === 'she') return '她'
+  if (pronoun === 'he') return '他'
+  if (pronoun === 'ta') return 'TA'
+  if (pronoun === 'name') return '仅使用姓名'
+  return '待补充'
 }

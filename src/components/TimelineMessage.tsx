@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ImagePlus, LoaderCircle, Maximize2, Sparkles, ThumbsDown, ThumbsUp, TriangleAlert, X } from 'lucide-react'
 import { listMessageFeedback, storyDatabase, toggleFeedbackBatch } from '../data/storyDatabase'
 import type { CharacterAsset, ConversationMessage, Feedback, FeedbackScope, FeedbackVerdict, IllustrationAsset, StoredParagraph } from '../domain/models'
+import { resolveIllustrationReferences } from '../domain/illustrationReferences'
 import { createParagraphFingerprint } from '../domain/paragraphs'
 import { resolveImageSource } from '../providers/imageAssetStore'
 
@@ -12,27 +13,35 @@ type ParagraphAnchor = {
   fingerprint: string
 }
 
-function characterHasConfirmedReference(character: CharacterAsset | undefined) {
-  return Boolean(
-    character
-      && character.status === 'confirmed'
-      && (character.continuity.referenceImageUrl || character.continuity.localUri),
-  )
+export type IllustrationGenerationStage = 'waiting' | 'downloading' | 'saving' | 'validating'
+
+export function illustrationGenerationStageText(stage: IllustrationGenerationStage | undefined) {
+  if (stage === 'downloading') return '正在接收图片'
+  if (stage === 'saving') return '正在保存到手机'
+  if (stage === 'validating') return '正在校验文件'
+  return '正在等待图片生成'
 }
 
-function illustrationReferencesReady(illustration: IllustrationAsset, characters: CharacterAsset[]) {
-  return illustration.referenceCharacterIds.every((characterId) => (
-    characterHasConfirmedReference(characters.find((character) => character.id === characterId))
-  ))
+export function illustrationDirectionItems(illustration: IllustrationAsset | undefined) {
+  if (!illustration) return []
+  return [
+    ['场景', illustration.prompt],
+    ['动作', illustration.action],
+    ['身体与手势', illustration.bodyLanguage],
+    ['表情', illustration.expression],
+    ['视线目标', illustration.gaze],
+    ['镜头', illustration.camera],
+    ['动态线索', illustration.motion],
+  ].filter((item): item is [string, string] => Boolean(item[1]))
 }
 
-function illustrationStatusText(illustration: IllustrationAsset | undefined, imageProviderReady: boolean, referencesReady: boolean) {
+function illustrationStatusText(illustration: IllustrationAsset | undefined, imageProviderReady: boolean, referenceReason?: string, generationStage?: IllustrationGenerationStage) {
   if (!illustration) return '自动插画 · 等待生成'
-  if (illustration.status === 'generating') return '自动插画 · 正在生成'
+  if (illustration.status === 'generating') return `自动插画 · ${illustrationGenerationStageText(generationStage)}`
   if (illustration.status === 'ready') return '自动插画 · 已保存'
   if (illustration.status === 'failed') return `自动插画 · ${illustration.errorMessage || '生成失败'}`
   if (!imageProviderReady) return '自动插画 · 等待配置图片模型'
-  if (!referencesReady) return '自动插画 · 等待角色定妆照'
+  if (referenceReason) return `自动插画 · ${referenceReason}`
   return '自动插画 · 等待手动生成'
 }
 
@@ -45,6 +54,7 @@ export default function TimelineMessage({
   characters,
   onOpenCharacterAssets,
   onOpenIllustration,
+  illustrationGenerationStage,
 }: {
   message: ConversationMessage
   illustration?: IllustrationAsset
@@ -54,11 +64,15 @@ export default function TimelineMessage({
   characters: CharacterAsset[]
   onOpenCharacterAssets: () => void
   onOpenIllustration: (source: string, title: string, alt: string, localUri?: string) => void
+  illustrationGenerationStage?: IllustrationGenerationStage
 }) {
   const [showVisualPrompt, setShowVisualPrompt] = useState(false)
-  const referencesReady = Boolean(illustration && illustrationReferencesReady(illustration, characters))
-  const canGenerate = Boolean(illustration && imageProviderReady && (illustration.status === 'planned' || illustration.status === 'failed'))
+  const referenceResolution = illustration ? resolveIllustrationReferences(illustration, characters) : undefined
+  const referenceReason = referenceResolution && !referenceResolution.ready ? referenceResolution.reason : undefined
+  const canGenerate = Boolean(illustration && imageProviderReady && !referenceReason && (illustration.status === 'planned' || illustration.status === 'failed'))
   const imageSource = illustration ? resolveImageSource(illustration.imageUrl, illustration.localUri) : undefined
+  const directionItems = illustrationDirectionItems(illustration)
+  const referenceCharacters = referenceResolution?.ready ? referenceResolution.characters : []
 
   if (message.kind === 'user') {
     return <div className="message-row user-row"><div className="user-bubble">{message.text}</div></div>
@@ -99,26 +113,40 @@ export default function TimelineMessage({
             {illustration?.status === 'generating' ? <LoaderCircle className="spin" size={27} aria-hidden="true" /> : <ImagePlus size={27} aria-hidden="true" />}
             <span className="placeholder-label">
               {illustration?.status === 'generating'
-                ? '正在生成图片…'
+                ? illustrationGenerationStageText(illustrationGenerationStage)
                 : !imageProviderReady
                    ? '请先配置图片模型'
-                   : !referencesReady
-                     ? '可按角色档案生成，确认定妆照后会更稳定'
+                   : referenceReason
+                     ? referenceReason
                      : '点击下方按钮生成插画'}
             </span>
           </div>
         )}
         <figcaption>
-          <div><strong>{message.title}</strong><span>{illustrationStatusText(illustration, imageProviderReady, referencesReady)}</span></div>
+          <div><strong>{message.title}</strong><span>{illustrationStatusText(illustration, imageProviderReady, referenceReason, illustrationGenerationStage)}</span></div>
           <div className="illustration-actions">
             {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && !imageProviderReady && <button type="button" onClick={onOpenImageSettings}>配置图片模型</button>}
-            {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && imageProviderReady && !referencesReady && <button type="button" onClick={onOpenCharacterAssets}>查看角色资产</button>}
+            {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && imageProviderReady && referenceReason && <button type="button" onClick={onOpenCharacterAssets}>查看角色资产</button>}
             {illustration && illustration.status === 'failed' && canGenerate && <button type="button" onClick={() => void onRetryIllustration(illustration.id)}>重新生成</button>}
             {illustration && illustration.status === 'planned' && canGenerate && <button type="button" onClick={() => void onRetryIllustration(illustration.id)}>生成插画</button>}
             <button type="button" aria-expanded={showVisualPrompt} onClick={() => setShowVisualPrompt((value) => !value)}>视觉指令</button>
           </div>
         </figcaption>
-        {showVisualPrompt && <div className="visual-prompt"><strong>本轮画面描述</strong><p>{illustration?.prompt || '这条旧消息没有保存视觉指令。'}</p></div>}
+        {showVisualPrompt && (
+          <div className="visual-prompt">
+            <strong>实际生图指令</strong>
+            {directionItems.length ? (
+              <dl className="visual-direction-list">
+                {directionItems.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+              </dl>
+            ) : <p>这条旧消息没有保存视觉指令。</p>}
+            {referenceCharacters.length > 0 && (
+              <p className="visual-reference-rule">
+                人物参考：{referenceCharacters.map((character) => character.name).join('、')}。参考图固定身份与稳定外貌，动作、表情、视线和构图按本轮剧情重新设计。
+              </p>
+            )}
+          </div>
+        )}
       </figure>
     </div>
   )

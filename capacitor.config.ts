@@ -8,6 +8,7 @@ const config: CapacitorConfig = {
   android: {
     allowMixedContent: false,
     backgroundColor: '#171715',
+    loggingBehavior: 'debug',
   },
 }
 

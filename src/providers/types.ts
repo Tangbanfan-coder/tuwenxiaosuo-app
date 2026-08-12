@@ -59,6 +59,10 @@ export interface ImageDownloadRequest {
   timeoutMs?: number
 }
 
+export type GeneratedImageSource =
+  | { kind: 'inline'; dataUrl: string }
+  | { kind: 'remote'; url: string; auth?: RequestAuth }
+
 export interface HttpTransport {
   request<T>(request: TransportRequest): Promise<TransportResponse<T>>
   stream(request: TransportRequest, onDelta: (delta: string) => void): Promise<string>

@@ -117,6 +117,34 @@ export class StoryDatabase extends Dexie {
       summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
       feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
     })
+    // v7 adds optional narrativePronoun to character records. The field is not
+    // indexed, so preserving the prior schema keeps every legacy record readable.
+    this.version(7).stores({
+      projects: 'id, updatedAt, lastOpenedAt',
+      messages: 'id, projectId, [projectId+order], createdAt',
+      chapters: 'id, projectId, [projectId+order], updatedAt',
+      characters: 'id, projectId, [projectId+createdAt], status',
+      illustrations: 'id, projectId, [projectId+createdAt], status',
+      styles: 'id, &projectId, updatedAt',
+      scenes: 'id, projectId, [projectId+order], createdAt',
+      paragraphs: 'id, projectId, sourceType, [projectId+sourceType], [projectId+chapterId], [projectId+messageId], fingerprint, createdAt',
+      summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
+      feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
+    })
+    // v8 adds optional sceneAnchor fields to illustrations. No index or data
+    // rewrite is required; legacy records remain valid and opt out of reuse.
+    this.version(8).stores({
+      projects: 'id, updatedAt, lastOpenedAt',
+      messages: 'id, projectId, [projectId+order], createdAt',
+      chapters: 'id, projectId, [projectId+order], updatedAt',
+      characters: 'id, projectId, [projectId+createdAt], status',
+      illustrations: 'id, projectId, [projectId+createdAt], status',
+      styles: 'id, &projectId, updatedAt',
+      scenes: 'id, projectId, [projectId+order], createdAt',
+      paragraphs: 'id, projectId, sourceType, [projectId+sourceType], [projectId+chapterId], [projectId+messageId], fingerprint, createdAt',
+      summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
+      feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
+    })
   }
 }
 
@@ -1331,6 +1359,13 @@ export async function completeWritingTurn(
           prompt: result.visualPlan.prompt,
           sceneStylePrompt: result.visualPlan.stylePrompt,
           sceneNegativePrompt: result.visualPlan.negativePrompt,
+          action: result.visualPlan.action,
+          bodyLanguage: result.visualPlan.bodyLanguage,
+          expression: result.visualPlan.expression,
+          gaze: result.visualPlan.gaze,
+          camera: result.visualPlan.camera,
+          motion: result.visualPlan.motion,
+          sceneAnchor: result.visualPlan.sceneAnchor,
           referenceCharacterIds,
           status: 'planned',
           createdAt: now,
@@ -1430,6 +1465,7 @@ export async function updateCharacterProfile(
     fixedTraits?: string[]
     defaultLook?: string
     wardrobe?: string
+    narrativePronoun?: CharacterAsset['narrativePronoun']
   },
 ) {
   const character = await storyDatabase.characters.get(characterId)
@@ -1451,6 +1487,7 @@ export async function updateCharacterProfile(
       defaultLook: normalized.defaultLook,
       wardrobe: normalized.wardrobe,
     },
+    narrativePronoun: profile.narrativePronoun ?? character.narrativePronoun,
     updatedAt: Date.now(),
   })
 }
@@ -1463,7 +1500,44 @@ export async function setCharacterPortraitFailed(characterId: string, message: s
   })
 }
 
+/** Apply user-reviewed or model-suggested appearance facts and require review again. */
+export async function applyReferenceAppearanceAnalysis(
+  characterId: string,
+  profile: {
+    narrativePronoun: NonNullable<CharacterAsset['narrativePronoun']>
+    ageAndBuild: string
+    fixedTraits: string[]
+    defaultLook: string
+    wardrobe: string
+  },
+) {
+  await storyDatabase.transaction('rw', storyDatabase.characters, async () => {
+    const character = await storyDatabase.characters.get(characterId)
+    if (!character) throw new Error('角色资产不存在')
+    await storyDatabase.characters.update(characterId, {
+      narrativePronoun: profile.narrativePronoun,
+      identity: {
+        ...character.identity,
+        ageAndBuild: profile.ageAndBuild.trim(),
+        fixedTraits: profile.fixedTraits.map((trait) => trait.trim()).filter(Boolean),
+      },
+      appearance: {
+        ...character.appearance,
+        defaultLook: profile.defaultLook.trim(),
+        wardrobe: profile.wardrobe.trim(),
+      },
+      status: 'draft',
+      portraitStatus: 'review',
+      portraitError: undefined,
+      updatedAt: Date.now(),
+    })
+  })
+}
+
 export async function confirmCharacterPortrait(characterId: string) {
+  const character = await storyDatabase.characters.get(characterId)
+  if (!character) throw new Error('角色资产不存在')
+  if (!character.narrativePronoun) throw new Error('请先在角色档案中选择叙事代词，再确认参考图')
   await storyDatabase.characters.update(characterId, {
     status: 'confirmed',
     portraitStatus: 'confirmed',

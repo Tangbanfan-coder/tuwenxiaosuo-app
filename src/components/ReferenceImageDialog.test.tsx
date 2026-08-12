@@ -96,6 +96,7 @@ describe('ReferenceImageDialog', () => {
       { name: '顾遥', role: '侦探' },
       expect.stringMatching(/^data:image\/png;base64,/),
       'project',
+      true,
     ))
   })
 
@@ -131,6 +132,7 @@ describe('ReferenceImageDialog', () => {
       { characterId: 'character-1' },
       'data:image/png;base64,MjA=',
       'project',
+      true,
     ))
   })
 

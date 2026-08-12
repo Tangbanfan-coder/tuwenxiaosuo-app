@@ -27,6 +27,7 @@ import WritingInstructionsDialog from './components/WritingInstructionsDialog'
 import SummaryHistoryDialog from './components/SummaryHistoryDialog'
 import {
   beginWritingTurn,
+  applyReferenceAppearanceAnalysis,
   completeWritingTurn,
   confirmCharacterPortrait,
   createCharacterDraft,
@@ -52,33 +53,24 @@ import {
   updateWritingStructure,
 } from './data/storyDatabase'
 import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
+import { resolveIllustrationReferences } from './domain/illustrationReferences'
+import { resolvePreviousSceneIllustration } from './domain/sceneContinuity'
 import type { AppearanceMode, CharacterAsset, ContextBudget, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, ThemePresetId } from './domain/models'
 import { browserTransport } from './providers/browserTransport'
 import { loadProviderSettings, saveProviderSettings } from './providers/config'
 import { loadGlobalWritingInstructions, saveGlobalWritingInstructions } from './providers/config'
 import { persistImageAsset, resolveImageSource } from './providers/imageAssetStore'
+import { logImagePipeline } from './providers/imagePipelineLog'
+import { buildIllustrationPrompt } from './providers/illustrationPrompt'
 import { useAppBootstrap } from './hooks/useAppBootstrap'
 import ConfirmDialog from './components/ConfirmDialog'
 import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage } from './providers/images'
+import { analyzeReferenceImage } from './providers/referenceAnalysis'
 import { secretStore } from './providers/secretStore'
 import type { ProviderSettings, ProviderSlot, ReasoningEffort } from './providers/types'
 import { explicitlyRequestsNewChapter, generateWritingTurn, previewWritingTurnBudget, projectStreamingProse, type ContextBudgetPlan } from './providers/writing'
 
 const APPEARANCE_KEY = 'illustrated-story-chat.appearance.v1'
-
-function characterHasConfirmedReference(character: CharacterAsset | undefined) {
-  return Boolean(
-    character
-      && character.status === 'confirmed'
-      && (character.continuity.referenceImageUrl || character.continuity.localUri),
-  )
-}
-
-function illustrationReferencesReady(illustration: IllustrationAsset, characters: CharacterAsset[]) {
-  return illustration.referenceCharacterIds.every((characterId) => (
-    characterHasConfirmedReference(characters.find((character) => character.id === characterId))
-  ))
-}
 
 function loadAppearanceMode(): AppearanceMode {
   return localStorage.getItem(APPEARANCE_KEY) === 'light' ? 'light' : 'dark'
@@ -110,6 +102,7 @@ export default function App() {
   const [toast, setToast] = useState<{ text: string; kind: 'success' | 'error' }>()
   const [providerSettings, setProviderSettings] = useState<ProviderSettings>(() => loadProviderSettings())
   const [imageProviderReady, setImageProviderReady] = useState(false)
+  const [illustrationGenerationStages, setIllustrationGenerationStages] = useState<Record<string, 'waiting' | 'downloading' | 'saving' | 'validating'>>({})
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() => loadAppearanceMode())
   const [visibleChapterId, setVisibleChapterId] = useState<string>()
   const [lightboxImage, setLightboxImage] = useState<LightboxImage>()
@@ -141,6 +134,11 @@ export default function App() {
     onEmptyLibrary: () => setProjectMenuOpen(true),
     onToast: showToast,
   })
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => logImagePipeline('info', { phase: 'logger-ready' }), 1000)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   useEffect(() => {
     setWorkspace((current) => current ? { ...current, globalWritingInstructions } : current)
@@ -445,7 +443,7 @@ export default function App() {
     await enqueueImageTask(() => generateCharacterPortrait(character, workspace, feedback))
   }
 
-  async function importCharacterReference(target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode) {
+  async function importCharacterReference(target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode, autoAnalyze: boolean) {
     if (!workspace) return
     try {
       const characterId = 'characterId' in target
@@ -453,11 +451,26 @@ export default function App() {
         : (await createCharacterDraft(workspace.project.id, target.name, target.role)).id
       const storedImage = await persistImageAsset(dataUrl, workspace.project.id, characterId, 'imported')
       await setCharacterPortraitReady(characterId, storedImage.imageUrl, storedImage.localUri, referenceStyleMode)
+      let analysisMessage = ''
+      if (autoAnalyze) {
+        if (await providerIsReady('text')) {
+          try {
+            const analysis = await analyzeReferenceImage(dataUrl, providerSettings.text, browserTransport)
+            await applyReferenceAppearanceAnalysis(characterId, analysis)
+            analysisMessage = '，外貌档案已识别，请核对后确认'
+          } catch (analysisError) {
+            analysisMessage = '；图片已保存，但外貌识别失败，可在角色资产中手动填写或重新识别'
+            console.warn('Reference image analysis failed', analysisError instanceof Error ? analysisError.message : String(analysisError))
+          }
+        } else {
+          analysisMessage = '；图片已保存，配置可识图的文本模型后可在角色资产中识别外貌'
+        }
+      }
       await refreshWorkspace(workspace.project.id)
       setReferenceImageOpen(false)
       setCharacterAssetsOrigin('reference-image')
       setCharacterAssetsOpen(true)
-      showToast('参考图已导入，请确认角色外貌')
+      showToast(`参考图已导入${analysisMessage || '，请补充档案后确认'}`)
     } catch (error) {
       showToast(error instanceof Error ? error.message : '参考图导入失败', 'error')
     }
@@ -470,7 +483,7 @@ export default function App() {
     showToast(referenceStyleMode === 'project' ? '该角色会统一为作品画风' : '该角色会保留参考图画风')
   }
 
-  async function handleUpdateCharacterProfile(characterId: string, profile: { ageAndBuild: string; fixedTraits: string[]; defaultLook: string; wardrobe: string }) {
+  async function handleUpdateCharacterProfile(characterId: string, profile: { narrativePronoun?: CharacterAsset['narrativePronoun']; ageAndBuild: string; fixedTraits: string[]; defaultLook: string; wardrobe: string }) {
     if (!workspace) return
     try {
       await updateCharacterProfile(characterId, profile)
@@ -481,52 +494,104 @@ export default function App() {
     }
   }
 
-  async function generateIllustration(illustration: IllustrationAsset, sourceWorkspace: ProjectWorkspace) {
-    await setIllustrationGenerating(illustration.id)
-    await refreshWorkspace(sourceWorkspace.project.id)
+  async function handleAnalyzeReference(characterId: string) {
+    if (!workspace) return
+    const character = workspace.characters.find((item) => item.id === characterId)
+    const referenceSource = character
+      ? resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri)
+      : undefined
+    if (!referenceSource) {
+      showToast('这张参考图无法作为识别输入，请重新导入原图后重试', 'error')
+      return
+    }
+    if (!(await providerIsReady('text'))) {
+      openProviderSettings('text')
+      showToast('请先配置可识图的文本模型')
+      return
+    }
     try {
-      const referenceCharacters = illustration.referenceCharacterIds
-        .map((characterId) => sourceWorkspace.characters.find((character) => character.id === characterId))
-        .filter((character): character is CharacterAsset => characterHasConfirmedReference(character))
-      const referenceSources = referenceCharacters
+      const analysis = await analyzeReferenceImage(referenceSource, providerSettings.text, browserTransport)
+      await applyReferenceAppearanceAnalysis(characterId, analysis)
+      await refreshWorkspace(workspace.project.id)
+      showToast('外貌档案已重新识别，请核对并再次确认')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '外貌识别失败，请手动补充档案', 'error')
+    }
+  }
+
+  async function generateIllustration(illustration: IllustrationAsset, sourceWorkspace: ProjectWorkspace) {
+    const referenceResolution = resolveIllustrationReferences(illustration, sourceWorkspace.characters)
+    if (!referenceResolution.ready) {
+      await setIllustrationFailed(illustration.id, referenceResolution.reason)
+      await refreshWorkspace(sourceWorkspace.project.id)
+      showToast(referenceResolution.reason, 'error')
+      return
+    }
+    await setIllustrationGenerating(illustration.id)
+    setIllustrationGenerationStages((current) => ({ ...current, [illustration.id]: 'waiting' }))
+    await refreshWorkspace(sourceWorkspace.project.id)
+    const pipelineStartedAt = Date.now()
+    try {
+      const referenceCharacters = referenceResolution.characters
+      const characterReferenceSources = referenceCharacters
         .map((character) => resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri) as string)
-      const illustrationStyle = resolveProjectIllustrationStyle(sourceWorkspace.style)
-      const referenceRules = referenceCharacters.map((character, index) => {
-        const mode = character.continuity.referenceStyleMode ?? 'project'
-        return mode === 'reference'
-          ? `参考图 ${index + 1}（${character.name}）：保留参考图自身的绘制或摄影风格；这是用户明确设置的跨画风角色。`
-          : `参考图 ${index + 1}（${character.name}）：只提取身份、五官、发型和服装等外貌信息，必须重新渲染为作品统一画风。`
-      })
-      const prompt = [
-        illustration.prompt,
-        `作品统一画风：${illustrationStyle.visualPrompt}`,
-        illustration.sceneStylePrompt && `本场景补充：${illustration.sceneStylePrompt}。如果与作品统一画风冲突，以作品统一画风为准。`,
-        referenceRules.length && `参考图使用规则：\n${referenceRules.join('\n')}\n没有参考图的其他角色一律使用作品统一画风。`,
-        `避免：${[illustrationStyle.negativePrompt, illustration.sceneNegativePrompt].filter(Boolean).join('；')}`,
-      ].filter(Boolean).join('\n')
+      const previousSceneIllustration = resolvePreviousSceneIllustration(illustration, sourceWorkspace.illustrations)
+      const sceneReferenceSource = previousSceneIllustration
+        ? resolveImageSource(previousSceneIllustration.imageUrl, previousSceneIllustration.localUri)
+        : undefined
+      const referenceSources = sceneReferenceSource
+        ? [...characterReferenceSources, sceneReferenceSource]
+        : characterReferenceSources
+      const prompt = buildIllustrationPrompt(illustration, sourceWorkspace.style, referenceCharacters, Boolean(sceneReferenceSource))
+      const setStage = (stage: 'waiting' | 'downloading' | 'saving' | 'validating') => {
+        setIllustrationGenerationStages((current) => ({ ...current, [illustration.id]: stage }))
+      }
       const imageUrl = referenceSources.length
-        ? await editOpenAiImage(providerSettings.image, prompt, referenceSources, browserTransport, '1536x1024')
-        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1536x1024')
-      const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, illustration.id)
+        ? await editOpenAiImage(providerSettings.image, prompt, referenceSources, browserTransport, '1536x1024', setStage)
+        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1536x1024', setStage)
+      const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, illustration.id, 'generated', setStage)
       await setIllustrationReady(illustration.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)
+      logImagePipeline('info', {
+        phase: 'illustration-complete',
+        illustrationId: illustration.id,
+        usesReferences: referenceResolution.usesReferences,
+        durationMs: Date.now() - pipelineStartedAt,
+      })
       showToast('剧情插画已生成')
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
+      logImagePipeline('warn', {
+        phase: 'illustration-failed',
+        illustrationId: illustration.id,
+        usesReferences: referenceResolution.usesReferences,
+        durationMs: Date.now() - pipelineStartedAt,
+        message,
+      })
       await setIllustrationFailed(illustration.id, message)
       await refreshWorkspace(sourceWorkspace.project.id)
       showToast('剧情插画生成失败，没有自动重试', 'error')
+    } finally {
+      setIllustrationGenerationStages((current) => {
+        const { [illustration.id]: _finished, ...remaining } = current
+        return remaining
+      })
     }
   }
 
   async function confirmCharacter(characterId: string) {
     if (!workspace) return
-    await confirmCharacterPortrait(characterId)
+    try {
+      await confirmCharacterPortrait(characterId)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '确认角色失败', 'error')
+      return
+    }
     const nextWorkspace = await refreshWorkspace(workspace.project.id)
     if (!nextWorkspace || !nextWorkspace.project.autoIllustrate || !(await providerIsReady('image'))) return
     const eligible = nextWorkspace.illustrations.filter((illustration) => {
       if (illustration.status !== 'planned') return false
-      return illustrationReferencesReady(illustration, nextWorkspace.characters)
+      return resolveIllustrationReferences(illustration, nextWorkspace.characters).ready
     })
     for (const illustration of eligible) {
       void queueIllustration(illustration, nextWorkspace)
@@ -615,7 +680,7 @@ export default function App() {
         const newIllustrations = nextWorkspace.illustrations.filter((illustration) => !previousIllustrationIds.has(illustration.id))
         const imageReady = await providerIsReady('image')
         const readyIllustrations = newIllustrations.filter((illustration) => (
-          illustration.status === 'planned' && illustrationReferencesReady(illustration, nextWorkspace.characters)
+          illustration.status === 'planned' && resolveIllustrationReferences(illustration, nextWorkspace.characters).ready
         ))
         if (portraits.length && imageReady && workspace.project.autoIllustrate) {
           portraitGenerationCancelledRef.current = false
@@ -787,6 +852,7 @@ export default function App() {
                   <TimelineMessage
                     message={message}
                     illustration={illustration}
+                    illustrationGenerationStage={illustration ? illustrationGenerationStages[illustration.id] : undefined}
                     onRetryIllustration={retryIllustration}
                     imageProviderReady={imageProviderReady}
                     onOpenImageSettings={() => openProviderSettings('image')}
@@ -980,6 +1046,7 @@ export default function App() {
         onConfirm={confirmCharacter}
         onReferenceStyleModeChange={handleReferenceStyleModeChange}
         onUpdateProfile={handleUpdateCharacterProfile}
+        onAnalyzeReference={handleAnalyzeReference}
         onCreateCharacter={() => {
           setCharacterAssetsOpen(false)
           setReferenceImageOpen(true)

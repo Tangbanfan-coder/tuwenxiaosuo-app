@@ -7,6 +7,7 @@ import type { ProjectWorkspace, StoryProject } from './domain/models'
 import type { ProviderSettings } from './providers/types'
 
 const databaseMocks = vi.hoisted(() => ({
+  applyReferenceAppearanceAnalysis: vi.fn(),
   beginWritingTurn: vi.fn(),
   completeWritingTurn: vi.fn(),
   confirmCharacterPortrait: vi.fn(),
@@ -67,6 +68,10 @@ const imageAssetMocks = vi.hoisted(() => ({
   saveImageToDevice: vi.fn(),
 }))
 
+const referenceAnalysisMocks = vi.hoisted(() => ({
+  analyzeReferenceImage: vi.fn(),
+}))
+
 const secretStoreMocks = vi.hoisted(() => ({
   has: vi.fn(),
 }))
@@ -122,10 +127,10 @@ vi.mock('./components/ReferenceImageDialog', () => ({
     onImport,
   }: {
     open: boolean
-    onImport: (target: { characterId: string }, dataUrl: string, referenceStyleMode: 'project') => Promise<void>
+    onImport: (target: { characterId: string }, dataUrl: string, referenceStyleMode: 'project', autoAnalyze: boolean) => Promise<void>
   }) => open ? (
     <section role="dialog" aria-label="参考图测试入口">
-      <button type="button" onClick={() => void onImport({ characterId: 'character-1' }, 'data:image/png;base64,dGVzdA==', 'project')}>导入测试参考图</button>
+      <button type="button" onClick={() => void onImport({ characterId: 'character-1' }, 'data:image/png;base64,dGVzdA==', 'project', true)}>导入测试参考图</button>
     </section>
   ) : null,
 }))
@@ -206,6 +211,7 @@ vi.mock('./providers/images', () => ({
   editOpenAiImage: vi.fn(),
   generateOpenAiImage: vi.fn(),
 }))
+vi.mock('./providers/referenceAnalysis', () => referenceAnalysisMocks)
 vi.mock('./providers/secretStore', () => ({ secretStore: secretStoreMocks }))
 vi.mock('./providers/writing', () => ({
   ...writingMocks,
@@ -270,6 +276,14 @@ beforeEach(() => {
   configMocks.saveGlobalWritingInstructions.mockClear()
   configMocks.saveProviderSettings.mockClear()
   imageAssetMocks.persistImageAsset.mockClear()
+  referenceAnalysisMocks.analyzeReferenceImage.mockReset()
+  referenceAnalysisMocks.analyzeReferenceImage.mockResolvedValue({
+    narrativePronoun: 'she',
+    ageAndBuild: '青年女性，身形纤细',
+    fixedTraits: ['黑色长发'],
+    defaultLook: '眉眼柔和',
+    wardrobe: '浅色连衣裙',
+  })
   providerSettings.text = { ...providerSettings.text, baseUrl: '', model: '', reasoningEffort: undefined }
   providerSettings.image = { ...providerSettings.image, baseUrl: '', model: '' }
   providerSettings.textProviders = []
@@ -398,6 +412,32 @@ describe('reference image navigation', () => {
 
     await user.click(screen.getByRole('button', { name: '关闭角色资产' }))
     expect(await screen.findByRole('dialog', { name: '参考图测试入口' })).toBeDefined()
+  })
+
+  it('analyzes an imported reference and saves the profile for user confirmation', async () => {
+    const user = userEvent.setup()
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'vision-model' }
+    secretStoreMocks.has.mockResolvedValue(true)
+    databaseMocks.loadProjectWorkspace.mockResolvedValue({
+      ...workspace,
+      characters: [{
+        id: 'character-1', projectId: project.id, name: '林染', role: '主角',
+        identity: { ageAndBuild: '', fixedTraits: [] }, appearance: { defaultLook: '', wardrobe: '' },
+        continuity: { revision: 0, referenceStyleMode: 'project' }, portraitStatus: 'review', status: 'draft', createdAt: 1, updatedAt: 1,
+      }],
+    })
+
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: '素材' }))
+    await user.click(screen.getByRole('button', { name: /参考图/ }))
+    await user.click(await screen.findByRole('button', { name: '导入测试参考图' }))
+
+    await waitFor(() => expect(referenceAnalysisMocks.analyzeReferenceImage).toHaveBeenCalledWith(
+      'data:image/png;base64,dGVzdA==',
+      expect.objectContaining({ model: 'vision-model' }),
+      expect.anything(),
+    ))
+    expect(databaseMocks.applyReferenceAppearanceAnalysis).toHaveBeenCalledWith('character-1', expect.objectContaining({ narrativePronoun: 'she' }))
   })
 })
 

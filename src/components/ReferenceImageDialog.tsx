@@ -7,7 +7,7 @@ interface Props {
   open: boolean
   characters: CharacterAsset[]
   onClose: () => void
-  onImport: (target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode) => Promise<void>
+  onImport: (target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode, autoAnalyze: boolean) => Promise<void>
   onCreate?: (target: { name: string; role: string }) => Promise<void>
 }
 
@@ -106,6 +106,7 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
   const [saving, setSaving] = useState(false)
   const [createSaving, setCreateSaving] = useState(false)
   const [referenceStyleMode, setReferenceStyleMode] = useState<ReferenceStyleMode>('project')
+  const [autoAnalyze, setAutoAnalyze] = useState(true)
   const [characterMenuOpen, setCharacterMenuOpen] = useState(false)
   const characterSelectRef = useRef<HTMLDivElement>(null)
   const { present, closing } = usePresence(open, onClose, 180)
@@ -121,6 +122,7 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
     setError('')
     setCreateSaving(false)
     setReferenceStyleMode('project')
+    setAutoAnalyze(true)
     setCharacterMenuOpen(false)
     window.requestAnimationFrame(() => closeButtonRef.current?.focus())
   }, [characters, open])
@@ -242,6 +244,12 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
               : '角色会保留这张图片的绘制或摄影风格，可用于有意的跨画风故事。'}</p>
           </fieldset>
 
+          <label className="reference-analysis-consent">
+            <span className="reference-analysis-copy"><strong>自动识别参考图外貌</strong><small>图片会发送给当前配置的文本模型服务，生成可编辑的外貌档案和叙事代词建议。关闭后仅保存图片。</small></span>
+            <input type="checkbox" checked={autoAnalyze} onChange={(event) => setAutoAnalyze(event.target.checked)} />
+            <span className="reference-analysis-switch" aria-hidden="true" />
+          </label>
+
           <label className="reference-file-picker">
             <input
               type="file"
@@ -294,7 +302,7 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
                 ? { name: characterName.trim(), role: characterRole.trim() || '主要角色' }
                 : { characterId }
               setSaving(true)
-              void onImport(target, preview, referenceStyleMode).finally(() => setSaving(false))
+              void onImport(target, preview, referenceStyleMode, autoAnalyze).finally(() => setSaving(false))
             }}>
               {importSaving ? <LoaderCircle className="spin" size={18} /> : <Upload size={18} />}
               {importSaving ? '正在导入…' : '导入参考图'}

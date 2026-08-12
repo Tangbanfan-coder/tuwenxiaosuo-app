@@ -7,6 +7,8 @@ import { createParagraphFingerprint, normalizeText } from '../domain/paragraphs'
 import {
   StoryDatabase,
   beginWritingTurn,
+  confirmCharacterPortrait,
+  createCharacterDraft,
   completeWritingTurn,
   createProject,
   deleteProject,
@@ -25,6 +27,7 @@ import {
   toggleFeedbackBatch,
   upsertFeedback,
   upsertChapterParagraphs,
+  updateCharacterProfile,
 } from './storyDatabase'
 
 const project: StoryProject = {
@@ -134,6 +137,27 @@ describe('project defaults', () => {
 
     expect(style?.illustrationStyleId).toBe('unconstrained')
     expect(style?.visualPrompt).toBe('')
+  })
+})
+
+describe('character narrative pronouns', () => {
+  it('keeps legacy character records readable and requires a pronoun before reference confirmation', async () => {
+    await storyDatabase.characters.add({
+      id: 'legacy-character', projectId: project.id, name: '旧角色', role: '主角',
+      identity: { ageAndBuild: '', fixedTraits: [] }, appearance: { defaultLook: '', wardrobe: '' },
+      continuity: { revision: 1, referenceImageUrl: 'data:image/png;base64,AA==' }, portraitStatus: 'review', status: 'draft', createdAt: 1, updatedAt: 1,
+    })
+    expect((await storyDatabase.characters.get('legacy-character'))?.narrativePronoun).toBeUndefined()
+    await expect(confirmCharacterPortrait('legacy-character')).rejects.toThrow('叙事代词')
+
+    await updateCharacterProfile('legacy-character', { narrativePronoun: 'ta' })
+    await confirmCharacterPortrait('legacy-character')
+    expect(await storyDatabase.characters.get('legacy-character')).toMatchObject({ narrativePronoun: 'ta', status: 'confirmed' })
+  })
+
+  it('creates new drafts without inventing a narrative pronoun', async () => {
+    const character = await createCharacterDraft(project.id, '新角色', '主角')
+    expect(character.narrativePronoun).toBeUndefined()
   })
 })
 
@@ -396,7 +420,7 @@ describe('StoryDatabase v5-v6 summary version and feedback schema migrations', (
       upgraded = new StoryDatabase(name)
       await upgraded.open()
 
-      expect(upgraded.verno).toBe(6)
+      expect(upgraded.verno).toBe(8)
       expect(await upgraded.feedback.count()).toBe(0)
       const versions = await upgraded.summaryVersions.where('projectId').equals('project-v4').toArray()
       const migrated = versions.find((version) => version.chapterId === summarizedChapter.id)
@@ -657,12 +681,16 @@ describe('paragraph persistence', () => {
       ...writingResult,
       visualPlan: {
         title: '雨夜', prompt: '雨夜街头', stylePrompt: '', negativePrompt: '',
+        action: '撑伞穿过积水', bodyLanguage: '压低肩膀快步前行', expression: '神情紧绷', gaze: '望向巷口灯光', camera: '中景侧拍', motion: '雨水沿伞沿坠落',
         characters: [{ name: '林昭', role: '主角', ageAndBuild: '青年', fixedTraits: ['黑发'], defaultLook: '清瘦', wardrobe: '灰外套' }],
       },
     }
     await completeWritingTurn(project.id, userMessage.id, notice.id, result, false)
     expect(await storyDatabase.characters.where('projectId').equals(project.id).count()).toBe(1)
     expect(await storyDatabase.illustrations.where('projectId').equals(project.id).count()).toBe(1)
+    expect((await storyDatabase.illustrations.where('projectId').equals(project.id).first())).toMatchObject({
+      action: '撑伞穿过积水', bodyLanguage: '压低肩膀快步前行', expression: '神情紧绷', gaze: '望向巷口灯光', camera: '中景侧拍', motion: '雨水沿伞沿坠落',
+    })
   })
   it('writes a prose message and its paragraph rows in one transaction', async () => {
     const [userMessage, notice] = await beginWritingTurn(project.id, '请开始写作', false)

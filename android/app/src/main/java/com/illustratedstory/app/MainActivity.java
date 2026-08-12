@@ -1,5 +1,13 @@
 package com.illustratedstory.app;
 
+import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
 
-public class MainActivity extends BridgeActivity {}
+public class MainActivity extends BridgeActivity {
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(ImagePipelineLoggerPlugin.class);
+        registerPlugin(ImageAssetStorePlugin.class);
+        super.onCreate(savedInstanceState);
+    }
+}

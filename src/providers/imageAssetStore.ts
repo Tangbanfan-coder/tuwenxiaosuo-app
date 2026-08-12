@@ -1,6 +1,9 @@
 import { FileSharer } from '@capgo/capacitor-file-sharer'
-import { Capacitor } from '@capacitor/core'
+import { Capacitor, registerPlugin } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
+import { logImagePipeline } from './imagePipelineLog'
+import { secretStore } from './secretStore'
+import type { GeneratedImageSource } from './types'
 
 export interface StoredImageSource {
   imageUrl: string
@@ -8,12 +11,33 @@ export interface StoredImageSource {
 }
 
 export type ImageAssetOrigin = 'generated' | 'imported'
+export type ImageAssetPersistenceStage = 'saving' | 'validating'
+export type ImageAssetPersistenceStageCallback = (stage: ImageAssetPersistenceStage) => void
 
 const IMAGE_SAVE_TIMEOUT_MS = 120_000
 const IMAGE_VALIDATION_TIMEOUT_MS = 10_000
 const IMAGE_WRITE_CHUNK_SIZE = 512 * 1024
 const IMAGE_VALIDATION_CHUNK_SIZE = 64
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'webp', 'gif', 'heic', 'avif'] as const
+
+interface NativeImageAssetStorePlugin {
+  download(options: {
+    url: string
+    projectId: string
+    assetId: string
+    bearerToken?: string
+  }): Promise<{
+    localUri: string
+    format: ImageFormat
+    bytes: number
+    responseMs: number
+    writeMs: number
+    validationAndReplaceMs: number
+    durationMs: number
+  }>
+}
+
+const NativeImageAssetStore = registerPlugin<NativeImageAssetStorePlugin>('ImageAssetStore')
 
 type ImageFormat = typeof IMAGE_EXTENSIONS[number]
 
@@ -80,6 +104,11 @@ function normalizedBase64(value: string) {
   return remainder ? `${compact}${'='.repeat(4 - remainder)}` : compact
 }
 
+function approximateBase64Bytes(base64: string) {
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor(base64.length * 3 / 4) - padding)
+}
+
 function decodedImageBytes(base64: string) {
   const normalized = normalizedBase64(base64)
   try {
@@ -116,15 +145,11 @@ function detectImageFormat(bytes: Uint8Array): ImageFormat | undefined {
   return brand
 }
 
-function completeImageFormat(base64: string): ImageFormat | undefined {
-  const bytes = decodedImageBytes(base64)
-  if (!bytes || bytes.length < 12) return undefined
-  const format = detectImageFormat(bytes)
-  if (!format) return undefined
-  if (format === 'png' && !bytesEndWith(bytes, [73, 69, 78, 68, 174, 66, 96, 130])) return undefined
-  if (format === 'jpg' && !bytesEndWith(bytes, [255, 217])) return undefined
-  if (format === 'gif' && !bytesEndWith(bytes, [59])) return undefined
-  return format
+function imageFormatFromBase64Head(base64: string): ImageFormat | undefined {
+  // Format selection only needs a tiny prefix. Full completion validation runs
+  // against the temporary native file after the chunked write.
+  const bytes = decodedImageBytes(base64.slice(0, 128))
+  return bytes ? detectImageFormat(bytes) : undefined
 }
 
 async function persistedImageFormat(path: string): Promise<ImageFormat | undefined> {
@@ -240,8 +265,68 @@ export async function recoverPersistedImageAsset(projectId: string, assetId: str
   return undefined
 }
 
-export async function persistImageAsset(source: string, projectId: string, assetId: string, origin: ImageAssetOrigin = 'generated'): Promise<StoredImageSource> {
-  if (!Capacitor.isNativePlatform()) return { imageUrl: source }
+export async function persistImageAsset(
+  source: string | GeneratedImageSource,
+  projectId: string,
+  assetId: string,
+  origin: ImageAssetOrigin = 'generated',
+  onStageChange?: ImageAssetPersistenceStageCallback,
+): Promise<StoredImageSource> {
+  const normalizedSource: GeneratedImageSource = typeof source === 'string'
+    ? { kind: 'inline', dataUrl: source }
+    : source
+  if (!Capacitor.isNativePlatform()) {
+    return { imageUrl: normalizedSource.kind === 'inline' ? normalizedSource.dataUrl : normalizedSource.url }
+  }
+
+  if (normalizedSource.kind === 'remote') {
+    const downloadStartedAt = Date.now()
+    try {
+      const bearerToken = normalizedSource.auth?.kind === 'bearer'
+        ? await secretStore.get(normalizedSource.auth.secretRef) ?? undefined
+        : undefined
+      if (normalizedSource.auth && !bearerToken) throw new Error('请填写 API Key')
+      onStageChange?.('saving')
+      const stored = await NativeImageAssetStore.download({
+        url: normalizedSource.url,
+        projectId,
+        assetId,
+        bearerToken,
+      })
+      onStageChange?.('validating')
+      logImagePipeline('info', {
+        phase: 'native-url-persist-complete',
+        assetId,
+        origin,
+        format: stored.format,
+        bytes: stored.bytes,
+        usesProviderAuth: Boolean(normalizedSource.auth),
+        responseMs: stored.responseMs,
+        writeMs: stored.writeMs,
+        validationAndReplaceMs: stored.validationAndReplaceMs,
+        durationMs: stored.durationMs,
+      })
+      return { imageUrl: '', localUri: stored.localUri }
+    } catch (error) {
+      const status = typeof error === 'object' && error ? (error as { status?: unknown; data?: { status?: unknown } }).status
+        ?? (error as { data?: { status?: unknown } }).data?.status
+        : undefined
+      logImagePipeline('warn', {
+        phase: 'native-url-persist-failed',
+        assetId,
+        origin,
+        usesProviderAuth: Boolean(normalizedSource.auth),
+        durationMs: Date.now() - downloadStartedAt,
+        status: typeof status === 'number' ? status : undefined,
+        message: error instanceof Error ? error.message : String(error),
+      })
+      if (!normalizedSource.auth && (status === 401 || status === 403)) {
+        throw new Error('图片 URL 位于第三方地址且拒绝匿名读取。为避免泄露 API Key，应用不会向该地址发送凭据；请让服务返回 b64_json 或可公开读取的签名 URL。', { cause: error })
+      }
+      const action = origin === 'imported' ? '参考图' : '图片已生成，但'
+      throw new Error(`${action}无法下载并保存到手机本地`, { cause: error })
+    }
+  }
 
   const imageDirectory = imageDirectoryFor(projectId)
 
@@ -255,30 +340,54 @@ export async function persistImageAsset(source: string, projectId: string, asset
     })
   }
 
-  if (!source.startsWith('data:')) throw new Error('图片数据尚未下载为可保存的格式')
+  if (!normalizedSource.dataUrl.startsWith('data:')) throw new Error('图片数据尚未下载为可保存的格式')
 
-  const dataUrl = source
+  const dataUrl = normalizedSource.dataUrl
 
   const { mimeType, base64 } = dataUrlParts(dataUrl)
-  const detected = completeImageFormat(base64)
+  const detected = imageFormatFromBase64Head(base64)
   const extension = detected ?? extensionForMime(mimeType)
   if (!extension) throw new Error('图片数据不完整，无法识别格式')
   const path = imagePathFor(projectId, assetId, extension)
   const temporaryPath = imagePathFor(projectId, assetId, 'tmp')
   const saveStartedAt = Date.now()
   try {
+    onStageChange?.('saving')
     await withTimeout(
       writeBase64InChunks(temporaryPath, base64),
       IMAGE_SAVE_TIMEOUT_MS,
       '保存图片超过 120 秒仍未完成',
     )
+    const writeCompletedAt = Date.now()
+    onStageChange?.('validating')
     if (!(await persistedImageIsComplete(temporaryPath))) throw new Error('图片文件不完整')
     await replaceTemporaryImage(temporaryPath, path)
     const localUri = (await Filesystem.getUri({ path, directory: Directory.Data })).uri
-    return { imageUrl: source, localUri }
+    const completedAt = Date.now()
+    logImagePipeline('info', {
+      phase: 'native-persist-complete',
+      assetId,
+      origin,
+      format: extension,
+      approximateBytes: approximateBase64Bytes(base64),
+      chunks: Math.ceil(base64.length / IMAGE_WRITE_CHUNK_SIZE),
+      writeMs: writeCompletedAt - saveStartedAt,
+      validationAndReplaceMs: completedAt - writeCompletedAt,
+      durationMs: completedAt - saveStartedAt,
+    })
+    // On Android the local file is authoritative. Keeping source here would
+    // duplicate a potentially multi-megabyte Base64 string in IndexedDB.
+    return { imageUrl: '', localUri }
   } catch (error) {
+    logImagePipeline('warn', {
+      phase: 'native-persist-failed',
+      assetId,
+      origin,
+      durationMs: Date.now() - saveStartedAt,
+      message: error instanceof Error ? error.message : String(error),
+    })
     const recovered = await recoverPersistedImageAsset(projectId, assetId, saveStartedAt)
-    if (recovered?.localUri) return { imageUrl: source, localUri: recovered.localUri }
+    if (recovered?.localUri) return recovered
     const detail = error instanceof Error && error.message ? `（${error.message}）` : ''
     const action = origin === 'imported' ? '参考图' : '图片已生成，但'
     throw new Error(`${action}无法保存到手机本地${detail}`)
