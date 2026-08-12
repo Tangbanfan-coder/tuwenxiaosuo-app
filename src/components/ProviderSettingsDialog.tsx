@@ -477,6 +477,18 @@ export default function ProviderSettingsDialog({ open, nested = false, settings,
           </div>
           {modelUnknownWarning && <p className="field-hint model-limit-hint">{modelUnknownWarning}</p>}
 
+          {activeSlot === 'text' && (
+            <div className="field reasoning-effort-field">
+              <span>思考等级</span>
+              <div className="reasoning-effort-options" role="radiogroup" aria-label="文本模型思考等级">
+                {([['auto', '自动'], ['low', '低'], ['medium', '中'], ['high', '高']] as const).map(([value, label]) => (
+                  <button key={value} type="button" role="radio" aria-checked={(current.reasoningEffort ?? 'auto') === value} onClick={() => updateCurrent({ reasoningEffort: value })}>{label}</button>
+                ))}
+              </div>
+              <small className="field-hint">自动不会发送思考参数；低、中、高会传给兼容接口，是否支持由当前模型与供应商决定。</small>
+            </div>
+          )}
+
           {activeSlot === 'text' && Capacitor.isNativePlatform() && (
             <label className="provider-streaming-toggle">
               <span>

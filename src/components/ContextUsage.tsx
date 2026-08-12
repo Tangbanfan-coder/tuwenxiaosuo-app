@@ -2,7 +2,7 @@ import { AlertTriangle, Gauge, LoaderCircle, X } from 'lucide-react'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { ContextBudgetPlan, ContextCompressionStage } from '../providers/writing'
 
-export type ContextUsageState = 'ready' | 'loading' | 'empty' | 'over-limit' | 'fallback' | 'error'
+export type ContextUsageState = 'ready' | 'loading' | 'pending' | 'empty' | 'over-limit' | 'fallback' | 'error'
 export const CONTEXT_USAGE_SECTION_SCALE_PROPERTY = '--context-usage-section-scale'
 
 export interface ContextUsageDetailsProps {
@@ -15,6 +15,9 @@ interface ContextUsageProps extends ContextUsageDetailsProps {
   detailsOpen?: boolean
   onDetailsOpenChange?: (open: boolean) => void
   detailsPresentation?: 'popover' | 'sheet'
+  showTrigger?: boolean
+  showDetails?: boolean
+  compactLabel?: string
 }
 
 function formatTokens(value: number) {
@@ -40,10 +43,21 @@ function sectionBarStyle(value: number) {
 /** Shared concise copy for the composer strip and Settings drawer entry. */
 export function contextUsageSummary(plan: ContextBudgetPlan | undefined, state: ContextUsageState) {
   if (state === 'loading') return '上下文 · 估算中'
+  if (state === 'pending') return '上下文 · 待计算'
   if (state === 'empty') return '上下文 · 暂无输入'
   if (state === 'error') return '上下文 · 暂不可估算'
   if (!plan) return '上下文 · 暂无计划'
   return `上下文 · 约 ${formatTokens(plan.estimatedInputTokens)} / ${formatTokens(plan.inputLimitTokens)}`
+}
+
+/** Compact toolbar copy uses demand pressure, not the final trimmed request size. */
+export function contextUsageToolbarSummary(plan: ContextBudgetPlan | undefined, state: ContextUsageState) {
+  if (state === 'loading') return '估算中'
+  if (state === 'pending') return '待计算'
+  if (state === 'error') return '暂不可估算'
+  if (!plan) return '待计算'
+  const percent = Math.max(0, Math.round(plan.contextPressureRatio * 100))
+  return percent >= 100 ? '100%+' : `${percent}%`
 }
 
 function ContextUsageStateMessage({ state, error }: Pick<ContextUsageDetailsProps, 'state' | 'error'>) {
@@ -52,6 +66,14 @@ function ContextUsageStateMessage({ state, error }: Pick<ContextUsageDetailsProp
       <div className="context-usage-state" role="status">
         <LoaderCircle size={17} className="context-usage-spinner" aria-hidden="true" />
         <p>正在按当前模型、工作区和检索内容估算本轮上下文…</p>
+      </div>
+    )
+  }
+  if (state === 'pending') {
+    return (
+      <div className="context-usage-state" role="status">
+        <Gauge size={17} aria-hidden="true" />
+        <p>将在首次发送时按真实检索、上下文裁剪和模型配置计算本轮用量。</p>
       </div>
     )
   }
@@ -123,7 +145,7 @@ function ContextCompressionNotice({ plan }: { plan: ContextBudgetPlan }) {
  * same ContextBudgetPlan snapshot prepared by App.
  */
 export function ContextUsageDetails({ plan, state, error }: ContextUsageDetailsProps) {
-  if (state === 'loading' || state === 'empty' || state === 'error') {
+  if (state === 'loading' || state === 'pending' || state === 'empty' || state === 'error') {
     return <div className="context-usage-details"><ContextUsageStateMessage state={state} error={error} /></div>
   }
   if (!plan) return <div className="context-usage-details"><p className="context-usage-empty">暂无可显示的上下文计划。</p></div>
@@ -187,6 +209,9 @@ export default function ContextUsage({
   detailsOpen,
   onDetailsOpenChange,
   detailsPresentation = 'popover',
+  showTrigger = true,
+  showDetails = true,
+  compactLabel,
 }: ContextUsageProps) {
   const [internalDetailsOpen, setInternalDetailsOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -230,13 +255,15 @@ export default function ContextUsage({
     }
   }, [detailsPresentation, isDetailsOpen])
 
-  const compactSummary = state === 'loading'
+  const compactSummary = compactLabel ?? (state === 'loading'
     ? '估算中'
+    : state === 'pending'
+      ? '待计算'
     : state === 'error'
       ? '暂不可估算'
       : plan
         ? `${formatCompactTokens(plan.estimatedInputTokens)} / ${formatCompactTokens(plan.inputLimitTokens)}`
-        : '上下文'
+        : '上下文')
 
   return (
     <div
@@ -246,20 +273,22 @@ export default function ContextUsage({
       data-compression-stage={plan?.compressionStage}
       data-details-presentation={detailsPresentation}
     >
-      <button
-        className="context-usage-trigger"
-        type="button"
-        aria-label={`${summary}，查看本轮上下文用量明细`}
-        aria-expanded={isDetailsOpen}
-        aria-haspopup="dialog"
-        onClick={() => setDetailsOpen(true)}
-      >
-        {state === 'loading' ? <LoaderCircle size={14} className="context-usage-spinner" aria-hidden="true" /> : <Gauge size={14} aria-hidden="true" />}
-        <span>{compactSummary}</span>
-        {state === 'over-limit' && <AlertTriangle size={14} aria-label="预算超限警告" />}
-      </button>
+      {showTrigger && (
+        <button
+          className="context-usage-trigger"
+          type="button"
+          aria-label={`${summary}，查看本轮上下文用量明细`}
+          aria-expanded={isDetailsOpen}
+          aria-haspopup="dialog"
+          onClick={() => setDetailsOpen(true)}
+        >
+          {state === 'loading' ? <LoaderCircle size={14} className="context-usage-spinner" aria-hidden="true" /> : <Gauge size={14} aria-hidden="true" />}
+          <span>{compactSummary}</span>
+          {state === 'over-limit' && <AlertTriangle size={14} aria-label="预算超限警告" />}
+        </button>
+      )}
 
-      {isDetailsOpen && (
+      {showDetails && isDetailsOpen && (
         <div className={`context-usage-surface context-usage-surface--${detailsPresentation}`} role="presentation" onMouseDown={(event) => {
           if (detailsPresentation === 'sheet' && event.currentTarget === event.target) setDetailsOpen(false)
         }}>

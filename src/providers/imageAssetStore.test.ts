@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const nativeMocks = vi.hoisted(() => ({ native: true }))
+const nativeAssetStoreMocks = vi.hoisted(() => ({ download: vi.fn() }))
+const secretStoreMocks = vi.hoisted(() => ({ get: vi.fn() }))
 const filesystemMocks = vi.hoisted(() => ({
   files: new Map<string, string>(),
   appendFile: vi.fn(),
@@ -18,12 +20,16 @@ vi.mock('@capacitor/core', () => ({
     isNativePlatform: () => nativeMocks.native,
     convertFileSrc: (value: string) => value,
   },
+  registerPlugin: (name: string) => name === 'ImageAssetStore'
+    ? nativeAssetStoreMocks
+    : { write: vi.fn().mockResolvedValue(undefined) },
 }))
 vi.mock('@capacitor/filesystem', () => ({
   Directory: { Data: 'DATA' },
   Filesystem: filesystemMocks,
 }))
 vi.mock('@capgo/capacitor-file-sharer', () => ({ FileSharer: { save: vi.fn() } }))
+vi.mock('./secretStore', () => ({ secretStore: secretStoreMocks }))
 
 import { persistImageAsset } from './imageAssetStore'
 
@@ -57,6 +63,7 @@ beforeEach(() => {
   nativeMocks.native = true
   filesystemMocks.files.clear()
   vi.clearAllMocks()
+  secretStoreMocks.get.mockResolvedValue('secret-token')
   filesystemMocks.mkdir.mockResolvedValue(undefined)
   filesystemMocks.writeFile.mockImplementation(async ({ path, data }: { path: string; data: string }) => {
     filesystemMocks.files.set(path, data)
@@ -87,9 +94,11 @@ beforeEach(() => {
     return { data: btoa(bytes.slice(offset, end)) }
   })
   filesystemMocks.getUri.mockImplementation(async ({ path }: { path: string }) => ({ uri: `file://${path}` }))
+  vi.spyOn(console, 'info').mockImplementation(() => undefined)
+  vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 })
 
-afterEach(() => vi.clearAllMocks())
+afterEach(() => vi.restoreAllMocks())
 
 describe('persistImageAsset', () => {
   it('writes large base64 PNG data in aligned chunks and validates only the file head and tail', async () => {
@@ -97,7 +106,7 @@ describe('persistImageAsset', () => {
     const source = `data:image/png;base64,${base64}`
 
     await expect(persistImageAsset(source, 'project-1', 'asset-1')).resolves.toMatchObject({
-      imageUrl: source,
+      imageUrl: '',
       localUri: 'file://projects/project-1/images/asset-1.png',
     })
 
@@ -140,6 +149,16 @@ describe('persistImageAsset', () => {
     expect(filesystemMocks.readFile.mock.calls.every(([options]) => options.length === 64)).toBe(true)
   })
 
+  it('reports saving then validating and keeps Android storage local-only', async () => {
+    const stages: string[] = []
+    const source = `data:image/png;base64,${pngBase64()}`
+
+    await expect(persistImageAsset(source, 'project-1', 'asset-1', 'generated', (stage) => stages.push(stage)))
+      .resolves.toEqual({ imageUrl: '', localUri: 'file://projects/project-1/images/asset-1.png' })
+
+    expect(stages).toEqual(['saving', 'validating'])
+  })
+
   it('rejects a truncated PNG even when its header is valid', async () => {
     const truncated = pngBase64().slice(0, -8)
 
@@ -147,10 +166,52 @@ describe('persistImageAsset', () => {
       .rejects.toThrow('图片已生成，但无法保存到手机本地（图片文件不完整）')
   })
 
+  it('reports import storage failures without claiming that the image was generated', async () => {
+    const truncated = pngBase64().slice(0, -8)
+
+    await expect(persistImageAsset(`data:image/png;base64,${truncated}`, 'project-1', 'asset-1', 'imported'))
+      .rejects.toThrow('参考图无法保存到手机本地（图片文件不完整）')
+  })
+
   it('rejects a URL that was not downloaded through the authenticated provider channel', async () => {
     await expect(persistImageAsset('https://example.test/image', 'project-1', 'asset-1'))
       .rejects.toThrow('图片数据尚未下载为可保存的格式')
     expect(filesystemMocks.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('streams a remote URL through the native plugin without returning Base64 to JS', async () => {
+    nativeAssetStoreMocks.download.mockResolvedValue({
+      localUri: 'file://projects/project-1/images/asset-1.png', format: 'png', bytes: 2_400_000,
+      responseMs: 320, writeMs: 90, validationAndReplaceMs: 12, durationMs: 422,
+    })
+    const source = { kind: 'remote' as const, url: 'https://api.test/image.png', auth: { kind: 'bearer' as const, secretRef: 'image-key' } }
+
+    const stages: string[] = []
+    await expect(persistImageAsset(source, 'project-1', 'asset-1', 'generated', (stage) => stages.push(stage))).resolves.toEqual({
+      imageUrl: '', localUri: 'file://projects/project-1/images/asset-1.png',
+    })
+    expect(nativeAssetStoreMocks.download).toHaveBeenCalledWith({
+      url: 'https://api.test/image.png', projectId: 'project-1', assetId: 'asset-1', bearerToken: 'secret-token',
+    })
+    expect(stages).toEqual(['saving', 'validating'])
+    expect(filesystemMocks.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('never adds provider credentials to a cross-origin remote source', async () => {
+    nativeAssetStoreMocks.download.mockResolvedValue({
+      localUri: 'file://asset.png', format: 'png', bytes: 10, responseMs: 1, writeMs: 1, validationAndReplaceMs: 1, durationMs: 3,
+    })
+    await persistImageAsset({ kind: 'remote', url: 'https://cdn.test/image.png' }, 'project-1', 'asset-1')
+    expect(nativeAssetStoreMocks.download).toHaveBeenCalledWith(expect.objectContaining({ bearerToken: undefined }))
+    expect(secretStoreMocks.get).not.toHaveBeenCalled()
+  })
+
+  it('explains an anonymous CDN authorization failure without retrying with a key', async () => {
+    nativeAssetStoreMocks.download.mockRejectedValue({ data: { status: 403 } })
+    await expect(persistImageAsset({ kind: 'remote', url: 'https://cdn.test/image.png' }, 'project-1', 'asset-1'))
+      .rejects.toThrow('不会向该地址发送凭据')
+    expect(nativeAssetStoreMocks.download).toHaveBeenCalledTimes(1)
+    expect(secretStoreMocks.get).not.toHaveBeenCalled()
   })
 
   it('replaces an existing final image after validating the temporary image', async () => {
@@ -207,5 +268,12 @@ describe('persistImageAsset', () => {
 
     await expect(persistImageAsset(source, 'project-1', 'asset-1')).resolves.toEqual({ imageUrl: source })
     expect(filesystemMocks.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('keeps Web remote storage on the URL pass-through path', async () => {
+    nativeMocks.native = false
+    await expect(persistImageAsset({ kind: 'remote', url: 'https://cdn.test/image.png' }, 'project-1', 'asset-1'))
+      .resolves.toEqual({ imageUrl: 'https://cdn.test/image.png' })
+    expect(nativeAssetStoreMocks.download).not.toHaveBeenCalled()
   })
 })

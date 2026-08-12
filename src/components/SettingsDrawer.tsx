@@ -20,6 +20,8 @@ interface Props {
   onIllustrationStyleChange: (styleId: IllustrationStylePresetId, customPrompt?: string) => Promise<void>
   activeWritingInstructions: string
   onEditWritingInstructions: () => void
+  globalWritingInstructions?: string
+  onEditGlobalWritingInstructions?: () => void
   contextBudget: ContextBudget
   onContextBudgetChange: (budget: ContextBudget) => Promise<void>
   contextUsagePlan?: ContextBudgetPlan
@@ -50,6 +52,8 @@ export default function SettingsDrawer({
   onIllustrationStyleChange,
   activeWritingInstructions,
   onEditWritingInstructions,
+  globalWritingInstructions,
+  onEditGlobalWritingInstructions,
   contextBudget,
   onContextBudgetChange,
   contextUsagePlan,
@@ -146,7 +150,7 @@ export default function SettingsDrawer({
               <button type="button" onClick={onEditWritingInstructions}>
                 <ScrollText size={18} aria-hidden="true" />
                 <span>
-                  <strong>长期创作设定</strong>
+                  <strong>局部创作设定</strong>
                   <small>{writingInstructionsPreview || '设置视角、文风、篇幅和长期禁忌'}</small>
                 </span>
                 <ChevronRight size={17} aria-hidden="true" />
@@ -299,6 +303,21 @@ export default function SettingsDrawer({
               </form>
             )}
             <p className="settings-help">会用于之后生成的定妆照和剧情插画。</p>
+          </section>
+
+          <section className="settings-section settings-global-section" aria-labelledby="global-writing-settings">
+            <h3 id="global-writing-settings">全局创作设定</h3>
+            <div className="settings-navigation-list">
+              <button type="button" onClick={onEditGlobalWritingInstructions} disabled={!onEditGlobalWritingInstructions}>
+                <ScrollText size={18} aria-hidden="true" />
+                <span>
+                  <strong>全局创作设定</strong>
+                  <small>{globalWritingInstructions?.trim().replace(/\s+/g, ' ') || '对所有作品生效的默认规则'}</small>
+                </span>
+                <ChevronRight size={17} aria-hidden="true" />
+              </button>
+            </div>
+            <p className="settings-help">所有作品都会携带，本作品的局部设定可以临时覆盖。</p>
           </section>
 
           <section className="settings-section" aria-labelledby="model-service-settings">

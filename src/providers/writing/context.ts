@@ -279,11 +279,13 @@ function buildProjectContextWithBudget(
   const latestScene = scenes.length ? scenes[scenes.length - 1] : undefined
 
   const writingInstructions = workspace.project.writingInstructions?.trim()
+  const globalWritingInstructions = workspace.globalWritingInstructions?.trim()
   const structure = parseWritingStructure(workspace.project)
   const illustrationLine = `插画画风：${illustrationStyle.label}${illustrationStyle.visualPrompt ? `（${illustrationStyle.visualPrompt}）` : ''}`
-  const coreRules = structure?.core || writingInstructions || ''
-  const instructionsFull = coreRules ? `长期创作设定（核心规则）：\n${coreRules}` : ''
-  const fullInstructionsText = [instructionsFull, illustrationLine].filter(Boolean).join('\n')
+  const projectCoreRules = structure?.core || writingInstructions || ''
+  const globalRules = globalWritingInstructions ? `全局创作设定（低优先级默认）：\n${globalWritingInstructions}` : ''
+  const projectRules = projectCoreRules ? `当前作品局部创作设定（优先覆盖全局设定）：\n${projectCoreRules}` : ''
+  const fullInstructionsText = [globalRules, projectRules, illustrationLine].filter(Boolean).join('\n')
   const boundedInstructions = untrimmed ? fullInstructionsText : fullInstructionsText.slice(0, CORE_RULES_MAX_CHARS)
   const rulesBudget = untrimmed ? measure(boundedInstructions) : Math.min(normalizedBudget, measure(boundedInstructions))
   const instructionsText = truncateTextToBudget(boundedInstructions, rulesBudget, 'head', measure)
@@ -312,9 +314,18 @@ function buildProjectContextWithBudget(
     })
   }
 
+  const narrativePronoun = (character: ProjectWorkspace['characters'][number]) => {
+    if (character.narrativePronoun === 'she') return '她'
+    if (character.narrativePronoun === 'he') return '他'
+    if (character.narrativePronoun === 'ta') return 'TA'
+    if (character.narrativePronoun === 'name') return '仅使用姓名'
+    return '未确认（正文只能使用角色姓名，不得猜测“他”“她”或“TA”）'
+  }
   const characters = workspace.characters.map((character) => ({
     name: character.name,
     role: character.role,
+    narrativePronoun: narrativePronoun(character),
+    ageAndBuild: character.identity.ageAndBuild,
     fixedTraits: character.identity.fixedTraits,
     defaultLook: character.appearance.defaultLook,
     wardrobe: character.appearance.wardrobe,
@@ -322,7 +333,7 @@ function buildProjectContextWithBudget(
   }))
   sections.push({
     label: '角色档案',
-    text: JSON.stringify(characters, null, 0),
+    text: `以下角色档案中 confirmed 为 true 的资料是权威事实。不得自行改写其叙事代词、年龄感、外貌、固定特征或服装；叙事代词未确认时只能使用角色姓名，信息不足时保持模糊，不要补猜。\n${JSON.stringify(characters, null, 0)}`,
     priority: 70,
     keepOrder: 'head',
     planKey: 'projectWorkspace',
@@ -331,10 +342,14 @@ function buildProjectContextWithBudget(
   const currentSceneText = latestScene    ? `当前场景：${[latestScene.notes.time, latestScene.notes.location, latestScene.notes.povCharacter ? `视角：${latestScene.notes.povCharacter}` : '']
         .filter(Boolean).join('，')}`
     : ''
+  const latestSceneAnchor = workspace.illustrations
+    .filter((illustration) => illustration.sceneAnchor)
+    .sort((left, right) => right.createdAt - left.createdAt)[0]?.sceneAnchor
   const workspaceText = [
     `当前章节：${chapter ? `第${chapter.order}章 ${chapter.title}` : '（尚无章节）'}`,
     chapter?.summary ? `本章提要：${chapter.summary}` : '',
     currentSceneText,
+    latestSceneAnchor ? `最近插画场景锚点（仅当地点、时间段和关键布置均连续时复用 key）：${JSON.stringify(latestSceneAnchor)}` : '',
     chapter?.content && (untrimmed || profile.currentChapterTailRatio > 0)
       ? `最近正文（当前章尾文）：\n${truncateTextToBudget(
         chapter.content,

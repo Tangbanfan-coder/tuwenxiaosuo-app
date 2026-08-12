@@ -97,7 +97,12 @@ describe('writing result recovery', () => {
       prose: { chapter_title: '第二章', paragraphs: ['第一段正文。'] },
       chapter_summary: '章节摘要。',
       scene_notes: { events: ['发生了事件'] },
-      visual_plan: { title: '雨夜', prompt: '雨夜的街道', characters: [] },
+      visual_plan: {
+        title: '雨夜', prompt: '雨夜的街道', action: '撑伞冲进雨中', body_language: '压低肩膀快步前行',
+        expression: '神情紧绷', gaze: '看向巷口灯光', camera: '中景侧拍', motion: '雨水沿伞沿坠落',
+        scene_anchor: { key: 'old-street-night', location: '旧城街道', time_period: '夜晚', fixed_elements: ['石板路', '巷口路灯'], lighting: '路灯侧光', palette: '冷蓝色' },
+        characters: [],
+      },
     }))
 
     expect(result).toMatchObject({
@@ -106,7 +111,11 @@ describe('writing result recovery', () => {
       chapterTitle: '第二章',
       paragraphs: ['第一段正文。'],
       chapterSummary: '章节摘要。',
-      visualPlan: { title: '雨夜', prompt: '雨夜的街道' },
+      visualPlan: {
+        title: '雨夜', prompt: '雨夜的街道', action: '撑伞冲进雨中', bodyLanguage: '压低肩膀快步前行',
+        expression: '神情紧绷', gaze: '看向巷口灯光', camera: '中景侧拍', motion: '雨水沿伞沿坠落',
+        sceneAnchor: { key: 'old-street-night', location: '旧城街道', timePeriod: '夜晚', fixedElements: ['石板路', '巷口路灯'] },
+      },
     })
     expect(result.sceneNotes?.events).toEqual(['发生了事件'])
   })

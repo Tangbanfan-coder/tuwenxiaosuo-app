@@ -16,6 +16,7 @@ interface Props {
   onSave: (value: string) => Promise<void>
   onSaveStructure: (structureJson: string | null) => Promise<void>
   textProvider?: ProviderConfig
+  isGlobal?: boolean
 }
 
 const MAX_LENGTH = 50_000
@@ -23,7 +24,7 @@ const STRUCTURE_CALL_WARNING_THRESHOLD = 10
 
 type Phase = 'edit' | 'structuring' | 'review'
 
-export default function WritingInstructionsDialog({ open, projectTitle, value, structure, onClose, onSave, onSaveStructure, textProvider }: Props) {
+export default function WritingInstructionsDialog({ open, projectTitle, value, structure, onClose, onSave, onSaveStructure, textProvider, isGlobal = false }: Props) {
   const dialogRef = useRef<HTMLElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [draft, setDraft] = useState(value)
@@ -201,10 +202,10 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
       >
         <header className="dialog-header">
           <div>
-            <h2 id="writing-instructions-title">{phase === 'edit' ? '长期创作设定' : '整理为分层结构'}</h2>
-            <p id="writing-instructions-description">仅用于《{projectTitle}》</p>
+            <h2 id="writing-instructions-title">{phase === 'edit' ? (isGlobal ? '全局创作设定' : '局部创作设定') : '整理为分层结构'}</h2>
+            <p id="writing-instructions-description">{isGlobal ? '作为所有作品的默认规则，作品专属设定会优先覆盖' : `仅用于《${projectTitle}》`}</p>
           </div>
-          <button className="icon-button" type="button" aria-label="关闭长期创作设定" onClick={close}><X size={20} /></button>
+          <button className="icon-button" type="button" aria-label={`关闭${isGlobal ? '全局' : '局部'}创作设定`} onClick={close}><X size={20} /></button>
         </header>
 
         {phase === 'edit' && (
@@ -235,7 +236,7 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
               <span>{draft.length}/{MAX_LENGTH}</span>
               <div>
                 <button className="quiet-button" type="button" disabled={saving} onClick={close}>取消</button>
-                {draft.trim().length > 200 && (
+                {!isGlobal && draft.trim().length > 200 && (
                   <button className="quiet-button structure-button" type="button" disabled={saving} onClick={() => void structureDraft()}>
                     <Sparkles size={15} />整理结构
                   </button>
@@ -382,7 +383,7 @@ export default function WritingInstructionsDialog({ open, projectTitle, value, s
       <ConfirmDialog
         open={confirmDiscardOpen}
         title="放弃未保存的更改？"
-        message="长期创作设定尚未保存。"
+        message={`${isGlobal ? '全局' : '局部'}创作设定尚未保存。`}
         confirmLabel="放弃更改"
         onClose={() => setConfirmDiscardOpen(false)}
         onConfirm={onClose}

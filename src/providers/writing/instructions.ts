@@ -395,11 +395,11 @@ function planWritingInstructionStructure(source: string, config: ProviderConfig)
   const promptTokens = STRUCTURE_REQUEST_OVERHEAD_TOKENS + estimatedTokenCount(estimator, STRUCTURE_CHUNK_PROMPT)
   const availableChunkTokens = windowTokens - maxOutput - safetyMarginTokens - promptTokens
   if (availableChunkTokens < 512) {
-    throw new Error('当前模型窗口不足以整理长期创作设定，请降低最大输出或改用更大窗口的模型。')
+    throw new Error('当前模型窗口不足以整理局部创作设定，请降低最大输出或改用更大窗口的模型。')
   }
   const chunkTokenBudget = Math.max(1, Math.floor(availableChunkTokens * CONTEXT_NARROWING_FACTOR))
   const chunks = splitStructureSource(source, chunkTokenBudget, estimator)
-  if (!chunks.length) throw new Error('长期创作设定为空，无法整理')
+  if (!chunks.length) throw new Error('局部创作设定为空，无法整理')
   return { chunks, maxOutput }
 }
 
@@ -433,6 +433,7 @@ export async function structureWritingInstructions(
           body: JSON.stringify({
             model: config.model,
             stream: false,
+            ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
             ...outputTokenParameter(config, maxOutput),
             messages: [
               { role: 'system', content: STRUCTURE_CHUNK_PROMPT },

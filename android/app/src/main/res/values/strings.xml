@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">图文小说</string>
-    <string name="title_activity_main">图文小说</string>
+    <string name="app_name">叙影</string>
+    <string name="title_activity_main">叙影</string>
     <string name="package_name">com.illustratedstory.app</string>
     <string name="custom_url_scheme">com.illustratedstory.app</string>
 </resources>

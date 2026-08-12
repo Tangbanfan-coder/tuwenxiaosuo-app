@@ -9,7 +9,7 @@ export {
   type ContextCompressionStage,
 } from './writing/budget'
 export { explicitlyRequestsNewChapter } from './writing/chapterIntent'
-export { buildProjectContext, type BuildProjectContextOptions } from './writing/context'
+export { buildProjectContext, buildProjectContextForTokenBudget, type BuildProjectContextOptions } from './writing/context'
 export {
   estimateWritingInstructionStructureCalls,
   parseChapterOrder,

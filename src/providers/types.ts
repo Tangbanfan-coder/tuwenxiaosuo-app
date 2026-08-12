@@ -1,5 +1,6 @@
 export type ProviderSlot = 'text' | 'image'
 export type SecretRef = string
+export type ReasoningEffort = 'auto' | 'low' | 'medium' | 'high'
 
 export type RequestAuth = { kind: 'bearer'; secretRef: SecretRef }
 
@@ -15,6 +16,7 @@ export interface ProviderConfig {
   manualContextLength?: number
   manualMaxOutputTokens?: number
   androidStreamingEnabled?: boolean
+  reasoningEffort?: ReasoningEffort
 }
 
 export interface ProviderSettings {
@@ -56,6 +58,10 @@ export interface ImageDownloadRequest {
   auth?: RequestAuth
   timeoutMs?: number
 }
+
+export type GeneratedImageSource =
+  | { kind: 'inline'; dataUrl: string }
+  | { kind: 'remote'; url: string; auth?: RequestAuth }
 
 export interface HttpTransport {
   request<T>(request: TransportRequest): Promise<TransportResponse<T>>

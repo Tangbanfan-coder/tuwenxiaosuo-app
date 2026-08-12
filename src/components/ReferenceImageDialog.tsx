@@ -7,7 +7,8 @@ interface Props {
   open: boolean
   characters: CharacterAsset[]
   onClose: () => void
-  onImport: (target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode) => Promise<void>
+  onImport: (target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode, autoAnalyze: boolean) => Promise<void>
+  onCreate?: (target: { name: string; role: string }) => Promise<void>
 }
 
 export type ReferenceImageTarget = { characterId: string } | { name: string; role: string }
@@ -66,10 +67,9 @@ async function decodeImage(file: File) {
 }
 
 export async function referenceFileToDataUrl(file: File) {
-  if (!isHeicReferenceFile(file)) return fileToDataUrl(file)
-
+  let image: Awaited<ReturnType<typeof decodeImage>> | undefined
   try {
-    const image = await decodeImage(file)
+    image = await decodeImage(file)
     const width = 'naturalWidth' in image ? image.naturalWidth : image.width
     const height = 'naturalHeight' in image ? image.naturalHeight : image.height
     if (!width || !height) throw new Error('图片尺寸无效')
@@ -80,19 +80,23 @@ export async function referenceFileToDataUrl(file: File) {
     const context = canvas.getContext('2d')
     if (!context) throw new Error('设备不支持图片转换')
     context.drawImage(image, 0, 0)
-    if ('close' in image && typeof image.close === 'function') image.close()
 
     const png = await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG 转换失败')), 'image/png')
     })
-    return await fileToDataUrl(new File([png], file.name.replace(/\.hei[cf]$/i, '.png'), { type: 'image/png' }))
-  } catch {
-    throw new Error('这台设备无法解码 HEIC/HEIF 图片，请先将图片转换为 JPG、PNG 或 WebP 后再导入')
+    const pngName = /\.[^.]+$/.test(file.name) ? file.name.replace(/\.[^.]+$/, '.png') : `${file.name || 'reference'}.png`
+    return await fileToDataUrl(new File([png], pngName, { type: 'image/png' }))
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? error.message : '图片解码或转换失败'
+    throw new Error(`无法导入此图片：${detail}。请先转换为 JPG、PNG 或 WebP 后重试`)
+  } finally {
+    if (image && 'close' in image && typeof image.close === 'function') image.close()
   }
 }
 
-export default function ReferenceImageDialog({ open, characters, onClose, onImport }: Props) {
+export default function ReferenceImageDialog({ open, characters, onClose, onImport, onCreate }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const selectionRequestRef = useRef(0)
   const [characterId, setCharacterId] = useState('')
   const [characterName, setCharacterName] = useState('')
   const [characterRole, setCharacterRole] = useState('主要角色')
@@ -100,12 +104,15 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
   const [fileName, setFileName] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [createSaving, setCreateSaving] = useState(false)
   const [referenceStyleMode, setReferenceStyleMode] = useState<ReferenceStyleMode>('project')
+  const [autoAnalyze, setAutoAnalyze] = useState(true)
   const [characterMenuOpen, setCharacterMenuOpen] = useState(false)
   const characterSelectRef = useRef<HTMLDivElement>(null)
   const { present, closing } = usePresence(open, onClose, 180)
 
   useEffect(() => {
+    selectionRequestRef.current += 1
     if (!open) return
     setCharacterId(characters[0]?.id ?? NEW_CHARACTER_ID)
     setCharacterName('')
@@ -113,7 +120,9 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
     setPreview('')
     setFileName('')
     setError('')
+    setCreateSaving(false)
     setReferenceStyleMode('project')
+    setAutoAnalyze(true)
     setCharacterMenuOpen(false)
     window.requestAnimationFrame(() => closeButtonRef.current?.focus())
   }, [characters, open])
@@ -128,9 +137,10 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
   }, [characterMenuOpen])
 
   if (!present) return null
+  const importSaving = saving && !createSaving
 
   return (
-    <div className={`dialog-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
+    <div className={`dialog-backdrop reference-dialog-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target && !saving) onClose()
     }}>
       <section className="reference-dialog" role="dialog" aria-modal="true" aria-labelledby="reference-dialog-title">
@@ -234,12 +244,19 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
               : '角色会保留这张图片的绘制或摄影风格，可用于有意的跨画风故事。'}</p>
           </fieldset>
 
+          <label className="reference-analysis-consent">
+            <span className="reference-analysis-copy"><strong>自动识别参考图外貌</strong><small>图片会发送给当前配置的文本模型服务，生成可编辑的外貌档案和叙事代词建议。关闭后仅保存图片。</small></span>
+            <input type="checkbox" checked={autoAnalyze} onChange={(event) => setAutoAnalyze(event.target.checked)} />
+            <span className="reference-analysis-switch" aria-hidden="true" />
+          </label>
+
           <label className="reference-file-picker">
             <input
               type="file"
               aria-label="选择角色参考图片"
-              accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif"
+              accept="image/*,.heic,.heif"
               onChange={(event) => {
+                const selectionRequest = ++selectionRequestRef.current
                 const file = event.target.files?.[0]
                 if (!file) return
                 if (file.size > 20 * 1024 * 1024) {
@@ -251,26 +268,46 @@ export default function ReferenceImageDialog({ open, characters, onClose, onImpo
                 setError('')
                 setPreview('')
                 setFileName(file.name)
-                void referenceFileToDataUrl(file).then(setPreview).catch((readError) => setError(readError instanceof Error ? readError.message : '无法读取图片'))
+                void referenceFileToDataUrl(file)
+                  .then((dataUrl) => {
+                    if (selectionRequest !== selectionRequestRef.current) return
+                    setPreview(dataUrl)
+                  })
+                  .catch((readError) => {
+                    if (selectionRequest !== selectionRequestRef.current) return
+                    setError(readError instanceof Error ? readError.message : '无法读取图片')
+                  })
               }}
             />
-            {preview ? <img src={preview} alt="待导入的角色参考图预览" /> : <div><ImagePlus size={27} /><strong>选择手机中的图片</strong><span>支持 JPG、PNG、WebP、HEIC/HEIF，最大 20 MB</span></div>}
+            {preview ? <img src={preview} alt="待导入的角色参考图预览" /> : <div><ImagePlus size={27} /><strong>选择手机中的图片</strong><span>支持本机可解码的图片，导入后统一转为 PNG，最大 20 MB</span></div>}
           </label>
           {fileName && <p className="selected-file">已选择：{fileName}</p>}
           {error && <p className="asset-error" role="alert">{error}</p>}
         </div>
         <footer className="dialog-footer">
-          <span>{characterId === NEW_CHARACTER_ID ? '角色和图片会一起保存，确认后用于插画' : '导入后仍需确认，才会用于后续插画'}</span>
-          <button className="save-button" type="button" disabled={!(characterId === NEW_CHARACTER_ID ? characterName.trim() : characterId) || !preview || saving} onClick={() => {
-            const target: ReferenceImageTarget = characterId === NEW_CHARACTER_ID
-              ? { name: characterName.trim(), role: characterRole.trim() || '主要角色' }
-              : { characterId }
-            setSaving(true)
-            void onImport(target, preview, referenceStyleMode).finally(() => setSaving(false))
-          }}>
-            {saving ? <LoaderCircle className="spin" size={18} /> : <Upload size={18} />}
-            {saving ? '正在导入…' : '导入参考图'}
-          </button>
+          <span>{characterId === NEW_CHARACTER_ID ? '可先只保存角色，之后再上传或用 AI 生成定妆照' : '导入后仍需确认，才会用于后续插画'}</span>
+          <div className="reference-dialog-actions">
+            {characterId === NEW_CHARACTER_ID && onCreate && (
+              <button className="reference-create-character-button" type="button" aria-busy={createSaving} disabled={!characterName.trim() || saving} onClick={() => {
+                setSaving(true)
+                setCreateSaving(true)
+                void onCreate({ name: characterName.trim(), role: characterRole.trim() || '主要角色' }).finally(() => {
+                  setSaving(false)
+                  setCreateSaving(false)
+                })
+              }}>{createSaving ? <LoaderCircle className="spin" size={18} /> : <UserPlus size={18} />}{createSaving ? '正在创建…' : '只创建角色'}</button>
+            )}
+            <button className="save-button" type="button" aria-busy={importSaving} disabled={!(characterId === NEW_CHARACTER_ID ? characterName.trim() : characterId) || !preview || saving} onClick={() => {
+              const target: ReferenceImageTarget = characterId === NEW_CHARACTER_ID
+                ? { name: characterName.trim(), role: characterRole.trim() || '主要角色' }
+                : { characterId }
+              setSaving(true)
+              void onImport(target, preview, referenceStyleMode, autoAnalyze).finally(() => setSaving(false))
+            }}>
+              {importSaving ? <LoaderCircle className="spin" size={18} /> : <Upload size={18} />}
+              {importSaving ? '正在导入…' : '导入参考图'}
+            </button>
+          </div>
         </footer>
       </section>
     </div>

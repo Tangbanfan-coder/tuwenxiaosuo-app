@@ -1,7 +1,8 @@
 import type { CharacterAsset, ProjectStyle } from '../domain/models'
 import { resolveProjectIllustrationStyle } from '../domain/illustrationStyles'
+import { logImagePipeline } from './imagePipelineLog'
 import { normalizeBaseUrl } from './openAiCompatible'
-import type { HttpTransport, ProviderConfig, RequestAuth } from './types'
+import type { GeneratedImageSource, HttpTransport, ProviderConfig, RequestAuth } from './types'
 
 interface ImageResponse {
   data?: Array<{
@@ -19,23 +20,43 @@ function resolveImageUrl(url: string, providerBaseUrl: string) {
   }
 }
 
-async function imageSource(response: ImageResponse, baseUrl: string, config: ProviderConfig, transport: HttpTransport) {
+type ImageResponseMode = 'b64_json' | 'url' | 'empty'
+
+function imageResponseMode(response: ImageResponse): ImageResponseMode {
   const image = response.data?.[0]
-  if (typeof image?.b64_json === 'string' && image.b64_json) return `data:image/png;base64,${image.b64_json}`
+  if (typeof image?.b64_json === 'string' && image.b64_json) return 'b64_json'
+  if (typeof image?.url === 'string' && image.url) return 'url'
+  return 'empty'
+}
+
+function approximateBase64Bytes(value: string) {
+  const normalized = value.replace(/\s/g, '')
+  const padding = normalized.endsWith('==') ? 2 : normalized.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor(normalized.length * 3 / 4) - padding)
+}
+
+export type ImageGenerationStage = 'waiting' | 'downloading'
+export type ImageGenerationStageCallback = (stage: ImageGenerationStage) => void
+
+async function imageSource(
+  response: ImageResponse,
+  baseUrl: string,
+  config: ProviderConfig,
+  transport: HttpTransport,
+  onStageChange?: ImageGenerationStageCallback,
+): Promise<GeneratedImageSource> {
+  const image = response.data?.[0]
+  if (typeof image?.b64_json === 'string' && image.b64_json) {
+    logImagePipeline('info', { phase: 'response-ready', responseMode: 'b64_json', approximateBytes: approximateBase64Bytes(image.b64_json) })
+    return { kind: 'inline', dataUrl: `data:image/png;base64,${image.b64_json}` }
+  }
   if (typeof image?.url === 'string' && image.url) {
-    if (!transport.resolveImageSource) throw new Error('当前网络通道不支持读取图片 URL；请让服务返回 b64_json')
     const resolved = resolveImageUrl(image.url, baseUrl)
     const usesProviderAuth = resolved.usesProviderAuth
     const auth: RequestAuth | undefined = usesProviderAuth ? { kind: 'bearer', secretRef: config.secretRef } : undefined
-    try {
-      return await transport.resolveImageSource({ url: resolved.url, auth, timeoutMs: 120_000 })
-    } catch (error) {
-      const status = typeof error === 'object' && error ? (error as { status?: unknown }).status : undefined
-      if (!usesProviderAuth && (status === 401 || status === 403)) {
-        throw new Error('图片 URL 位于第三方地址且拒绝匿名读取。为避免泄露 API Key，应用不会向该地址发送凭据；请让服务返回 b64_json 或可公开读取的签名 URL。', { cause: error })
-      }
-      throw new Error('图片已生成，但无法下载图片数据。请让服务返回 b64_json，或检查图片 URL 是否可访问。', { cause: error })
-    }
+    onStageChange?.('downloading')
+    logImagePipeline('info', { phase: 'remote-image-ready', responseMode: 'url', usesProviderAuth })
+    return { kind: 'remote', url: resolved.url, auth }
   }
   throw new Error('图片模型没有返回 URL 或图片数据')
 }
@@ -58,8 +79,11 @@ export async function generateOpenAiImage(
   prompt: string,
   transport: HttpTransport,
   size = '1024x1536',
+  onStageChange?: ImageGenerationStageCallback,
 ) {
   const baseUrl = assertImageConfig(config)
+  onStageChange?.('waiting')
+  const requestStartedAt = Date.now()
   const response = await transport.request<ImageResponse>({
     url: `${baseUrl}/images/generations`,
     method: 'POST',
@@ -73,7 +97,14 @@ export async function generateOpenAiImage(
       ...(supportsB64ResponseFormat(config.model) ? { response_format: 'b64_json' } : {}),
     }),
   })
-  return imageSource(response.data, baseUrl, config, transport)
+  logImagePipeline('info', {
+    phase: 'provider-complete',
+    operation: 'generation',
+    model: config.model,
+    durationMs: Date.now() - requestStartedAt,
+    responseMode: imageResponseMode(response.data),
+  })
+  return imageSource(response.data, baseUrl, config, transport, onStageChange)
 }
 
 async function sourceToBlob(source: string) {
@@ -92,9 +123,10 @@ export async function editOpenAiImage(
   referenceSources: string[],
   transport: HttpTransport,
   size = '1024x1536',
+  onStageChange?: ImageGenerationStageCallback,
 ) {
   const baseUrl = assertImageConfig(config)
-  if (!referenceSources.length) return generateOpenAiImage(config, prompt, transport, size)
+  if (!referenceSources.length) return generateOpenAiImage(config, prompt, transport, size, onStageChange)
 
   try {
     const form = new FormData()
@@ -106,6 +138,8 @@ export async function editOpenAiImage(
       form.append('image', await sourceToBlob(source), `reference-${index + 1}.png`)
     }
 
+    onStageChange?.('waiting')
+    const requestStartedAt = Date.now()
     const response = await transport.request<ImageResponse>({
       url: `${baseUrl}/images/edits`,
       method: 'POST',
@@ -113,7 +147,15 @@ export async function editOpenAiImage(
       timeoutMs: 180_000,
       body: form,
     })
-    return imageSource(response.data, baseUrl, config, transport)
+    logImagePipeline('info', {
+      phase: 'provider-complete',
+      operation: 'edit',
+      model: config.model,
+      referenceCount: referenceSources.length,
+      durationMs: Date.now() - requestStartedAt,
+      responseMode: imageResponseMode(response.data),
+    })
+    return imageSource(response.data, baseUrl, config, transport, onStageChange)
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     throw new Error(
@@ -126,7 +168,8 @@ export async function editOpenAiImage(
 export function buildCharacterPortraitPrompt(character: CharacterAsset, style?: ProjectStyle, feedback?: string) {
   const refinement = feedback?.trim() ? `\n用户对上一版的不满意点：${feedback.trim()}。据此生成优化版本。` : ''
   const resolvedStyle = resolveProjectIllustrationStyle(style)
-  const preserveReferenceStyle = character.continuity.referenceStyleMode === 'reference' && Boolean(character.continuity.referenceImageUrl)
+  const preserveReferenceStyle = character.continuity.referenceStyleMode === 'reference'
+    && Boolean(character.continuity.referenceImageUrl || character.continuity.localUri)
   const styleRule = preserveReferenceStyle
     ? '保留上一张参考图自身的绘制或摄影风格，不要将角色转换为项目统一画风。'
     : resolvedStyle.visualPrompt

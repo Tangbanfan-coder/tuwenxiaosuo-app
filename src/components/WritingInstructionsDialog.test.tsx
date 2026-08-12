@@ -44,7 +44,7 @@ beforeEach(() => {
 
 afterEach(() => cleanup())
 
-describe('长期创作设定确认流程', () => {
+describe('局部创作设定确认流程', () => {
   it('首次整理时保存当前生成并编辑后的结构', async () => {
     const user = userEvent.setup()
     const onSaveStructure = vi.fn().mockResolvedValue(undefined)

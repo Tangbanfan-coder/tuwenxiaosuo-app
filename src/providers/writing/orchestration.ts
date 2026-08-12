@@ -43,6 +43,8 @@ const defaultParagraphRetriever = new BigramBm25Retriever()
 /** Lets a future semantic retriever replace BM25 without changing prompt data. */
 export interface GenerateWritingTurnOptions {
   retriever?: Retriever
+  /** Receives the exact final plan prepared for this real writing request. */
+  onContextPlan?: (plan: ContextBudgetPlan) => void
 }
 
 interface PreparedWritingTurnContext {
@@ -54,15 +56,14 @@ interface PreparedWritingTurnContext {
 
 /**
  * Builds the exact context payload and token plan used by a writing turn.
- * Preview callers deliberately use this same path so retrieval, trimming and
- * serialized-context accounting cannot drift from the eventual request.
+ * The request path owns this work so retrieval, trimming and serialized
+ * context accounting cannot drift from the eventual provider request.
  */
 async function prepareWritingTurnContext(
   workspace: ProjectWorkspace,
   userRequest: string,
   config: ProviderConfig,
   options: GenerateWritingTurnOptions,
-  enforceInitialCapacity = false,
 ): Promise<PreparedWritingTurnContext> {
   const contextBudget = workspace.project.contextBudget ?? 'standard'
   const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model })
@@ -126,8 +127,6 @@ async function prepareWritingTurnContext(
     estimator,
   })
 
-  if (enforceInitialCapacity) assertContextCapacity(finalPlan)
-
   return { initialPlan, finalPlan, contextMessage, rulesTruncated }
 }
 
@@ -159,9 +158,11 @@ export async function generateWritingTurn(
   if (!baseUrl) throw new Error('请先配置文本模型的 API URL')
   if (!config.model.trim()) throw new Error('请先选择文本模型')
 
-  const prepared = await prepareWritingTurnContext(workspace, userRequest, config, options, true)
+  const prepared = await prepareWritingTurnContext(workspace, userRequest, config, options)
+  options.onContextPlan?.(prepared.finalPlan)
+  assertContextCapacity(prepared.finalPlan)
   if (prepared.rulesTruncated) {
-    throw new Error('长期创作设定超过核心预算，本轮已阻止生成。请在“长期创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
+    throw new Error('局部创作设定超过核心预算，本轮已阻止生成。请在“局部创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
   }
   if (prepared.finalPlan.isOverLimit) {
     throw new Error('最终请求的输入仍超过模型上下文窗口（真实 token 硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
@@ -170,6 +171,7 @@ export async function generateWritingTurn(
   const body = JSON.stringify({
     model: config.model,
     stream: true,
+    ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
     ...outputTokenParameter(config, prepared.initialPlan.outputReserveTokens),
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },

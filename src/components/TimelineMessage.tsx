@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ImagePlus, LoaderCircle, Maximize2, Sparkles, ThumbsDown, ThumbsUp, TriangleAlert, X } from 'lucide-react'
-import { listMessageFeedback, storyDatabase, toggleFeedback } from '../data/storyDatabase'
+import { listMessageFeedback, storyDatabase, toggleFeedbackBatch } from '../data/storyDatabase'
 import type { CharacterAsset, ConversationMessage, Feedback, FeedbackScope, FeedbackVerdict, IllustrationAsset, StoredParagraph } from '../domain/models'
+import { resolveIllustrationReferences } from '../domain/illustrationReferences'
 import { createParagraphFingerprint } from '../domain/paragraphs'
 import { resolveImageSource } from '../providers/imageAssetStore'
 
@@ -12,27 +13,35 @@ type ParagraphAnchor = {
   fingerprint: string
 }
 
-function characterHasConfirmedReference(character: CharacterAsset | undefined) {
-  return Boolean(
-    character
-      && character.status === 'confirmed'
-      && (character.continuity.referenceImageUrl || character.continuity.localUri),
-  )
+export type IllustrationGenerationStage = 'waiting' | 'downloading' | 'saving' | 'validating'
+
+export function illustrationGenerationStageText(stage: IllustrationGenerationStage | undefined) {
+  if (stage === 'downloading') return '正在接收图片'
+  if (stage === 'saving') return '正在保存到手机'
+  if (stage === 'validating') return '正在校验文件'
+  return '正在等待图片生成'
 }
 
-function illustrationReferencesReady(illustration: IllustrationAsset, characters: CharacterAsset[]) {
-  return illustration.referenceCharacterIds.every((characterId) => (
-    characterHasConfirmedReference(characters.find((character) => character.id === characterId))
-  ))
+export function illustrationDirectionItems(illustration: IllustrationAsset | undefined) {
+  if (!illustration) return []
+  return [
+    ['场景', illustration.prompt],
+    ['动作', illustration.action],
+    ['身体与手势', illustration.bodyLanguage],
+    ['表情', illustration.expression],
+    ['视线目标', illustration.gaze],
+    ['镜头', illustration.camera],
+    ['动态线索', illustration.motion],
+  ].filter((item): item is [string, string] => Boolean(item[1]))
 }
 
-function illustrationStatusText(illustration: IllustrationAsset | undefined, imageProviderReady: boolean, referencesReady: boolean) {
+function illustrationStatusText(illustration: IllustrationAsset | undefined, imageProviderReady: boolean, referenceReason?: string, generationStage?: IllustrationGenerationStage) {
   if (!illustration) return '自动插画 · 等待生成'
-  if (illustration.status === 'generating') return '自动插画 · 正在生成'
+  if (illustration.status === 'generating') return `自动插画 · ${illustrationGenerationStageText(generationStage)}`
   if (illustration.status === 'ready') return '自动插画 · 已保存'
   if (illustration.status === 'failed') return `自动插画 · ${illustration.errorMessage || '生成失败'}`
   if (!imageProviderReady) return '自动插画 · 等待配置图片模型'
-  if (!referencesReady) return '自动插画 · 等待角色定妆照'
+  if (referenceReason) return `自动插画 · ${referenceReason}`
   return '自动插画 · 等待手动生成'
 }
 
@@ -45,6 +54,7 @@ export default function TimelineMessage({
   characters,
   onOpenCharacterAssets,
   onOpenIllustration,
+  illustrationGenerationStage,
 }: {
   message: ConversationMessage
   illustration?: IllustrationAsset
@@ -54,11 +64,15 @@ export default function TimelineMessage({
   characters: CharacterAsset[]
   onOpenCharacterAssets: () => void
   onOpenIllustration: (source: string, title: string, alt: string, localUri?: string) => void
+  illustrationGenerationStage?: IllustrationGenerationStage
 }) {
   const [showVisualPrompt, setShowVisualPrompt] = useState(false)
-  const referencesReady = Boolean(illustration && illustrationReferencesReady(illustration, characters))
-  const canGenerate = Boolean(illustration && imageProviderReady && referencesReady && (illustration.status === 'planned' || illustration.status === 'failed'))
+  const referenceResolution = illustration ? resolveIllustrationReferences(illustration, characters) : undefined
+  const referenceReason = referenceResolution && !referenceResolution.ready ? referenceResolution.reason : undefined
+  const canGenerate = Boolean(illustration && imageProviderReady && !referenceReason && (illustration.status === 'planned' || illustration.status === 'failed'))
   const imageSource = illustration ? resolveImageSource(illustration.imageUrl, illustration.localUri) : undefined
+  const directionItems = illustrationDirectionItems(illustration)
+  const referenceCharacters = referenceResolution?.ready ? referenceResolution.characters : []
 
   if (message.kind === 'user') {
     return <div className="message-row user-row"><div className="user-bubble">{message.text}</div></div>
@@ -99,26 +113,40 @@ export default function TimelineMessage({
             {illustration?.status === 'generating' ? <LoaderCircle className="spin" size={27} aria-hidden="true" /> : <ImagePlus size={27} aria-hidden="true" />}
             <span className="placeholder-label">
               {illustration?.status === 'generating'
-                ? '正在生成图片…'
+                ? illustrationGenerationStageText(illustrationGenerationStage)
                 : !imageProviderReady
                    ? '请先配置图片模型'
-                   : !referencesReady
-                     ? '请先确认角色定妆照'
+                   : referenceReason
+                     ? referenceReason
                      : '点击下方按钮生成插画'}
             </span>
           </div>
         )}
         <figcaption>
-          <div><strong>{message.title}</strong><span>{illustrationStatusText(illustration, imageProviderReady, referencesReady)}</span></div>
+          <div><strong>{message.title}</strong><span>{illustrationStatusText(illustration, imageProviderReady, referenceReason, illustrationGenerationStage)}</span></div>
           <div className="illustration-actions">
             {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && !imageProviderReady && <button type="button" onClick={onOpenImageSettings}>配置图片模型</button>}
-            {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && imageProviderReady && !referencesReady && <button type="button" onClick={onOpenCharacterAssets}>查看角色资产</button>}
+            {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && imageProviderReady && referenceReason && <button type="button" onClick={onOpenCharacterAssets}>查看角色资产</button>}
             {illustration && illustration.status === 'failed' && canGenerate && <button type="button" onClick={() => void onRetryIllustration(illustration.id)}>重新生成</button>}
             {illustration && illustration.status === 'planned' && canGenerate && <button type="button" onClick={() => void onRetryIllustration(illustration.id)}>生成插画</button>}
             <button type="button" aria-expanded={showVisualPrompt} onClick={() => setShowVisualPrompt((value) => !value)}>视觉指令</button>
           </div>
         </figcaption>
-        {showVisualPrompt && <div className="visual-prompt"><strong>本轮画面描述</strong><p>{illustration?.prompt || '这条旧消息没有保存视觉指令。'}</p></div>}
+        {showVisualPrompt && (
+          <div className="visual-prompt">
+            <strong>实际生图指令</strong>
+            {directionItems.length ? (
+              <dl className="visual-direction-list">
+                {directionItems.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+              </dl>
+            ) : <p>这条旧消息没有保存视觉指令。</p>}
+            {referenceCharacters.length > 0 && (
+              <p className="visual-reference-rule">
+                人物参考：{referenceCharacters.map((character) => character.name).join('、')}。参考图固定身份与稳定外貌，动作、表情、视线和构图按本轮剧情重新设计。
+              </p>
+            )}
+          </div>
+        )}
       </figure>
     </div>
   )
@@ -208,7 +236,7 @@ function FeedbackPanel({
   refreshFeedback: () => Promise<void>
 }) {
   const [scope, setScope] = useState<FeedbackScope>('message')
-  const [paragraphIndex, setParagraphIndex] = useState<number>()
+  const [paragraphIndexes, setParagraphIndexes] = useState<number[]>([])
   const [verdict, setVerdict] = useState<FeedbackVerdict>(initialVerdict)
   const [reason, setReason] = useState('')
   const [customNote, setCustomNote] = useState('')
@@ -246,38 +274,45 @@ function FeedbackPanel({
     return () => { cancelled = true }
   }, [message])
 
-  const current = feedback.find((item) => item.scope === scope && (scope === 'message' || item.paragraphIndex === paragraphIndex))
+  const current = feedback.find((item) => item.scope === scope && (scope === 'message' || paragraphIndexes.includes(item.paragraphIndex ?? -1)))
 
   async function submit() {
     if (!message.chapterId) {
       setSaveError('当前正文缺少章节锚点，暂时无法提交反馈')
       return
     }
-    if (scope === 'paragraph' && paragraphIndex === undefined) {
-      setSaveError('请选择一个段落')
+    const chapterId = message.chapterId
+    if (scope === 'paragraph' && paragraphIndexes.length === 0) {
+      setSaveError('请选择至少一个段落')
       return
     }
-    const anchor = paragraphIndex === undefined ? undefined : paragraphs.find((item) => item.index === paragraphIndex)
-    if (scope === 'paragraph' && !anchor) {
+    const anchors = paragraphIndexes.map((index) => paragraphs.find((item) => item.index === index)).filter((item): item is ParagraphAnchor => Boolean(item))
+    if (scope === 'paragraph' && anchors.length !== paragraphIndexes.length) {
       setSaveError('段落锚点无效，请重新打开反馈面板')
       return
     }
     setSaving(true)
     setSaveError('')
     try {
+      const targets = scope === 'message'
+        ? [{ projectId: message.projectId, messageId: message.id, chapterId: message.chapterId, scope }]
+        : anchors.map((anchor) => ({
+          projectId: message.projectId,
+          messageId: message.id,
+          chapterId,
+          scope,
+          paragraphId: anchor.id,
+          paragraphIndex: anchor.index,
+          paragraphFingerprint: anchor.fingerprint,
+        }))
       const input = {
-        projectId: message.projectId,
-        messageId: message.id,
-        chapterId: message.chapterId,
-        scope,
-        ...(anchor ? { paragraphId: anchor.id, paragraphIndex: anchor.index, paragraphFingerprint: anchor.fingerprint } : {}),
+        targets,
         verdict,
         reason: reason || undefined,
         customNote: customNote.trim() || undefined,
       }
-      const next = await toggleFeedback(input)
+      await toggleFeedbackBatch(input)
       await refreshFeedback()
-      if (next === null) await refreshFeedback()
       onSaved(await listMessageFeedback(message.projectId, message.id))
       onClose()
     } catch (cause) {
@@ -297,11 +332,14 @@ function FeedbackPanel({
         <button type="button" className={verdict === 'down' ? 'selected' : ''} onClick={() => setVerdict('down')}><ThumbsDown size={15} />点踩</button>
       </div>
       <div className="feedback-scope" role="group" aria-label="反馈范围">
-        <label><input type="radio" checked={scope === 'message'} onChange={() => { setScope('message'); setParagraphIndex(undefined) }} />整条正文</label>
+        <label><input type="radio" checked={scope === 'message'} onChange={() => { setScope('message'); setParagraphIndexes([]) }} />整条正文</label>
         <label><input type="radio" checked={scope === 'paragraph'} onChange={() => setScope('paragraph')} />仅针对某段</label>
       </div>
       {scope === 'paragraph' && <div className="feedback-paragraphs" role="listbox" aria-label="选择段落">
-        {paragraphs.map((paragraph) => <button key={paragraph.id} type="button" role="option" aria-selected={paragraphIndex === paragraph.index} className={paragraphIndex === paragraph.index ? 'selected' : ''} onClick={() => setParagraphIndex(paragraph.index)}><span>第 {paragraph.index + 1} 段</span><small>{paragraph.text.slice(0, 44)}{paragraph.text.length > 44 ? '…' : ''}</small></button>)}
+        {paragraphs.map((paragraph) => {
+          const selected = paragraphIndexes.includes(paragraph.index)
+          return <button key={paragraph.id} type="button" role="option" aria-selected={selected} className={selected ? 'selected' : ''} onClick={() => setParagraphIndexes((current) => selected ? current.filter((index) => index !== paragraph.index) : [...current, paragraph.index].sort((a, b) => a - b))}><span>第 {paragraph.index + 1} 段</span><small>{paragraph.text.slice(0, 44)}{paragraph.text.length > 44 ? '…' : ''}</small></button>
+        })}
       </div>}
       {verdict === 'down' && <div className="feedback-reasons"><span>点踩原因（可选）</span><div>{['剧情方向', '人物塑造', '节奏', '语言表达', '其他'].map((item) => <button key={item} type="button" className={reason === item ? 'selected' : ''} onClick={() => setReason(reason === item ? '' : item)}>{item}</button>)}</div></div>}
       <label className="feedback-note">补充说明（可选）<textarea value={customNote} onChange={(event) => setCustomNote(event.target.value)} rows={2} placeholder="告诉我们更多想法…" /></label>

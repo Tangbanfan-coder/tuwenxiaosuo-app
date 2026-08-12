@@ -5,6 +5,7 @@ import type {
   ContextBudget,
   ConversationMessage,
   Feedback,
+  FeedbackBatchInput,
   FeedbackScope,
   FeedbackTargetInput,
   Foreshadowing,
@@ -24,6 +25,7 @@ import type {
 import { DEFAULT_ILLUSTRATION_STYLE_ID, getIllustrationStylePreset } from '../domain/illustrationStyles'
 import { materializeWritingSceneNotes, reconcileForeshadowing } from '../domain/foreshadowing'
 import { createParagraphFingerprint, hashText as hashTextImpl, normalizeText as normalizeParagraphText } from '../domain/paragraphs'
+import { loadGlobalWritingInstructions } from '../providers/config'
 
 export { hashText, normalizeText } from '../domain/paragraphs'
 
@@ -104,6 +106,34 @@ export class StoryDatabase extends Dexie {
         await backfillSummaryVersionsFromV4(transaction)
       })
     this.version(6).stores({
+      projects: 'id, updatedAt, lastOpenedAt',
+      messages: 'id, projectId, [projectId+order], createdAt',
+      chapters: 'id, projectId, [projectId+order], updatedAt',
+      characters: 'id, projectId, [projectId+createdAt], status',
+      illustrations: 'id, projectId, [projectId+createdAt], status',
+      styles: 'id, &projectId, updatedAt',
+      scenes: 'id, projectId, [projectId+order], createdAt',
+      paragraphs: 'id, projectId, sourceType, [projectId+sourceType], [projectId+chapterId], [projectId+messageId], fingerprint, createdAt',
+      summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
+      feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
+    })
+    // v7 adds optional narrativePronoun to character records. The field is not
+    // indexed, so preserving the prior schema keeps every legacy record readable.
+    this.version(7).stores({
+      projects: 'id, updatedAt, lastOpenedAt',
+      messages: 'id, projectId, [projectId+order], createdAt',
+      chapters: 'id, projectId, [projectId+order], updatedAt',
+      characters: 'id, projectId, [projectId+createdAt], status',
+      illustrations: 'id, projectId, [projectId+createdAt], status',
+      styles: 'id, &projectId, updatedAt',
+      scenes: 'id, projectId, [projectId+order], createdAt',
+      paragraphs: 'id, projectId, sourceType, [projectId+sourceType], [projectId+chapterId], [projectId+messageId], fingerprint, createdAt',
+      summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
+      feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
+    })
+    // v8 adds optional sceneAnchor fields to illustrations. No index or data
+    // rewrite is required; legacy records remain valid and opt out of reuse.
+    this.version(8).stores({
       projects: 'id, updatedAt, lastOpenedAt',
       messages: 'id, projectId, [projectId+order], createdAt',
       chapters: 'id, projectId, [projectId+order], updatedAt',
@@ -571,7 +601,7 @@ function normalizeFeedbackScope(value: unknown): FeedbackScope {
   throw new Error('反馈范围必须是 message 或 paragraph')
 }
 
-function normalizeFeedbackPayload(input: UpsertFeedbackInput) {
+function normalizeFeedbackPayload(input: Pick<UpsertFeedbackInput, 'verdict' | 'reason' | 'customNote'>) {
   if (input.verdict !== 'up' && input.verdict !== 'down') {
     throw new Error('反馈结论必须是 up 或 down')
   }
@@ -765,6 +795,38 @@ export async function toggleFeedback(input: UpsertFeedbackInput): Promise<Feedba
   )
 }
 
+/** Applies one verdict to multiple exact paragraph/message targets atomically. */
+export async function toggleFeedbackBatch(input: FeedbackBatchInput): Promise<Feedback[]> {
+  if (!Array.isArray(input.targets) || input.targets.length === 0) throw new Error('至少选择一个反馈目标')
+  const payload = normalizeFeedbackPayload(input)
+  const now = Date.now()
+  return storyDatabase.transaction(
+    'rw',
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs, storyDatabase.feedback],
+    async () => {
+      const changed: Feedback[] = []
+      for (const targetInput of input.targets) {
+        const target = await resolveFeedbackTarget(targetInput)
+        const existing = await findFeedbackForTarget(target)
+        if (existing?.verdict === payload.verdict) {
+          await storyDatabase.feedback.delete(existing.id)
+          continue
+        }
+        if (existing) {
+          const updated = updateFeedbackRecord(existing, payload, now)
+          await storyDatabase.feedback.put(updated)
+          changed.push(updated)
+        } else {
+          const feedback = createFeedbackRecord(target, payload, now)
+          await storyDatabase.feedback.add(feedback)
+          changed.push(feedback)
+        }
+      }
+      return changed
+    },
+  )
+}
+
 /** Removes one exact, still-valid feedback target and reports whether it existed. */
 export async function removeFeedback(input: FeedbackTargetInput) {
   return storyDatabase.transaction(
@@ -900,7 +962,10 @@ export async function loadProjectWorkspace(projectId: string): Promise<ProjectWo
     storyDatabase.styles.where('projectId').equals(projectId).first(),
   ])
 
-  return { project, messages, chapters, characters, illustrations, style }
+  const globalWritingInstructions = loadGlobalWritingInstructions()
+  return globalWritingInstructions
+    ? { project, globalWritingInstructions, messages, chapters, characters, illustrations, style }
+    : { project, messages, chapters, characters, illustrations, style }
 }
 
 export async function listGeneratingImageAssets() {
@@ -1078,7 +1143,7 @@ export async function updateAutoIllustrate(projectId: string, autoIllustrate: bo
 
 export async function updateWritingInstructions(projectId: string, writingInstructions: string) {
   const normalized = writingInstructions.trim()
-  if (normalized.length > 50_000) throw new Error('长期创作设定不能超过 50000 个字')
+  if (normalized.length > 50_000) throw new Error('局部创作设定不能超过 50000 个字')
   await storyDatabase.projects.update(projectId, {
     writingInstructions: normalized,
     writingStructure: '',
@@ -1247,7 +1312,10 @@ export async function completeWritingTurn(
       await upsertChapterParagraphs(targetChapter)
       if (generatedSummary) await appendGeneratedChapterSummaryVersion(targetChapter, generatedSummary, now)
 
-      if (autoIllustrate && result.visualPlan) {
+      // Visual planning and character continuity are durable writing metadata.
+      // The auto-illustrate switch controls paid generation only, never whether
+      // characters or a recoverable illustration plan are recorded.
+      if (result.visualPlan) {
         const referenceCharacterIds: string[] = []
         for (const characterPlan of result.visualPlan.characters) {
           const existingCharacters = await storyDatabase.characters.where('projectId').equals(projectId).toArray()
@@ -1291,6 +1359,13 @@ export async function completeWritingTurn(
           prompt: result.visualPlan.prompt,
           sceneStylePrompt: result.visualPlan.stylePrompt,
           sceneNegativePrompt: result.visualPlan.negativePrompt,
+          action: result.visualPlan.action,
+          bodyLanguage: result.visualPlan.bodyLanguage,
+          expression: result.visualPlan.expression,
+          gaze: result.visualPlan.gaze,
+          camera: result.visualPlan.camera,
+          motion: result.visualPlan.motion,
+          sceneAnchor: result.visualPlan.sceneAnchor,
           referenceCharacterIds,
           status: 'planned',
           createdAt: now,
@@ -1390,6 +1465,7 @@ export async function updateCharacterProfile(
     fixedTraits?: string[]
     defaultLook?: string
     wardrobe?: string
+    narrativePronoun?: CharacterAsset['narrativePronoun']
   },
 ) {
   const character = await storyDatabase.characters.get(characterId)
@@ -1411,6 +1487,7 @@ export async function updateCharacterProfile(
       defaultLook: normalized.defaultLook,
       wardrobe: normalized.wardrobe,
     },
+    narrativePronoun: profile.narrativePronoun ?? character.narrativePronoun,
     updatedAt: Date.now(),
   })
 }
@@ -1423,7 +1500,44 @@ export async function setCharacterPortraitFailed(characterId: string, message: s
   })
 }
 
+/** Apply user-reviewed or model-suggested appearance facts and require review again. */
+export async function applyReferenceAppearanceAnalysis(
+  characterId: string,
+  profile: {
+    narrativePronoun: NonNullable<CharacterAsset['narrativePronoun']>
+    ageAndBuild: string
+    fixedTraits: string[]
+    defaultLook: string
+    wardrobe: string
+  },
+) {
+  await storyDatabase.transaction('rw', storyDatabase.characters, async () => {
+    const character = await storyDatabase.characters.get(characterId)
+    if (!character) throw new Error('角色资产不存在')
+    await storyDatabase.characters.update(characterId, {
+      narrativePronoun: profile.narrativePronoun,
+      identity: {
+        ...character.identity,
+        ageAndBuild: profile.ageAndBuild.trim(),
+        fixedTraits: profile.fixedTraits.map((trait) => trait.trim()).filter(Boolean),
+      },
+      appearance: {
+        ...character.appearance,
+        defaultLook: profile.defaultLook.trim(),
+        wardrobe: profile.wardrobe.trim(),
+      },
+      status: 'draft',
+      portraitStatus: 'review',
+      portraitError: undefined,
+      updatedAt: Date.now(),
+    })
+  })
+}
+
 export async function confirmCharacterPortrait(characterId: string) {
+  const character = await storyDatabase.characters.get(characterId)
+  if (!character) throw new Error('角色资产不存在')
+  if (!character.narrativePronoun) throw new Error('请先在角色档案中选择叙事代词，再确认参考图')
   await storyDatabase.characters.update(characterId, {
     status: 'confirmed',
     portraitStatus: 'confirmed',

@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import ContextUsage, { CONTEXT_USAGE_SECTION_SCALE_PROPERTY, ContextUsageDetails } from './ContextUsage'
+import ContextUsage, { CONTEXT_USAGE_SECTION_SCALE_PROPERTY, ContextUsageDetails, contextUsageToolbarSummary } from './ContextUsage'
 import type { ContextBudgetPlan } from '../providers/writing'
 
 const contextUsageStyles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
@@ -103,6 +103,19 @@ describe('ContextUsage', () => {
     await user.click(screen.getByRole('button', { name: '关闭上下文用量明细' }))
     expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull()
     expect(container.querySelector('.context-usage-trigger')?.textContent).toContain('1.9k / 14.5k')
+  })
+
+  it('uses demand pressure for the toolbar percentage and keeps token details elsewhere', () => {
+    expect(contextUsageToolbarSummary(undefined, 'pending')).toBe('待计算')
+    expect(contextUsageToolbarSummary(plan({ contextPressureRatio: 0.615, inputUsageRatio: 0.12 }), 'ready')).toBe('62%')
+    expect(contextUsageToolbarSummary(plan({ contextPressureRatio: 1.02, inputUsageRatio: 0.23 }), 'ready')).toBe('100%+')
+  })
+
+  it('can render a controlled sheet without adding a context trigger', () => {
+    render(<ContextUsage plan={plan()} state="ready" detailsOpen detailsPresentation="sheet" showTrigger={false} />)
+
+    expect(screen.queryByRole('button', { name: /查看本轮上下文用量明细/ })).toBeNull()
+    expect(screen.getByRole('dialog', { name: '本轮上下文用量' })).toBeDefined()
   })
 
   it('renders loading, empty, over-limit, fallback and error states without blocking details', async () => {
