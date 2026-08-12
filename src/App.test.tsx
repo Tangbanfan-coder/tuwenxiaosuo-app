@@ -26,10 +26,12 @@ const databaseMocks = vi.hoisted(() => ({
   markProjectOpened: vi.fn(),
   renameProject: vi.fn(),
   restoreChapterSummaryVersion: vi.fn(),
+  restoreIllustrationsBlockedByReference: vi.fn(),
   setCharacterPortraitFailed: vi.fn(),
   setCharacterPortraitGenerating: vi.fn(),
   setCharacterPortraitReady: vi.fn(),
   setIllustrationFailed: vi.fn(),
+  setIllustrationBlockedByReference: vi.fn(),
   setIllustrationGenerating: vi.fn(),
   setIllustrationReady: vi.fn(),
   toggleFeedback: vi.fn(),
@@ -117,8 +119,9 @@ vi.mock('./components/ProjectDrawer', () => ({
   ) : null,
 }))
 vi.mock('./components/CharacterAssetsDrawer', () => ({
-  default: ({ open, onClose }: { open: boolean; onClose: () => void }) => open ? (
+  default: ({ open, onClose, onConfirm }: { open: boolean; onClose: () => void; onConfirm: (characterId: string) => Promise<void> }) => open ? (
     <section role="dialog" aria-label="角色资产测试入口">
+      <button type="button" onClick={() => void onConfirm('character-1')}>确认测试角色</button>
       <button type="button" onClick={onClose}>关闭角色资产</button>
     </section>
   ) : null,
@@ -578,6 +581,59 @@ describe('composer asset and illustration controls', () => {
     expect(screen.getByRole('button', { name: '自动配图：自动' })).toBeDefined()
     expect(secretStoreMocks.has).toHaveBeenCalledWith('provider:image')
     expect(databaseMocks.loadProjectWorkspace).not.toHaveBeenCalled()
+  })
+
+  it('restores reference-blocked illustrations after confirmation even when auto illustration is off', async () => {
+    const user = userEvent.setup()
+    providerSettings.image = { ...providerSettings.image, baseUrl: 'https://api.test/v1', model: 'image-model' }
+    secretStoreMocks.has.mockResolvedValue(true)
+    const reviewCharacter = {
+      id: 'character-1', projectId: project.id, name: '林染', role: '主角', narrativePronoun: 'she' as const,
+      identity: { ageAndBuild: '青年', fixedTraits: ['黑发'] }, appearance: { defaultLook: '齐肩黑发', wardrobe: '深色外套' },
+      continuity: { revision: 1, referenceImageUrl: 'data:image/png;base64,dGVzdA==', referenceStyleMode: 'project' as const },
+      portraitStatus: 'review' as const, status: 'draft' as const, createdAt: 1, updatedAt: 1,
+    }
+    const confirmedCharacter = {
+      id: 'character-1', projectId: project.id, name: '林染', role: '主角', narrativePronoun: 'she' as const,
+      identity: { ageAndBuild: '青年', fixedTraits: ['黑发'] }, appearance: { defaultLook: '齐肩黑发', wardrobe: '深色外套' },
+      continuity: { revision: 1, referenceImageUrl: 'data:image/png;base64,dGVzdA==', referenceStyleMode: 'project' as const },
+      portraitStatus: 'confirmed' as const, status: 'confirmed' as const, createdAt: 1, updatedAt: 1,
+    }
+    const blockedIllustration = {
+      id: 'illustration-1', projectId: project.id, title: '雨夜', prompt: '林染走进雨夜街头', referenceCharacterIds: ['character-1'],
+      status: 'failed' as const,
+      errorMessage: '角色“林染”的参考图尚未确认或图片不可用。请在角色资产中补全档案并确认。',
+      createdAt: 1, updatedAt: 1,
+    }
+    const ordinaryFailure = {
+      id: 'illustration-2', projectId: project.id, title: '网络失败', prompt: '林染站在雨中', referenceCharacterIds: ['character-1'],
+      status: 'failed' as const, errorMessage: '网络错误', createdAt: 2, updatedAt: 2,
+    }
+    const classifiedIllustration = { ...blockedIllustration, failureKind: 'reference-unavailable' as const }
+    const restoredIllustration = { ...classifiedIllustration, status: 'planned' as const, failureKind: undefined, errorMessage: undefined }
+    const illustrationMessage = {
+      id: 'illustration-message-1', projectId: project.id, chapterId: 'chapter-1', kind: 'illustration' as const,
+      title: '雨夜', illustrationId: 'illustration-1', order: 1, createdAt: 1,
+    }
+    databaseMocks.loadProjectWorkspace
+      .mockResolvedValueOnce({ ...workspace, messages: [illustrationMessage], characters: [reviewCharacter], illustrations: [blockedIllustration, ordinaryFailure] })
+      .mockResolvedValueOnce({ ...workspace, messages: [illustrationMessage], characters: [confirmedCharacter], illustrations: [classifiedIllustration, ordinaryFailure] })
+      .mockResolvedValueOnce({ ...workspace, messages: [illustrationMessage], characters: [confirmedCharacter], illustrations: [restoredIllustration, ordinaryFailure] })
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '素材' }))
+    await user.click(screen.getByRole('button', { name: /人物资产/ }))
+    await user.click(await screen.findByRole('button', { name: '确认测试角色' }))
+
+    await waitFor(() => expect(databaseMocks.confirmCharacterPortrait).toHaveBeenCalledWith('character-1'))
+    expect(databaseMocks.setIllustrationBlockedByReference).toHaveBeenCalledWith(
+      'illustration-1',
+      blockedIllustration.errorMessage,
+    )
+    expect(databaseMocks.setIllustrationBlockedByReference).not.toHaveBeenCalledWith('illustration-2', expect.anything())
+    await waitFor(() => expect(databaseMocks.restoreIllustrationsBlockedByReference).toHaveBeenCalledWith(project.id, ['illustration-1']))
+    expect(databaseMocks.restoreIllustrationsBlockedByReference).not.toHaveBeenCalledWith(project.id, expect.arrayContaining(['illustration-2']))
+    expect(await screen.findByRole('button', { name: '生成插画' })).toBeDefined()
   })
 })
 

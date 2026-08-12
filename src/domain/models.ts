@@ -125,6 +125,8 @@ export type UpsertFeedbackInput = FeedbackInput
 export interface WritingCharacterPlan {
   name: string
   role: string
+  /** Only set when this turn's prose or explicit setup makes it unambiguous. */
+  narrativePronoun?: NarrativePronoun
   ageAndBuild: string
   fixedTraits: string[]
   defaultLook: string
@@ -284,6 +286,8 @@ export interface IllustrationAsset {
   localUri?: string
   status: 'planned' | 'generating' | 'ready' | 'failed'
   errorMessage?: string
+  /** A recoverable prerequisite failure, distinct from an image request failure. */
+  failureKind?: 'reference-unavailable'
   createdAt: number
   updatedAt: number
 }

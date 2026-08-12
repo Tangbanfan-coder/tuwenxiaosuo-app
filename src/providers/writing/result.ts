@@ -1,4 +1,4 @@
-import type { VisualPlan, WritingCharacterPlan, WritingSceneNotes, WritingTurnResult } from '../../domain/models'
+import type { NarrativePronoun, VisualPlan, WritingCharacterPlan, WritingSceneNotes, WritingTurnResult } from '../../domain/models'
 
 interface RawWritingResult {
   assistant_note?: unknown
@@ -55,6 +55,13 @@ export function stringArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean) : []
 }
 
+function normalizeNarrativePronoun(value: unknown): NarrativePronoun {
+  const pronoun = stringValue(value).toLocaleLowerCase()
+  return pronoun === 'she' || pronoun === 'he' || pronoun === 'ta' || pronoun === 'name'
+    ? pronoun
+    : 'name'
+}
+
 function normalizeCharacter(value: unknown): WritingCharacterPlan | null {
   if (!value || typeof value !== 'object') return null
   const character = value as Record<string, unknown>
@@ -63,6 +70,7 @@ function normalizeCharacter(value: unknown): WritingCharacterPlan | null {
   return {
     name,
     role: stringValue(character.role) || '角色',
+    narrativePronoun: normalizeNarrativePronoun(character.narrative_pronoun ?? character.narrativePronoun),
     ageAndBuild: stringValue(character.age_and_build),
     fixedTraits: stringArray(character.fixed_traits),
     defaultLook: stringValue(character.default_look),

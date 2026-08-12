@@ -23,6 +23,7 @@ import type {
   WritingTurnResult,
 } from '../domain/models'
 import { DEFAULT_ILLUSTRATION_STYLE_ID, getIllustrationStylePreset } from '../domain/illustrationStyles'
+import { resolveIllustrationReferences } from '../domain/illustrationReferences'
 import { materializeWritingSceneNotes, reconcileForeshadowing } from '../domain/foreshadowing'
 import { createParagraphFingerprint, hashText as hashTextImpl, normalizeText as normalizeParagraphText } from '../domain/paragraphs'
 import { loadGlobalWritingInstructions } from '../providers/config'
@@ -1322,6 +1323,30 @@ export async function completeWritingTurn(
           const existing = existingCharacters.find((character) => character.name.toLocaleLowerCase() === characterPlan.name.toLocaleLowerCase())
           if (existing) {
             referenceCharacterIds.push(existing.id)
+            if (existing.status === 'draft') {
+              const nextRole = existing.role || characterPlan.role
+              const nextNarrativePronoun = existing.narrativePronoun ?? characterPlan.narrativePronoun
+              const nextAgeAndBuild = existing.identity.ageAndBuild || characterPlan.ageAndBuild
+              const nextFixedTraits = existing.identity.fixedTraits.length ? existing.identity.fixedTraits : characterPlan.fixedTraits
+              const nextDefaultLook = existing.appearance.defaultLook || characterPlan.defaultLook
+              const nextWardrobe = existing.appearance.wardrobe || characterPlan.wardrobe
+              if (
+                nextRole !== existing.role
+                || nextNarrativePronoun !== existing.narrativePronoun
+                || nextAgeAndBuild !== existing.identity.ageAndBuild
+                || nextFixedTraits !== existing.identity.fixedTraits
+                || nextDefaultLook !== existing.appearance.defaultLook
+                || nextWardrobe !== existing.appearance.wardrobe
+              ) {
+                await storyDatabase.characters.update(existing.id, {
+                  role: nextRole,
+                  narrativePronoun: nextNarrativePronoun,
+                  identity: { ageAndBuild: nextAgeAndBuild, fixedTraits: nextFixedTraits },
+                  appearance: { defaultLook: nextDefaultLook, wardrobe: nextWardrobe },
+                  updatedAt: now,
+                })
+              }
+            }
             continue
           }
           const characterId = createId('character')
@@ -1330,6 +1355,7 @@ export async function completeWritingTurn(
             projectId,
             name: characterPlan.name,
             role: characterPlan.role,
+            narrativePronoun: characterPlan.narrativePronoun,
             identity: {
               ageAndBuild: characterPlan.ageAndBuild,
               fixedTraits: characterPlan.fixedTraits,
@@ -1370,6 +1396,13 @@ export async function completeWritingTurn(
           status: 'planned',
           createdAt: now,
           updatedAt: now,
+        }
+        const allProjectCharacters = await storyDatabase.characters.where('projectId').equals(projectId).toArray()
+        const referenceResolution = resolveIllustrationReferences(illustration, allProjectCharacters)
+        if (!referenceResolution.ready) {
+          illustration.status = 'failed'
+          illustration.errorMessage = referenceResolution.reason
+          illustration.failureKind = 'reference-unavailable'
         }
         await storyDatabase.illustrations.add(illustration)
         await storyDatabase.messages.add({
@@ -1550,6 +1583,7 @@ export async function setIllustrationGenerating(illustrationId: string) {
   await storyDatabase.illustrations.update(illustrationId, {
     status: 'generating',
     errorMessage: undefined,
+    failureKind: undefined,
     updatedAt: Date.now(),
   })
 }
@@ -1560,6 +1594,7 @@ export async function setIllustrationReady(illustrationId: string, imageUrl: str
     imageUrl,
     localUri,
     errorMessage: undefined,
+    failureKind: undefined,
     updatedAt: Date.now(),
   })
 }
@@ -1570,7 +1605,40 @@ export async function setIllustrationFailed(illustrationId: string, message: str
     imageUrl: undefined,
     localUri: undefined,
     errorMessage: message,
+    failureKind: undefined,
     updatedAt: Date.now(),
+  })
+}
+
+/** Record an unmet reference prerequisite without treating it as an image request failure. */
+export async function setIllustrationBlockedByReference(illustrationId: string, message: string) {
+  await storyDatabase.illustrations.update(illustrationId, {
+    status: 'failed',
+    imageUrl: undefined,
+    localUri: undefined,
+    errorMessage: message,
+    failureKind: 'reference-unavailable',
+    updatedAt: Date.now(),
+  })
+}
+
+/** Only explicit reference blockers may be returned to the normal generation queue. */
+export async function restoreIllustrationsBlockedByReference(projectId: string, illustrationIds: readonly string[]) {
+  if (!illustrationIds.length) return 0
+  const now = Date.now()
+  return storyDatabase.transaction('rw', storyDatabase.illustrations, async () => {
+    const blocked = await storyDatabase.illustrations
+      .where('projectId')
+      .equals(projectId)
+      .filter((illustration) => illustrationIds.includes(illustration.id) && illustration.failureKind === 'reference-unavailable')
+      .toArray()
+    await Promise.all(blocked.map((illustration) => storyDatabase.illustrations.update(illustration.id, {
+      status: 'planned',
+      errorMessage: undefined,
+      failureKind: undefined,
+      updatedAt: now,
+    })))
+    return blocked.length
   })
 }
 

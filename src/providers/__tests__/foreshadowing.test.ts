@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ProjectWorkspace } from '../../domain/models'
 import type { StoredScene } from '../../data/storyDatabase'
 import { buildProjectContext, parseWritingResult } from '../writing'
+import { SYSTEM_PROMPT } from '../writing/prompt'
 
 function workspace(): ProjectWorkspace {
   return {
@@ -90,6 +91,13 @@ describe('stable foreshadowing model contract', () => {
 })
 
 describe('writing result recovery', () => {
+  it('requires visual plans to declare narrative pronouns without inferring gender from names', () => {
+    expect(SYSTEM_PROMPT).toContain('"narrative_pronoun"')
+    expect(SYSTEM_PROMPT).toContain('不得根据中文姓名')
+    expect(SYSTEM_PROMPT).toContain('必须填写 age_and_build、至少一个 fixed_traits、default_look 和 wardrobe')
+    expect(SYSTEM_PROMPT).toContain('不得用 visual_plan 覆盖')
+  })
+
   it('keeps every metadata field from a complete structured response', () => {
     const result = parseWritingResult(JSON.stringify({
       assistant_note: '本轮推进完成。',
@@ -118,6 +126,25 @@ describe('writing result recovery', () => {
       },
     })
     expect(result.sceneNotes?.events).toEqual(['发生了事件'])
+  })
+
+  it('normalizes missing or invalid visual-plan pronouns to name without guessing gender', () => {
+    const result = parseWritingResult(JSON.stringify({
+      prose: { paragraphs: ['林染走进雨里。'] },
+      visual_plan: {
+        title: '雨夜', prompt: '林染走进雨夜街头', characters: [
+          { name: '林染', role: '主角', narrative_pronoun: 'she' },
+          { name: '顾遥', role: '同伴', narrative_pronoun: 'invalid' },
+          { name: '沈舟', role: '路人' },
+        ],
+      },
+    }))
+
+    expect(result.visualPlan?.characters).toEqual([
+      expect.objectContaining({ name: '林染', narrativePronoun: 'she' }),
+      expect.objectContaining({ name: '顾遥', narrativePronoun: 'name' }),
+      expect.objectContaining({ name: '沈舟', narrativePronoun: 'name' }),
+    ])
   })
 
   it('recovers only completed prose paragraphs when trailing structured JSON is truncated', () => {

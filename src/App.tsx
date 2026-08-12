@@ -37,10 +37,12 @@ import {
   listChapterSummaryVersions,
   renameProject,
   restoreChapterSummaryVersion,
+  restoreIllustrationsBlockedByReference,
   setCharacterPortraitFailed,
   setCharacterPortraitGenerating,
   setCharacterPortraitReady,
   setIllustrationFailed,
+  setIllustrationBlockedByReference,
   setIllustrationGenerating,
   setIllustrationReady,
   updateAutoIllustrate,
@@ -606,7 +608,7 @@ export default function App() {
   async function generateIllustration(illustration: IllustrationAsset, sourceWorkspace: ProjectWorkspace) {
     const referenceResolution = resolveIllustrationReferences(illustration, sourceWorkspace.characters)
     if (!referenceResolution.ready) {
-      await setIllustrationFailed(illustration.id, referenceResolution.reason)
+      await setIllustrationBlockedByReference(illustration.id, referenceResolution.reason)
       await refreshWorkspace(sourceWorkspace.project.id)
       showToast(referenceResolution.reason, 'error')
       return
@@ -666,17 +668,40 @@ export default function App() {
 
   async function confirmCharacter(characterId: string) {
     if (!workspace) return
+    const legacyReferenceBlocks = workspace.illustrations.flatMap((illustration) => {
+      if (illustration.status !== 'failed' || illustration.failureKind || !illustration.errorMessage) return []
+      const resolution = resolveIllustrationReferences(illustration, workspace.characters)
+      return !resolution.ready && illustration.errorMessage === resolution.reason
+        ? [{ illustrationId: illustration.id, reason: resolution.reason }]
+        : []
+    })
     try {
       await confirmCharacterPortrait(characterId)
     } catch (error) {
       showToast(error instanceof Error ? error.message : '确认角色失败', 'error')
       return
     }
-    const nextWorkspace = await refreshWorkspace(workspace.project.id)
-    if (!nextWorkspace || !nextWorkspace.project.autoIllustrate || !(await providerIsReady('image'))) return
+    await Promise.all(legacyReferenceBlocks.map(({ illustrationId, reason }) => (
+      setIllustrationBlockedByReference(illustrationId, reason)
+    )))
+    let nextWorkspace = await refreshWorkspace(workspace.project.id)
+    if (!nextWorkspace) return
+    const confirmedWorkspace = nextWorkspace
+    const readyReferenceBlocks = confirmedWorkspace.illustrations.filter((illustration) => {
+      if (illustration.failureKind !== 'reference-unavailable') return false
+      const resolution = resolveIllustrationReferences(illustration, confirmedWorkspace.characters)
+      return resolution.ready && resolution.characters.some((character) => character.id === characterId)
+    })
+    if (readyReferenceBlocks.length) {
+      await restoreIllustrationsBlockedByReference(confirmedWorkspace.project.id, readyReferenceBlocks.map((illustration) => illustration.id))
+      nextWorkspace = await refreshWorkspace(workspace.project.id)
+      if (!nextWorkspace) return
+    }
+    if (!nextWorkspace.project.autoIllustrate || !(await providerIsReady('image'))) return
     const eligible = nextWorkspace.illustrations.filter((illustration) => {
       if (illustration.status !== 'planned') return false
-      return resolveIllustrationReferences(illustration, nextWorkspace.characters).ready
+      const resolution = resolveIllustrationReferences(illustration, nextWorkspace.characters)
+      return resolution.ready && resolution.characters.some((character) => character.id === characterId)
     })
     for (const illustration of eligible) {
       void queueIllustration(illustration, nextWorkspace)
