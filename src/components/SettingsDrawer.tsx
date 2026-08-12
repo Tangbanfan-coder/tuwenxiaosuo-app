@@ -143,6 +143,21 @@ export default function SettingsDrawer({
         </header>
 
         <div className="settings-content">
+          <section className="settings-section settings-global-section" aria-labelledby="global-writing-settings">
+            <h3 id="global-writing-settings">全局创作设定</h3>
+            <div className="settings-navigation-list">
+              <button type="button" onClick={onEditGlobalWritingInstructions} disabled={!onEditGlobalWritingInstructions}>
+                <ScrollText size={18} aria-hidden="true" />
+                <span>
+                  <strong>全局创作设定</strong>
+                  <small>{globalWritingInstructions?.trim().replace(/\s+/g, ' ') || '对所有作品生效的默认规则'}</small>
+                </span>
+                <ChevronRight size={17} aria-hidden="true" />
+              </button>
+            </div>
+            <p className="settings-help">所有作品都会携带，本作品的局部设定可以临时覆盖。</p>
+          </section>
+
           <section className="settings-section" aria-labelledby="current-project-settings">
             <h3 id="current-project-settings">当前作品</h3>
 
@@ -303,21 +318,6 @@ export default function SettingsDrawer({
               </form>
             )}
             <p className="settings-help">会用于之后生成的定妆照和剧情插画。</p>
-          </section>
-
-          <section className="settings-section settings-global-section" aria-labelledby="global-writing-settings">
-            <h3 id="global-writing-settings">全局创作设定</h3>
-            <div className="settings-navigation-list">
-              <button type="button" onClick={onEditGlobalWritingInstructions} disabled={!onEditGlobalWritingInstructions}>
-                <ScrollText size={18} aria-hidden="true" />
-                <span>
-                  <strong>全局创作设定</strong>
-                  <small>{globalWritingInstructions?.trim().replace(/\s+/g, ' ') || '对所有作品生效的默认规则'}</small>
-                </span>
-                <ChevronRight size={17} aria-hidden="true" />
-              </button>
-            </div>
-            <p className="settings-help">所有作品都会携带，本作品的局部设定可以临时覆盖。</p>
           </section>
 
           <section className="settings-section" aria-labelledby="model-service-settings">

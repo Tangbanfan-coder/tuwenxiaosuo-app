@@ -1,8 +1,9 @@
 import type { CharacterAsset, ProjectStyle } from '../domain/models'
 import { resolveProjectIllustrationStyle } from '../domain/illustrationStyles'
 import { logImagePipeline } from './imagePipelineLog'
+import { generateNativeImageAsset } from './imageAssetStore'
 import { normalizeBaseUrl } from './openAiCompatible'
-import type { GeneratedImageSource, HttpTransport, ProviderConfig, RequestAuth } from './types'
+import type { GeneratedImageSource, HttpTransport, NativeImagePersistenceTarget, ProviderConfig, RequestAuth } from './types'
 
 interface ImageResponse {
   data?: Array<{
@@ -24,8 +25,8 @@ type ImageResponseMode = 'b64_json' | 'url' | 'empty'
 
 function imageResponseMode(response: ImageResponse): ImageResponseMode {
   const image = response.data?.[0]
-  if (typeof image?.b64_json === 'string' && image.b64_json) return 'b64_json'
   if (typeof image?.url === 'string' && image.url) return 'url'
+  if (typeof image?.b64_json === 'string' && image.b64_json) return 'b64_json'
   return 'empty'
 }
 
@@ -38,6 +39,32 @@ function approximateBase64Bytes(value: string) {
 export type ImageGenerationStage = 'waiting' | 'downloading'
 export type ImageGenerationStageCallback = (stage: ImageGenerationStage) => void
 
+async function generateNativelyWhenTargeted(
+  baseUrl: string,
+  config: ProviderConfig,
+  prompt: string,
+  size: string,
+  target: NativeImagePersistenceTarget | undefined,
+  referenceSources?: string[],
+): Promise<GeneratedImageSource | undefined> {
+  if (!target) return undefined
+  const stored = await generateNativeImageAsset({
+    endpoint: `${baseUrl}/images/${referenceSources?.length ? 'edits' : 'generations'}`,
+    model: config.model,
+    prompt,
+    size,
+    target,
+    secretRef: config.secretRef,
+    referenceSources,
+    responseFormat: supportsB64ResponseFormat(config.model) ? 'b64_json' : undefined,
+  })
+  // Undefined is the explicit Web compatibility result. A native call that
+  // resolves without a URI must fail here rather than repeat a billed request.
+  if (!stored) return undefined
+  if (!stored.localUri) throw new Error('原生图片生成未返回本地文件')
+  return { kind: 'local', localUri: stored.localUri }
+}
+
 async function imageSource(
   response: ImageResponse,
   baseUrl: string,
@@ -46,10 +73,6 @@ async function imageSource(
   onStageChange?: ImageGenerationStageCallback,
 ): Promise<GeneratedImageSource> {
   const image = response.data?.[0]
-  if (typeof image?.b64_json === 'string' && image.b64_json) {
-    logImagePipeline('info', { phase: 'response-ready', responseMode: 'b64_json', approximateBytes: approximateBase64Bytes(image.b64_json) })
-    return { kind: 'inline', dataUrl: `data:image/png;base64,${image.b64_json}` }
-  }
   if (typeof image?.url === 'string' && image.url) {
     const resolved = resolveImageUrl(image.url, baseUrl)
     const usesProviderAuth = resolved.usesProviderAuth
@@ -57,6 +80,10 @@ async function imageSource(
     onStageChange?.('downloading')
     logImagePipeline('info', { phase: 'remote-image-ready', responseMode: 'url', usesProviderAuth })
     return { kind: 'remote', url: resolved.url, auth }
+  }
+  if (typeof image?.b64_json === 'string' && image.b64_json) {
+    logImagePipeline('info', { phase: 'response-ready', responseMode: 'b64_json', approximateBytes: approximateBase64Bytes(image.b64_json) })
+    return { kind: 'inline', dataUrl: `data:image/png;base64,${image.b64_json}` }
   }
   throw new Error('图片模型没有返回 URL 或图片数据')
 }
@@ -80,9 +107,12 @@ export async function generateOpenAiImage(
   transport: HttpTransport,
   size = '1024x1536',
   onStageChange?: ImageGenerationStageCallback,
+  nativeTarget?: NativeImagePersistenceTarget,
 ) {
   const baseUrl = assertImageConfig(config)
   onStageChange?.('waiting')
+  const nativeImage = await generateNativelyWhenTargeted(baseUrl, config, prompt, size, nativeTarget)
+  if (nativeImage) return nativeImage
   const requestStartedAt = Date.now()
   const response = await transport.request<ImageResponse>({
     url: `${baseUrl}/images/generations`,
@@ -124,11 +154,15 @@ export async function editOpenAiImage(
   transport: HttpTransport,
   size = '1024x1536',
   onStageChange?: ImageGenerationStageCallback,
+  nativeTarget?: NativeImagePersistenceTarget,
 ) {
   const baseUrl = assertImageConfig(config)
-  if (!referenceSources.length) return generateOpenAiImage(config, prompt, transport, size, onStageChange)
+  if (!referenceSources.length) return generateOpenAiImage(config, prompt, transport, size, onStageChange, nativeTarget)
 
   try {
+    onStageChange?.('waiting')
+    const nativeImage = await generateNativelyWhenTargeted(baseUrl, config, prompt, size, nativeTarget, referenceSources)
+    if (nativeImage) return nativeImage
     const form = new FormData()
     form.set('model', config.model)
     form.set('prompt', prompt)
@@ -138,7 +172,6 @@ export async function editOpenAiImage(
       form.append('image', await sourceToBlob(source), `reference-${index + 1}.png`)
     }
 
-    onStageChange?.('waiting')
     const requestStartedAt = Date.now()
     const response = await transport.request<ImageResponse>({
       url: `${baseUrl}/images/edits`,

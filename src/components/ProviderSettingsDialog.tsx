@@ -492,11 +492,18 @@ export default function ProviderSettingsDialog({ open, nested = false, settings,
           {activeSlot === 'text' && Capacitor.isNativePlatform() && (
             <label className="provider-streaming-toggle">
               <span>
-                <strong>流式输出</strong>
-                <small>通过 WebView 实时显示正文，仅在中转服务支持 CORS 时启用。</small>
+                <strong>流式输出：{current.androidStreamingEnabled ? '已开启' : '已关闭'}</strong>
+                <small>{current.androidStreamingEnabled
+                  ? '已改由 WebView 发起实时传输；只有中转服务允许 CORS 时，正文才会逐步显示。'
+                  : '将由原生请求在完成后显示完整正文。'}</small>
+                <span id="android-streaming-status" className="provider-streaming-status" role="status" aria-live="polite">
+                  {current.androidStreamingEnabled ? '流式传输已开启' : '流式传输已关闭'}
+                </span>
               </span>
               <input
                 type="checkbox"
+                aria-label="流式输出"
+                aria-describedby="android-streaming-status"
                 checked={Boolean(current.androidStreamingEnabled)}
                 onChange={(event) => updateCurrent({ androidStreamingEnabled: event.target.checked })}
               />

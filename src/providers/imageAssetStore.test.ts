@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const nativeMocks = vi.hoisted(() => ({ native: true }))
-const nativeAssetStoreMocks = vi.hoisted(() => ({ download: vi.fn() }))
+const nativeAssetStoreMocks = vi.hoisted(() => ({ download: vi.fn(), generate: vi.fn() }))
 const secretStoreMocks = vi.hoisted(() => ({ get: vi.fn() }))
 const filesystemMocks = vi.hoisted(() => ({
   files: new Map<string, string>(),
@@ -31,7 +31,7 @@ vi.mock('@capacitor/filesystem', () => ({
 vi.mock('@capgo/capacitor-file-sharer', () => ({ FileSharer: { save: vi.fn() } }))
 vi.mock('./secretStore', () => ({ secretStore: secretStoreMocks }))
 
-import { persistImageAsset } from './imageAssetStore'
+import { generateNativeImageAsset, persistImageAsset } from './imageAssetStore'
 
 function bytesToBase64(bytes: Uint8Array) {
   let binary = ''
@@ -101,6 +101,30 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('persistImageAsset', () => {
+  it('delegates native generation directly to the plugin and returns only its local URI', async () => {
+    nativeAssetStoreMocks.generate.mockResolvedValue({
+      localUri: 'file://projects/project-1/images/asset-1.png', format: 'png', bytes: 2_400_000, responseMode: 'b64_json',
+      responseMs: 60_000, writeMs: 35, validationAndReplaceMs: 12, durationMs: 60_047,
+    })
+
+    await expect(generateNativeImageAsset({
+      endpoint: 'https://api.test/v1/images/generations', model: 'gpt-image-2', prompt: '生成插画', size: '1536x1024',
+      target: { projectId: 'project-1', assetId: 'asset-1' }, secretRef: 'image-key',
+    })).resolves.toEqual({ imageUrl: '', localUri: 'file://projects/project-1/images/asset-1.png' })
+    expect(nativeAssetStoreMocks.generate).toHaveBeenCalledWith(expect.objectContaining({
+      endpoint: 'https://api.test/v1/images/generations', projectId: 'project-1', assetId: 'asset-1', bearerToken: 'secret-token',
+    }))
+  })
+
+  it('does not invoke the native plugin on Web, preserving the transport fallback', async () => {
+    nativeMocks.native = false
+    await expect(generateNativeImageAsset({
+      endpoint: 'https://api.test/v1/images/generations', model: 'gpt-image-2', prompt: '生成插画', size: '1536x1024',
+      target: { projectId: 'project-1', assetId: 'asset-1' }, secretRef: 'image-key',
+    })).resolves.toBeUndefined()
+    expect(nativeAssetStoreMocks.generate).not.toHaveBeenCalled()
+  })
+
   it('writes large base64 PNG data in aligned chunks and validates only the file head and tail', async () => {
     const base64 = pngBase64(450_000)
     const source = `data:image/png;base64,${base64}`

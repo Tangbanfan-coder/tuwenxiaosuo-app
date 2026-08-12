@@ -465,9 +465,9 @@ export default function App() {
     return Boolean(provider.baseUrl.trim() && provider.model.trim() && await secretStore.has(provider.secretRef))
   }
 
-  function enqueueImageTask(task: () => Promise<void>) {
+  function enqueueImageTask<T>(task: () => Promise<T>) {
     const queued = imageQueueRef.current.then(task, task)
-    imageQueueRef.current = queued.catch(() => undefined)
+    imageQueueRef.current = queued.then(() => undefined, () => undefined)
     return queued
   }
 
@@ -494,18 +494,21 @@ export default function App() {
     try {
       const prompt = buildCharacterPortraitPrompt(character, sourceWorkspace.style, feedback)
       const currentReference = resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri)
+      const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: character.id }
       const imageUrl = feedback && currentReference
-        ? await editOpenAiImage(providerSettings.image, prompt, [currentReference], browserTransport)
-        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport)
+        ? await editOpenAiImage(providerSettings.image, prompt, [currentReference], browserTransport, '1024x1536', undefined, nativeTarget)
+        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1024x1536', undefined, nativeTarget)
       const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, character.id)
       await setCharacterPortraitReady(character.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)
       showToast(`${character.name}的定妆照等待确认`)
+      return true
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
       await setCharacterPortraitFailed(character.id, message)
       await refreshWorkspace(sourceWorkspace.project.id)
       showToast(`${character.name}的定妆照生成失败`, 'error')
+      return false
     }
   }
 
@@ -520,7 +523,8 @@ export default function App() {
       showToast('请先完成图片模型配置')
       return
     }
-    await enqueueImageTask(() => generateCharacterPortrait(character, workspace, feedback))
+    const succeeded = await enqueueImageTask(() => generateCharacterPortrait(character, workspace, feedback))
+    if (!succeeded) throw new Error('定妆照生成失败')
   }
 
   async function importCharacterReference(target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode, autoAnalyze: boolean) {
@@ -623,12 +627,13 @@ export default function App() {
         ? [...characterReferenceSources, sceneReferenceSource]
         : characterReferenceSources
       const prompt = buildIllustrationPrompt(illustration, sourceWorkspace.style, referenceCharacters, Boolean(sceneReferenceSource))
+      const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: illustration.id }
       const setStage = (stage: 'waiting' | 'downloading' | 'saving' | 'validating') => {
         setIllustrationGenerationStages((current) => ({ ...current, [illustration.id]: stage }))
       }
       const imageUrl = referenceSources.length
-        ? await editOpenAiImage(providerSettings.image, prompt, referenceSources, browserTransport, '1536x1024', setStage)
-        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1536x1024', setStage)
+        ? await editOpenAiImage(providerSettings.image, prompt, referenceSources, browserTransport, '1536x1024', setStage, nativeTarget)
+        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1536x1024', setStage, nativeTarget)
       const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, illustration.id, 'generated', setStage)
       await setIllustrationReady(illustration.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)

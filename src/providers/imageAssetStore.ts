@@ -3,7 +3,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
 import { logImagePipeline } from './imagePipelineLog'
 import { secretStore } from './secretStore'
-import type { GeneratedImageSource } from './types'
+import type { GeneratedImageSource, NativeImagePersistenceTarget } from './types'
 
 export interface StoredImageSource {
   imageUrl: string
@@ -35,11 +35,88 @@ interface NativeImageAssetStorePlugin {
     validationAndReplaceMs: number
     durationMs: number
   }>
+  generate(options: {
+    endpoint: string
+    model: string
+    prompt: string
+    size: string
+    projectId: string
+    assetId: string
+    bearerToken: string
+    referenceSources?: string[]
+    responseFormat?: 'b64_json'
+  }): Promise<{
+    localUri: string
+    format: ImageFormat
+    bytes: number
+    responseMode: 'url' | 'b64_json'
+    responseMs: number
+    writeMs: number
+    validationAndReplaceMs: number
+    durationMs: number
+  }>
 }
 
 const NativeImageAssetStore = registerPlugin<NativeImageAssetStorePlugin>('ImageAssetStore')
 
 type ImageFormat = typeof IMAGE_EXTENSIONS[number]
+
+export interface NativeImageGenerationRequest {
+  endpoint: string
+  model: string
+  prompt: string
+  size: string
+  target: NativeImagePersistenceTarget
+  secretRef: string
+  referenceSources?: string[]
+  responseFormat?: 'b64_json'
+}
+
+/**
+ * Keeps a generation response in Android: this method deliberately does not
+ * fall back after invoking the plugin, because a second request can be billed.
+ */
+export async function generateNativeImageAsset(request: NativeImageGenerationRequest): Promise<StoredImageSource | undefined> {
+  if (!Capacitor.isNativePlatform()) return undefined
+  const bearerToken = await secretStore.get(request.secretRef)
+  if (!bearerToken) throw new Error('请填写 API Key')
+  const startedAt = Date.now()
+  try {
+    const stored = await NativeImageAssetStore.generate({
+      endpoint: request.endpoint,
+      model: request.model,
+      prompt: request.prompt,
+      size: request.size,
+      projectId: request.target.projectId,
+      assetId: request.target.assetId,
+      bearerToken,
+      referenceSources: request.referenceSources,
+      responseFormat: request.responseFormat,
+    })
+    logImagePipeline('info', {
+      phase: 'native-generation-persist-complete',
+      operation: request.referenceSources?.length ? 'edit' : 'generation',
+      format: stored.format,
+      bytes: stored.bytes,
+      responseMode: stored.responseMode,
+      referenceCount: request.referenceSources?.length,
+      responseMs: stored.responseMs,
+      writeMs: stored.writeMs,
+      validationAndReplaceMs: stored.validationAndReplaceMs,
+      durationMs: stored.durationMs,
+    })
+    return { imageUrl: '', localUri: stored.localUri }
+  } catch (error) {
+    logImagePipeline('warn', {
+      phase: 'native-generation-persist-failed',
+      operation: request.referenceSources?.length ? 'edit' : 'generation',
+      referenceCount: request.referenceSources?.length,
+      durationMs: Date.now() - startedAt,
+      message: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  }
+}
 
 const BMFF_BRANDS: Record<string, ImageFormat> = {
   heic: 'heic', heix: 'heic', heim: 'heic', heis: 'heic', hevc: 'heic', hevx: 'heic',
@@ -276,8 +353,10 @@ export async function persistImageAsset(
     ? { kind: 'inline', dataUrl: source }
     : source
   if (!Capacitor.isNativePlatform()) {
-    return { imageUrl: normalizedSource.kind === 'inline' ? normalizedSource.dataUrl : normalizedSource.url }
+    return { imageUrl: normalizedSource.kind === 'inline' ? normalizedSource.dataUrl : normalizedSource.kind === 'remote' ? normalizedSource.url : normalizedSource.localUri }
   }
+
+  if (normalizedSource.kind === 'local') return { imageUrl: '', localUri: normalizedSource.localUri }
 
   if (normalizedSource.kind === 'remote') {
     const downloadStartedAt = Date.now()

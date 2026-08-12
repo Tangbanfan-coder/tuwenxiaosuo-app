@@ -153,6 +153,9 @@ describe('character narrative pronouns', () => {
     await updateCharacterProfile('legacy-character', { narrativePronoun: 'ta' })
     await confirmCharacterPortrait('legacy-character')
     expect(await storyDatabase.characters.get('legacy-character')).toMatchObject({ narrativePronoun: 'ta', status: 'confirmed' })
+
+    await updateCharacterProfile('legacy-character', { narrativePronoun: undefined })
+    expect((await storyDatabase.characters.get('legacy-character'))?.narrativePronoun).toBeUndefined()
   })
 
   it('creates new drafts without inventing a narrative pronoun', async () => {

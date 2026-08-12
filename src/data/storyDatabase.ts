@@ -1487,7 +1487,7 @@ export async function updateCharacterProfile(
       defaultLook: normalized.defaultLook,
       wardrobe: normalized.wardrobe,
     },
-    narrativePronoun: profile.narrativePronoun ?? character.narrativePronoun,
+    narrativePronoun: profile.narrativePronoun,
     updatedAt: Date.now(),
   })
 }

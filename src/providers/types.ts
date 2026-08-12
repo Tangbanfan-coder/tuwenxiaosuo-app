@@ -62,6 +62,13 @@ export interface ImageDownloadRequest {
 export type GeneratedImageSource =
   | { kind: 'inline'; dataUrl: string }
   | { kind: 'remote'; url: string; auth?: RequestAuth }
+  | { kind: 'local'; localUri: string }
+
+/** Identifies the native file that a generated image may be written into. */
+export interface NativeImagePersistenceTarget {
+  projectId: string
+  assetId: string
+}
 
 export interface HttpTransport {
   request<T>(request: TransportRequest): Promise<TransportResponse<T>>
