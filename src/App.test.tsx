@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProjectWorkspace, StoryProject } from './domain/models'
@@ -52,9 +52,9 @@ const databaseMocks = vi.hoisted(() => ({
 const writingMocks = vi.hoisted(() => ({
   explicitlyRequestsNewChapter: vi.fn(),
   generateWritingTurn: vi.fn(),
-  previewWritingTurnBudget: vi.fn(),
   projectStreamingProse: vi.fn(),
 }))
+
 
 const configMocks = vi.hoisted(() => ({
   saveGlobalWritingInstructions: vi.fn((value: string) => value.trim()),
@@ -103,13 +103,16 @@ vi.mock('./components/ProjectDrawer', () => ({
     open,
     projects,
     onDelete,
+    onSelect,
   }: {
     open: boolean
     projects: StoryProject[]
     onDelete: (projectId: string) => Promise<void>
+    onSelect?: (projectId: string) => Promise<void>
   }) => open ? (
     <section role="dialog" aria-label="作品列表测试入口">
       {projects[0] && <button type="button" onClick={() => void onDelete(projects[0].id)}>删除测试作品</button>}
+      {projects[1] && <button type="button" onClick={() => void onSelect?.(projects[1].id)}>切换测试作品</button>}
     </section>
   ) : null,
 }))
@@ -135,18 +138,27 @@ vi.mock('./components/ReferenceImageDialog', () => ({
   ) : null,
 }))
 vi.mock('./components/ContextUsage', () => ({
+  contextUsageToolbarSummary: (plan: { contextPressureRatio?: number } | undefined, state: string) => {
+    if (state === 'pending') return '待计算'
+    return plan ? `${Math.round((plan.contextPressureRatio ?? 0) * 100)}%` : '待计算'
+  },
   default: ({
     state,
     plan,
+    compactLabel,
+    showTrigger = true,
     detailsOpen,
     onDetailsOpenChange,
   }: {
     state: string
     plan?: unknown
+    compactLabel?: string
+    showTrigger?: boolean
     detailsOpen?: boolean
     onDetailsOpenChange?: (open: boolean) => void
   }) => <>
-    <div aria-label="上下文预览状态">{`${state}:${plan ? 'ready' : 'none'}`}</div>
+    <div aria-label={showTrigger ? '上下文工具栏状态' : '上下文设置状态'}>{`${state}:${plan ? 'ready' : 'none'}:${compactLabel ?? ''}`}</div>
+    {showTrigger && <button type="button" aria-label="查看本轮上下文用量明细" onClick={() => onDetailsOpenChange?.(true)}>查看上下文</button>}
     {detailsOpen && <section role="dialog" aria-label="上下文用量测试明细"><button type="button" onClick={() => onDetailsOpenChange?.(false)}>关闭上下文用量测试明细</button></section>}
   </>,
 }))
@@ -271,7 +283,6 @@ beforeEach(() => {
   databaseMocks.restoreChapterSummaryVersion.mockResolvedValue(undefined)
   writingMocks.explicitlyRequestsNewChapter.mockReset()
   writingMocks.generateWritingTurn.mockReset()
-  writingMocks.previewWritingTurnBudget.mockReset()
   writingMocks.projectStreamingProse.mockReset()
   configMocks.saveGlobalWritingInstructions.mockClear()
   configMocks.saveProviderSettings.mockClear()
@@ -327,33 +338,118 @@ describe('empty project library', () => {
   })
 })
 
-describe('context usage preview', () => {
-  it('keeps the base context preview when a draft is cleared', async () => {
-    const user = userEvent.setup()
-    providerSettings.text = { ...providerSettings.text, model: 'test-model' }
-    writingMocks.previewWritingTurnBudget.mockResolvedValue({
-      isOverLimit: false,
-      estimator: { isFallback: false },
-    })
+describe('context usage and composer isolation', () => {
+  const preparedPlan = {
+    isOverLimit: false,
+    estimator: { isFallback: false },
+    contextPressureRatio: 0.615,
+  }
 
+  it('keeps the toolbar pending before first send and does not prepare context while typing', async () => {
+    const user = userEvent.setup()
     render(<App />)
 
     const input = await screen.findByLabelText('创作要求')
-    await waitFor(() => expect(writingMocks.previewWritingTurnBudget).toHaveBeenCalledWith(workspace, '', providerSettings.text))
-    expect(screen.getByLabelText('上下文预览状态').textContent).toBe('ready:ready')
-
+    expect(screen.getByLabelText('上下文工具栏状态').textContent).toBe('pending:none:待计算')
     await user.type(input, '继续写')
-    await waitFor(() => expect(writingMocks.previewWritingTurnBudget).toHaveBeenLastCalledWith(workspace, '继续写', providerSettings.text))
-    await user.clear(input)
-    await waitFor(() => expect(writingMocks.previewWritingTurnBudget).toHaveBeenLastCalledWith(workspace, '', providerSettings.text))
-    expect(screen.getByLabelText('上下文预览状态').textContent).toBe('ready:ready')
+    expect(writingMocks.generateWritingTurn).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('上下文工具栏状态').textContent).toBe('pending:none:待计算')
   })
 
-  it('keeps context details out of the main toolbar while settings can open the shared sheet', async () => {
+  it('does not rerender historical timeline messages while typing', async () => {
+    const user = userEvent.setup()
+    databaseMocks.loadProjectWorkspace.mockResolvedValue({
+      ...workspace,
+      messages: [{ id: 'history-1', projectId: project.id, kind: 'user', text: '已有消息', order: 1, createdAt: 1 }],
+    })
+    render(<App />)
+
+    const history = await screen.findByText('已有消息')
+    await user.type(screen.getByLabelText('创作要求'), '新的草稿')
+    expect(screen.getByText('已有消息')).toBe(history)
+  })
+
+  it('receives and retains the real prepared plan when sending', async () => {
+    const user = userEvent.setup()
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'test-model' }
+    secretStoreMocks.has.mockResolvedValue(true)
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 1, createdAt: 2 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', order: 2, createdAt: 2 },
+    ])
+    databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
+    databaseMocks.loadProjectWorkspace.mockResolvedValue(workspace)
+    writingMocks.generateWritingTurn.mockImplementation(async (_workspace, _text, _provider, _transport, _onDelta, options) => {
+      options.onContextPlan(preparedPlan)
+      return { prose: { title: '第一章', paragraphs: ['正文'] }, visualPlan: undefined }
+    })
+    render(<App />)
+
+    await user.type(await screen.findByLabelText('创作要求'), '继续写')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(writingMocks.generateWritingTurn).toHaveBeenCalled())
+    expect(screen.getByLabelText('上下文工具栏状态').textContent).toBe('ready:ready:62%')
+  })
+
+  it('ignores Enter while a Chinese IME composition is active', async () => {
+    const user = userEvent.setup()
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'test-model' }
+    secretStoreMocks.has.mockResolvedValue(true)
+    render(<App />)
+    const input = await screen.findByLabelText('创作要求')
+    await user.type(input, '正在输入')
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true, keyCode: 229 })
+    expect(databaseMocks.beginWritingTurn).not.toHaveBeenCalled()
+  })
+
+  it('shows each 60/80/100 reminder once, permits a later re-entry, and clears the plan on project switch', async () => {
+    const user = userEvent.setup()
+    const secondProject = { ...project, id: 'project-2', title: '第二部作品' }
+    databaseMocks.listProjects.mockResolvedValue([project, secondProject])
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'test-model' }
+    secretStoreMocks.has.mockResolvedValue(true)
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 1, createdAt: 2 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', order: 2, createdAt: 2 },
+    ])
+    databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
+    databaseMocks.loadProjectWorkspace.mockImplementation(async (id) => id === secondProject.id
+      ? { ...workspace, project: secondProject }
+      : workspace)
+    const pressures = [0.61, 0.7, 0.81, 0.79, 1.02, 0.5, 0.61]
+    writingMocks.generateWritingTurn.mockImplementation(async (_workspace, _text, _provider, _transport, _onDelta, options) => {
+      options.onContextPlan({ ...preparedPlan, contextPressureRatio: pressures.shift() ?? 0.61 })
+      return { prose: { title: '第一章', paragraphs: ['正文'] }, visualPlan: undefined }
+    })
+    render(<App />)
+
+    const input = await screen.findByLabelText('创作要求')
+    const expectedReminders = [
+      '上下文达到 60%，将开始整理近期内容',
+      '正文已保存',
+      '上下文达到 80%，将明显压缩历史内容',
+      '正文已保存',
+      '上下文达到 100%，将优先保留核心规则与章节状态',
+      '正文已保存',
+      '上下文达到 60%，将开始整理近期内容',
+    ]
+    for (let index = 0; index < expectedReminders.length; index++) {
+      await user.type(input, `第${index}次`)
+      await user.click(screen.getByRole('button', { name: '发送' }))
+      await waitFor(() => expect(writingMocks.generateWritingTurn).toHaveBeenCalledTimes(index + 1))
+      expect(screen.getByText(expectedReminders[index])).toBeDefined()
+    }
+
+    await user.click(screen.getByRole('button', { name: '打开作品列表' }))
+    await user.click(screen.getByRole('button', { name: '切换测试作品' }))
+    await waitFor(() => expect(screen.getByLabelText('上下文工具栏状态').textContent).toBe('pending:none:待计算'))
+  })
+
+  it('keeps context details in the toolbar and settings sheet', async () => {
     const user = userEvent.setup()
     render(<App />)
 
-    expect(screen.queryByRole('button', { name: /上下文.*明细/ })).toBeNull()
+    expect(await screen.findByRole('button', { name: /上下文.*明细/ })).toBeDefined()
     await user.click(await screen.findByRole('button', { name: '打开设置' }))
     await user.click(screen.getByRole('button', { name: '查看本轮上下文用量' }))
     expect(await screen.findByRole('dialog', { name: '上下文用量测试明细' })).toBeDefined()

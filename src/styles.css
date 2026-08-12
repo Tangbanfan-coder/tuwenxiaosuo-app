@@ -1481,6 +1481,9 @@ label {
   .composer-toolbar { gap: 4px; }
   .composer-tool-button,
   .composer-assets-menu > .composer-tool-button { padding: 0 6px; font-size: 10px; }
+  .composer-assets-menu > .composer-tool-button > span,
+  .reasoning-effort-quick-name,
+  .auto-illustrate-button > span { display: none; }
   .reasoning-effort-quick-trigger { min-width: 0; padding: 0 6px !important; font-size: 10px !important; }
   .reasoning-effort-quick-trigger > svg:last-child { width: 12px; }
   .reasoning-effort-quick-menu button { width: 100%; min-height: 34px; padding: 0 8px; font-size: 11px; justify-content: space-between; }

@@ -18,7 +18,7 @@ import CharacterAssetsDrawer from './components/CharacterAssetsDrawer'
 import ProviderSettingsDialog from './components/ProviderSettingsDialog'
 import ReferenceImageDialog, { type ReferenceImageTarget } from './components/ReferenceImageDialog'
 import SettingsDrawer from './components/SettingsDrawer'
-import ContextUsage, { type ContextUsageState } from './components/ContextUsage'
+import ContextUsage, { contextUsageToolbarSummary, type ContextUsageState } from './components/ContextUsage'
 import ComposerAssetsMenu from './components/ComposerAssetsMenu'
 import ReasoningEffortQuickControl from './components/ReasoningEffortQuickControl'
 import IllustrationLightbox, { type LightboxImage } from './components/IllustrationLightbox'
@@ -68,9 +68,114 @@ import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage } fr
 import { analyzeReferenceImage } from './providers/referenceAnalysis'
 import { secretStore } from './providers/secretStore'
 import type { ProviderSettings, ProviderSlot, ReasoningEffort } from './providers/types'
-import { explicitlyRequestsNewChapter, generateWritingTurn, previewWritingTurnBudget, projectStreamingProse, type ContextBudgetPlan } from './providers/writing'
+import { explicitlyRequestsNewChapter, generateWritingTurn, projectStreamingProse, type ContextBudgetPlan } from './providers/writing'
 
 const APPEARANCE_KEY = 'illustrated-story-chat.appearance.v1'
+
+type ContextUsageReminderTier = 0 | 60 | 80 | 100
+
+function contextUsageReminderTier(plan: ContextBudgetPlan): ContextUsageReminderTier {
+  const usage = plan.contextPressureRatio * 100
+  if (usage >= 100) return 100
+  if (usage >= 80) return 80
+  if (usage >= 60) return 60
+  return 0
+}
+
+interface ComposerProps {
+  sending: boolean
+  autoIllustrate: boolean
+  reasoningEffort: ReasoningEffort | undefined
+  contextUsagePlan?: ContextBudgetPlan
+  contextUsageState: ContextUsageState
+  onSubmit: (text: string) => Promise<boolean>
+  onOpenContextUsage: () => void
+  onOpenCharacterAssets: () => void
+  onOpenReferenceImage: () => void
+  onReasoningEffortChange: (reasoningEffort: ReasoningEffort) => void
+  onAutoIllustrateChange: () => void
+}
+
+function Composer({
+  sending,
+  autoIllustrate,
+  reasoningEffort,
+  contextUsagePlan,
+  contextUsageState,
+  onSubmit,
+  onOpenContextUsage,
+  onOpenCharacterAssets,
+  onOpenReferenceImage,
+  onReasoningEffortChange,
+  onAutoIllustrateChange,
+}: ComposerProps) {
+  const [draft, setDraft] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const submit = async () => {
+    const text = draft.trim()
+    if (!text || sending || submitting) return
+    setSubmitting(true)
+    setDraft('')
+    try {
+      if (await onSubmit(text)) setDraft(text)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Browsers disagree on composition state during the final IME Enter.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void submit()
+    }
+  }
+
+  return (
+    <footer className="composer-wrap">
+      <div className="composer">
+        <textarea
+          rows={1}
+          value={draft}
+          placeholder="继续写下去，或告诉 AI 你想看到的画面…"
+          aria-label="创作要求"
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={handleKeyDown}
+        />
+        <div className="composer-toolbar">
+          <div className="composer-tools">
+            <ComposerAssetsMenu onOpenCharacterAssets={onOpenCharacterAssets} onOpenReferenceImage={onOpenReferenceImage} />
+            <ReasoningEffortQuickControl value={reasoningEffort} onChange={onReasoningEffortChange} />
+            <ContextUsage
+              plan={contextUsagePlan}
+              state={contextUsageState}
+              compactLabel={contextUsageToolbarSummary(contextUsagePlan, contextUsageState)}
+              detailsOpen={false}
+              showDetails={false}
+              onDetailsOpenChange={(open) => { if (open) onOpenContextUsage() }}
+            />
+            <button
+              className="composer-tool-button auto-illustrate-button"
+              type="button"
+              aria-pressed={autoIllustrate}
+              aria-label={`自动配图：${autoIllustrate ? '自动' : '关闭'}`}
+              onClick={onAutoIllustrateChange}
+            >
+              <ImagePlus size={17} aria-hidden="true" />
+              <span>配图</span>
+              <strong>{autoIllustrate ? '自动' : '关闭'}</strong>
+            </button>
+          </div>
+          <button className="send-button" type="button" aria-label="发送" disabled={!draft.trim() || sending || submitting} onClick={() => void submit()}>
+            <span className="send-button-surface"><Send size={18} /></span>
+          </button>
+        </div>
+      </div>
+    </footer>
+  )
+}
 
 function loadAppearanceMode(): AppearanceMode {
   return localStorage.getItem(APPEARANCE_KEY) === 'light' ? 'light' : 'dark'
@@ -80,9 +185,10 @@ export default function App() {
   const timelineRef = useRef<HTMLElement>(null)
   const imageQueueRef = useRef<Promise<void>>(Promise.resolve())
   const queuedIllustrationIdsRef = useRef(new Set<string>())
-  const [draft, setDraft] = useState('')
+  const contextUsageReminderTiersRef = useRef(new Map<string, ContextUsageReminderTier>())
   const [contextUsagePlan, setContextUsagePlan] = useState<ContextBudgetPlan>()
-  const [contextUsageState, setContextUsageState] = useState<ContextUsageState>('empty')
+  const [contextUsageProjectId, setContextUsageProjectId] = useState<string>()
+  const [contextUsageState, setContextUsageState] = useState<ContextUsageState>('pending')
   const [contextUsageError, setContextUsageError] = useState('')
   const [contextUsageDetailsOpen, setContextUsageDetailsOpen] = useState(false)
   const [sending, setSending] = useState(false)
@@ -145,38 +251,12 @@ export default function App() {
   }, [globalWritingInstructions, setWorkspace])
 
   useEffect(() => {
-    const userRequest = draft.trim()
-    const textProvider = providerSettings.text
-    if (!workspace || !textProvider.model.trim()) {
-      setContextUsagePlan(undefined)
-      setContextUsageError('')
-      setContextUsageState('empty')
-      return
-    }
-
-    let cancelled = false
-    setContextUsageState('loading')
+    if (!workspace) return
+    if (contextUsageProjectId === workspace.project.id) return
+    setContextUsagePlan(undefined)
     setContextUsageError('')
-    const previewTimer = window.setTimeout(() => {
-      void previewWritingTurnBudget(workspace, userRequest, textProvider)
-        .then((plan) => {
-          if (cancelled) return
-          setContextUsagePlan(plan)
-          setContextUsageState(plan.isOverLimit ? 'over-limit' : plan.estimator.isFallback ? 'fallback' : 'ready')
-        })
-        .catch((error) => {
-          if (cancelled) return
-          setContextUsagePlan(undefined)
-          setContextUsageState('error')
-          setContextUsageError(error instanceof Error ? error.message : '未知预览错误')
-        })
-    }, 240)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(previewTimer)
-    }
-  }, [draft, providerSettings.text, workspace])
+    setContextUsageState('pending')
+  }, [contextUsageProjectId, workspace?.project.id])
 
   const syncVisibleChapterFromScroll = useCallback(() => {
     const timeline = timelineRef.current
@@ -622,23 +702,23 @@ export default function App() {
     await queueIllustration(illustration, workspace)
   }
 
-  async function sendMessage() {
-    const text = draft.trim()
-    if (!text || !workspace || sending) return
+  async function sendMessage(text: string) {
+    if (!workspace || sending) return true
 
     const textProvider = providerSettings.text
     if (!textProvider.baseUrl.trim() || !textProvider.model.trim() || !(await secretStore.has(textProvider.secretRef))) {
       showToast('请先完成文本模型配置')
       openProviderSettings('text')
-      return
+      return true
     }
 
-      setSending(true)
-      setDraft('')
-      streamingRawRef.current = ''
-      setStreamingText('')
-      let noticeId: string | undefined
-      try {
+    setSending(true)
+    streamingRawRef.current = ''
+    setStreamingText('')
+    let noticeId: string | undefined
+    let shouldRestoreDraft = false
+    let contextReminder: { text: string; kind: 'success' | 'error' } | undefined
+    try {
       const addedMessages = await beginWritingTurn(
         workspace.project.id,
         text,
@@ -657,6 +737,24 @@ export default function App() {
       const result = await generateWritingTurn(workspace, text, textProvider, browserTransport, (delta) => {
         streamingRawRef.current += delta
         setStreamingText(projectStreamingProse(streamingRawRef.current))
+      }, {
+        onContextPlan: (plan) => {
+          setContextUsagePlan(plan)
+          setContextUsageProjectId(workspace.project.id)
+          setContextUsageError('')
+          setContextUsageState(plan.isOverLimit ? 'over-limit' : plan.estimator.isFallback ? 'fallback' : 'ready')
+          const previousTier = contextUsageReminderTiersRef.current.get(workspace.project.id) ?? 0
+          const nextTier = contextUsageReminderTier(plan)
+          contextUsageReminderTiersRef.current.set(workspace.project.id, nextTier)
+          if (nextTier > previousTier) {
+            const reminder = nextTier === 60
+              ? '上下文达到 60%，将开始整理近期内容'
+              : nextTier === 80
+                ? '上下文达到 80%，将明显压缩历史内容'
+                : '上下文达到 100%，将优先保留核心规则与章节状态'
+            contextReminder = { text: reminder, kind: nextTier === 100 ? 'error' : 'success' }
+          }
+        },
       })
       await completeWritingTurn(
         workspace.project.id,
@@ -709,21 +807,22 @@ export default function App() {
       } else {
         showToast('正文已保存')
       }
+      if (contextReminder) showToast(contextReminder.text, contextReminder.kind)
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
       if (noticeId) {
         const partialProse = projectStreamingProse(streamingRawRef.current)
         await failWritingTurn(noticeId, message, partialProse)
         await refreshWorkspace(workspace.project.id)
-      } else {
-        setDraft(text)
       }
+      shouldRestoreDraft = true
       showToast('本轮写作未完成', 'error')
     } finally {
       setSending(false)
       streamingRawRef.current = ''
       setStreamingText('')
     }
+    return shouldRestoreDraft
   }
 
   if (bootError) {
@@ -794,6 +893,8 @@ export default function App() {
   const visibleChapter = workspace.chapters.find((chapter) => chapter.id === visibleChapterId) ?? activeChapter
   const illustrationStyle = resolveProjectIllustrationStyle(workspace.style)
   const fallbackChapterId = workspace.chapters[0]?.id
+  const activeContextUsagePlan = contextUsageProjectId === workspace.project.id ? contextUsagePlan : undefined
+  const activeContextUsageState = contextUsageProjectId === workspace.project.id ? contextUsageState : 'pending'
   let previousMessageChapterId: string | undefined
 
   return (
@@ -876,46 +977,19 @@ export default function App() {
         </section>
       </div>
 
-      <footer className="composer-wrap">
-        <div className="composer">
-          <textarea
-            rows={1}
-            value={draft}
-            placeholder="继续写下去，或告诉 AI 你想看到的画面…"
-            aria-label="创作要求"
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                void sendMessage()
-              }
-            }}
-          />
-          <div className="composer-toolbar">
-            <div className="composer-tools">
-              <ComposerAssetsMenu
-                onOpenCharacterAssets={openCharacterAssets}
-                onOpenReferenceImage={() => setReferenceImageOpen(true)}
-              />
-              <ReasoningEffortQuickControl value={providerSettings.text.reasoningEffort} onChange={handleReasoningEffortChange} />
-              <button
-                className="composer-tool-button auto-illustrate-button"
-                type="button"
-                aria-pressed={workspace.project.autoIllustrate}
-                aria-label={`自动配图：${workspace.project.autoIllustrate ? '自动' : '关闭'}`}
-                onClick={() => void handleAutoIllustrate(!workspace.project.autoIllustrate)}
-              >
-                <ImagePlus size={17} aria-hidden="true" />
-                <span>配图</span>
-                <strong>{workspace.project.autoIllustrate ? '自动' : '关闭'}</strong>
-              </button>
-            </div>
-            <button className="send-button" type="button" aria-label="发送" disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>
-              <span className="send-button-surface"><Send size={18} /></span>
-            </button>
-          </div>
-        </div>
-      </footer>
+      <Composer
+        sending={sending}
+        autoIllustrate={workspace.project.autoIllustrate}
+        reasoningEffort={providerSettings.text.reasoningEffort}
+        contextUsagePlan={activeContextUsagePlan}
+        contextUsageState={activeContextUsageState}
+        onSubmit={sendMessage}
+        onOpenContextUsage={() => setContextUsageDetailsOpen(true)}
+        onOpenCharacterAssets={openCharacterAssets}
+        onOpenReferenceImage={() => setReferenceImageOpen(true)}
+        onReasoningEffortChange={handleReasoningEffortChange}
+        onAutoIllustrateChange={() => void handleAutoIllustrate(!workspace.project.autoIllustrate)}
+      />
 
       <ProjectDrawer
         open={projectMenuOpen}
@@ -949,8 +1023,8 @@ export default function App() {
         onEditGlobalWritingInstructions={() => setGlobalWritingInstructionsOpen(true)}
         contextBudget={workspace.project.contextBudget ?? 'standard'}
         onContextBudgetChange={handleContextBudgetChange}
-        contextUsagePlan={contextUsagePlan}
-        contextUsageState={contextUsageState}
+        contextUsagePlan={activeContextUsagePlan}
+        contextUsageState={activeContextUsageState}
         onOpenContextUsage={() => {
           setContextUsageDetailsOpen(true)
         }}
@@ -965,8 +1039,8 @@ export default function App() {
 
       <ContextUsage
         showTrigger={false}
-        plan={contextUsagePlan}
-        state={contextUsageState}
+        plan={activeContextUsagePlan}
+        state={activeContextUsageState}
         error={contextUsageError}
         detailsOpen={contextUsageDetailsOpen}
         detailsPresentation="sheet"

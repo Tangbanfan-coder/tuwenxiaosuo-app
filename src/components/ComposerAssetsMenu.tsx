@@ -57,6 +57,7 @@ export default function ComposerAssetsMenu({ onOpenCharacterAssets, onOpenRefere
         ref={triggerRef}
         className="composer-tool-button"
         type="button"
+        aria-label="素材"
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}

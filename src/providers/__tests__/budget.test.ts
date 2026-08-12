@@ -163,8 +163,11 @@ describe('上下文预算', () => {
     workspace.project.id = 'preview-shared-plan'
     const userRequest = '让开场的雨夜追逐更紧张，并保持第三人称。'
     const preview = await previewWritingTurnBudget(workspace, userRequest, textProvider)
+    let deliveredPlan: typeof preview | undefined
     let body: Record<string, unknown> = {}
-    await generateWritingTurn(workspace, userRequest, textProvider, captureRequestBody((value) => { body = value }))
+    await generateWritingTurn(workspace, userRequest, textProvider, captureRequestBody((value) => { body = value }), undefined, {
+      onContextPlan: (plan) => { deliveredPlan = plan },
+    })
     const previewAfterSend = await previewWritingTurnBudget(workspace, userRequest, textProvider)
 
     const messages = body.messages as Array<{ content: string }>
@@ -175,6 +178,7 @@ describe('上下文预算', () => {
     expect(preview.contextRetainedTokens).toBe(preview.serializedContextTokens)
     expect(preview.contextDemandTokens).toBeGreaterThanOrEqual(preview.contextRetainedTokens)
     expect(previewAfterSend).toEqual(preview)
+    expect(deliveredPlan).toEqual(preview)
     expect(previewAfterSend.compressionStage).toBe(preview.compressionStage)
     expect(preview.sections.map((section) => section.key)).toContain('timelineRetrievedContext')
   })
