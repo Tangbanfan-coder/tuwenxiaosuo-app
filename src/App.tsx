@@ -45,6 +45,7 @@ import {
   setIllustrationBlockedByReference,
   setIllustrationGenerating,
   setIllustrationReady,
+  setWritingTurnBackgroundTask,
   updateAutoIllustrate,
   updateCharacterProfile,
   updateCharacterReferenceStyleMode,
@@ -69,8 +70,9 @@ import ConfirmDialog from './components/ConfirmDialog'
 import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage } from './providers/images'
 import { analyzeReferenceImage } from './providers/referenceAnalysis'
 import { secretStore } from './providers/secretStore'
+import { BackgroundTaskUncertainError, acknowledgeBackgroundGenerationTask, enqueueBackgroundTextTask, supportsBackgroundGeneration, waitForBackgroundGenerationTask } from './providers/backgroundGeneration'
 import type { ProviderSettings, ProviderSlot, ReasoningEffort } from './providers/types'
-import { explicitlyRequestsNewChapter, generateWritingTurn, projectStreamingProse, type ContextBudgetPlan } from './providers/writing'
+import { explicitlyRequestsNewChapter, generateWritingTurn, parseBackgroundWritingResponse, prepareBackgroundWritingRequest, projectStreamingProse, type ContextBudgetPlan } from './providers/writing'
 
 const APPEARANCE_KEY = 'illustrated-story-chat.appearance.v1'
 
@@ -496,7 +498,7 @@ export default function App() {
     try {
       const prompt = buildCharacterPortraitPrompt(character, sourceWorkspace.style, feedback)
       const currentReference = resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri)
-      const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: character.id }
+      const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: character.id, target: 'portrait' as const }
       const imageUrl = feedback && currentReference
         ? await editOpenAiImage(providerSettings.image, prompt, [currentReference], browserTransport, '1024x1536', undefined, nativeTarget)
         : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1024x1536', undefined, nativeTarget)
@@ -629,7 +631,7 @@ export default function App() {
         ? [...characterReferenceSources, sceneReferenceSource]
         : characterReferenceSources
       const prompt = buildIllustrationPrompt(illustration, sourceWorkspace.style, referenceCharacters, Boolean(sceneReferenceSource))
-      const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: illustration.id }
+      const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: illustration.id, target: 'illustration' as const }
       const setStage = (stage: 'waiting' | 'downloading' | 'saving' | 'validating') => {
         setIllustrationGenerationStages((current) => ({ ...current, [illustration.id]: stage }))
       }
@@ -747,6 +749,8 @@ export default function App() {
     setStreamingText('')
     let noticeId: string | undefined
     let shouldRestoreDraft = false
+    let backgroundOutcome: 'none' | 'issued' | 'failed' | 'uncertain' | 'completed' = 'none'
+    let expectedBackgroundTaskId: string | undefined
     let contextReminder: { text: string; kind: 'success' | 'error' } | undefined
     try {
       const addedMessages = await beginWritingTurn(
@@ -764,11 +768,8 @@ export default function App() {
         messages: [...current.messages, ...addedMessages],
       } : current)
       await refreshProjects()
-      const result = await generateWritingTurn(workspace, text, textProvider, browserTransport, (delta) => {
-        streamingRawRef.current += delta
-        setStreamingText(projectStreamingProse(streamingRawRef.current))
-      }, {
-        onContextPlan: (plan) => {
+      const writingOptions = {
+        onContextPlan: (plan: ContextBudgetPlan) => {
           setContextUsagePlan(plan)
           setContextUsageProjectId(workspace.project.id)
           setContextUsageError('')
@@ -785,15 +786,63 @@ export default function App() {
             contextReminder = { text: reminder, kind: nextTier === 100 ? 'error' : 'success' }
           }
         },
-      })
-      await completeWritingTurn(
-        workspace.project.id,
-        userMessageId,
-        noticeId,
-        result,
-        workspace.project.autoIllustrate,
-        explicitlyRequestsNewChapter(text),
-      )
+      }
+      const forceNewChapter = explicitlyRequestsNewChapter(text)
+      const backgroundTask = supportsBackgroundGeneration()
+        ? await (async () => {
+          const preparedBackgroundRequest = await prepareBackgroundWritingRequest(workspace, text, textProvider, writingOptions)
+          return enqueueBackgroundTextTask({
+            ...preparedBackgroundRequest,
+            secretRef: textProvider.secretRef,
+            metadata: { projectId: workspace.project.id, userMessageId, noticeId, autoIllustrate: workspace.project.autoIllustrate, forceNewChapter },
+          })
+        })()
+        : undefined
+      let result
+      if (backgroundTask) {
+        backgroundOutcome = 'issued'
+        const linked = await setWritingTurnBackgroundTask(noticeId, backgroundTask.id)
+        if (!linked) {
+          backgroundOutcome = 'uncertain'
+          throw new BackgroundTaskUncertainError('请求已发出，正在等待补收结果')
+        }
+        expectedBackgroundTaskId = backgroundTask.id
+        let completed
+        try { completed = await waitForBackgroundGenerationTask(backgroundTask.id) }
+        catch { backgroundOutcome = 'uncertain'; throw new BackgroundTaskUncertainError() }
+        if (completed.state === 'unknown') { backgroundOutcome = 'uncertain'; throw new BackgroundTaskUncertainError() }
+        if (completed.state !== 'completed' || !completed.rawResponse) { backgroundOutcome = 'failed'; throw new Error(completed.error || '后台写作未完成') }
+        try {
+          result = parseBackgroundWritingResponse(completed.rawResponse)
+        } catch (error) {
+          backgroundOutcome = 'failed'
+          throw error
+        }
+        backgroundOutcome = 'completed'
+      } else {
+        result = await generateWritingTurn(workspace, text, textProvider, browserTransport, (delta) => {
+          streamingRawRef.current += delta
+          setStreamingText(projectStreamingProse(streamingRawRef.current))
+        }, writingOptions)
+      }
+      try {
+        await completeWritingTurn(
+          workspace.project.id,
+          userMessageId,
+          noticeId,
+          result,
+          workspace.project.autoIllustrate,
+          forceNewChapter,
+          expectedBackgroundTaskId,
+        )
+      } catch (error) {
+        if (expectedBackgroundTaskId) {
+          backgroundOutcome = 'uncertain'
+          throw new BackgroundTaskUncertainError('结果已保存，正在等待下次补收')
+        }
+        throw error
+      }
+      if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId)
       // The final prose is about to be loaded from storage; do not render the
       // same turn twice while the workspace refresh is in flight.
       streamingRawRef.current = ''
@@ -840,13 +889,19 @@ export default function App() {
       if (contextReminder) showToast(contextReminder.text, contextReminder.kind)
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
-      if (noticeId) {
+      if (noticeId && backgroundOutcome !== 'issued' && backgroundOutcome !== 'uncertain') {
         const partialProse = projectStreamingProse(streamingRawRef.current)
         await failWritingTurn(noticeId, message, partialProse)
+        if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId)
         await refreshWorkspace(workspace.project.id)
       }
-      shouldRestoreDraft = true
-      showToast('本轮写作未完成', 'error')
+      if (backgroundOutcome === 'issued' || backgroundOutcome === 'uncertain' || error instanceof BackgroundTaskUncertainError) {
+        shouldRestoreDraft = false
+        showToast(error instanceof Error ? error.message : '请求已发出，等待补收结果', 'error')
+      } else {
+        shouldRestoreDraft = true
+        showToast('本轮写作未完成', 'error')
+      }
     } finally {
       setSending(false)
       streamingRawRef.current = ''

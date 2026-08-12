@@ -68,6 +68,7 @@ export type GeneratedImageSource =
 export interface NativeImagePersistenceTarget {
   projectId: string
   assetId: string
+  target?: 'illustration' | 'portrait'
 }
 
 export interface HttpTransport {

@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(ImagePipelineLoggerPlugin.class);
         registerPlugin(ImageAssetStorePlugin.class);
+        registerPlugin(BackgroundGenerationPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

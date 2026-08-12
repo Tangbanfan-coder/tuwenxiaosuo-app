@@ -51,6 +51,8 @@ export interface ConversationMessage {
   title?: string
   illustrationId?: string
   status?: 'ready' | 'pending' | 'failed'
+  /** Native foreground task linked while this writing result is pending. */
+  backgroundTaskId?: string
 }
 
 export type ParagraphSourceType = 'message' | 'chapter'

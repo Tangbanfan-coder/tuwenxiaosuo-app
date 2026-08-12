@@ -100,67 +100,57 @@ public class ImageAssetStorePlugin extends Plugin {
         }
 
         getBridge().execute(() -> {
-            long startedAt = System.currentTimeMillis();
-            HttpURLConnection connection = null;
-            File temporary = null;
             try {
-                URL endpointUrl = new URL(endpoint);
-                if (!isHttpUrl(endpointUrl)) throw new IOException("图片接口地址必须使用 HTTP 或 HTTPS");
-                File directory = imageDirectory(projectId);
-                ensureDirectory(directory);
-                temporary = new File(directory, assetId + ".generation.tmp");
-                connection = openGenerationConnection(endpointUrl, bearerToken);
-                if (referenceSources != null && referenceSources.length() > 0) {
-                    writeMultipartRequest(connection, model, prompt, size, responseFormat, referenceSources);
-                } else {
-                    writeGenerationJson(connection, model, prompt, size, responseFormat);
-                }
-                int status = connection.getResponseCode();
-                // Generation requests are never manually retried or redirected.
-                // A redirect could otherwise resend the provider Authorization
-                // header to a different origin and create a second billed task.
-                if (!isSuccessfulGenerationResponse(status)) throw new DownloadException("图片生成接口返回 HTTP " + status, status);
-                JSONObject image = firstImage(readJsonBody(connection.getInputStream()));
-                long responseAt = System.currentTimeMillis();
-
-                String imageUrl = image.optString("url", "");
-                String b64 = image.optString("b64_json", "");
-                long bytes;
-                String responseMode;
-                if (!imageUrl.isEmpty()) {
-                    URL resolvedImageUrl = new URL(endpointUrl, imageUrl);
-                    HttpURLConnection imageConnection = null;
-                    try {
-                        String imageBearer = sameOrigin(endpointUrl, resolvedImageUrl) ? bearerToken : null;
-                        imageConnection = openConnectionFollowingRedirects(resolvedImageUrl, imageBearer);
-                        int imageStatus = imageConnection.getResponseCode();
-                        if (imageStatus < 200 || imageStatus >= 300) throw new DownloadException("图片下载返回 HTTP " + imageStatus, imageStatus);
-                        bytes = copyResponse(imageConnection.getInputStream(), temporary);
-                    } finally {
-                        if (imageConnection != null) imageConnection.disconnect();
-                    }
-                    responseMode = "url";
-                } else if (!b64.isEmpty()) {
-                    bytes = decodeBase64ToFile(b64, temporary);
-                    responseMode = "b64_json";
-                } else {
-                    throw new IOException("图片模型没有返回 URL 或图片数据");
-                }
-                long writeAt = System.currentTimeMillis();
-                StoredImage stored = finalizeImage(directory, temporary, assetId, bytes, responseAt - startedAt, writeAt - responseAt, startedAt);
-                JSObject result = stored.toJsObject();
-                result.put("responseMode", responseMode);
-                call.resolve(result);
+                call.resolve(generateAndStore(getContext(), endpoint, model, prompt, size, projectId, assetId, bearerToken, referenceSources, responseFormat));
             } catch (DownloadException error) {
-                deleteQuietly(temporary);
                 rejectWithStatus(call, error);
             } catch (Exception error) {
-                deleteQuietly(temporary);
                 call.reject(safeErrorMessage(error, "无法生成并保存图片"));
-            } finally {
-                if (connection != null) connection.disconnect();
             }
         });
+    }
+
+    /** Shared by the bridge and foreground service to keep generation rules identical. */
+    static JSObject generateAndStore(android.content.Context context, String endpoint, String model, String prompt, String size,
+                                     String projectId, String assetId, String bearerToken, JSONArray referenceSources, String responseFormat) throws Exception {
+        long startedAt = System.currentTimeMillis();
+        HttpURLConnection connection = null;
+        File temporary = null;
+        try {
+            URL endpointUrl = new URL(endpoint);
+            if (!isHttpUrl(endpointUrl)) throw new IOException("图片接口地址必须使用 HTTP 或 HTTPS");
+            File directory = new File(context.getFilesDir(), "projects/" + projectId + "/images");
+            ensureDirectory(directory);
+            temporary = new File(directory, assetId + ".generation.tmp");
+            connection = openGenerationConnection(endpointUrl, bearerToken);
+            if (referenceSources != null && referenceSources.length() > 0) {
+                writeMultipartRequest(context, connection, model, prompt, size, responseFormat, referenceSources);
+            } else {
+                writeGenerationJson(connection, model, prompt, size, responseFormat);
+            }
+            int status = connection.getResponseCode();
+            if (!isSuccessfulGenerationResponse(status)) throw new DownloadException("图片生成接口返回 HTTP " + status, status);
+            JSONObject image = firstImage(readJsonBody(connection.getInputStream()));
+            long responseAt = System.currentTimeMillis();
+            String imageUrl = image.optString("url", ""); String b64 = image.optString("b64_json", "");
+            long bytes; String responseMode;
+            if (!imageUrl.isEmpty()) {
+                URL resolvedImageUrl = new URL(endpointUrl, imageUrl); HttpURLConnection imageConnection = null;
+                try {
+                    String imageBearer = sameOrigin(endpointUrl, resolvedImageUrl) ? bearerToken : null;
+                    imageConnection = openConnectionFollowingRedirects(resolvedImageUrl, imageBearer);
+                    int imageStatus = imageConnection.getResponseCode();
+                    if (imageStatus < 200 || imageStatus >= 300) throw new DownloadException("图片下载返回 HTTP " + imageStatus, imageStatus);
+                    bytes = copyResponse(imageConnection.getInputStream(), temporary);
+                } finally { if (imageConnection != null) imageConnection.disconnect(); }
+                responseMode = "url";
+            } else if (!b64.isEmpty()) { bytes = decodeBase64ToFile(b64, temporary); responseMode = "b64_json"; }
+            else throw new IOException("图片模型没有返回 URL 或图片数据");
+            long writeAt = System.currentTimeMillis();
+            StoredImage stored = finalizeImage(directory, temporary, assetId, bytes, responseAt - startedAt, writeAt - responseAt, startedAt);
+            JSObject result = stored.toJsObject(); result.put("responseMode", responseMode); return result;
+        } catch (Exception error) { deleteQuietly(temporary); throw error; }
+        finally { if (connection != null) connection.disconnect(); }
     }
 
     private File imageDirectory(String projectId) {
@@ -210,7 +200,7 @@ public class ImageAssetStorePlugin extends Plugin {
         }
     }
 
-    private void writeMultipartRequest(HttpURLConnection connection, String model, String prompt, String size, String responseFormat, JSArray referenceSources) throws IOException {
+    private static void writeMultipartRequest(android.content.Context context, HttpURLConnection connection, String model, String prompt, String size, String responseFormat, JSONArray referenceSources) throws IOException {
         String boundary = "----IllustratedStory" + UUID.randomUUID().toString().replace("-", "");
         connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
         try (OutputStream output = new BufferedOutputStream(connection.getOutputStream())) {
@@ -221,7 +211,7 @@ public class ImageAssetStorePlugin extends Plugin {
             for (int index = 0; index < referenceSources.length(); index++) {
                 String source = referenceSources.optString(index, "");
                 if (source.isEmpty()) throw new IOException("参考图地址无效");
-                writeMultipartImage(output, boundary, source, index + 1);
+                writeMultipartImage(context, output, boundary, source, index + 1);
             }
             output.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.US_ASCII));
         }
@@ -233,21 +223,21 @@ public class ImageAssetStorePlugin extends Plugin {
         output.write("\r\n".getBytes(StandardCharsets.US_ASCII));
     }
 
-    private void writeMultipartImage(OutputStream output, String boundary, String source, int index) throws IOException {
+    private static void writeMultipartImage(android.content.Context context, OutputStream output, String boundary, String source, int index) throws IOException {
         String contentType = referenceContentType(source);
         output.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"reference-" + index + "." + extensionForContentType(contentType) + "\"\r\nContent-Type: " + contentType + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
-        try (InputStream input = openReferenceImage(source)) {
+        try (InputStream input = openReferenceImage(context, source)) {
             copy(input, output);
         }
         output.write("\r\n".getBytes(StandardCharsets.US_ASCII));
     }
 
-    private InputStream openReferenceImage(String source) throws IOException {
+    private static InputStream openReferenceImage(android.content.Context context, String source) throws IOException {
         if (source.startsWith("data:")) return openDataUrl(source);
         Uri uri = Uri.parse(source);
-        if ("file".equalsIgnoreCase(uri.getScheme())) return openTrustedReferenceFile(new File(uri.getPath()));
+        if ("file".equalsIgnoreCase(uri.getScheme())) return openTrustedReferenceFile(context, new File(uri.getPath()));
         File capacitorFile = localCapacitorFile(source);
-        if (capacitorFile != null) return openTrustedReferenceFile(capacitorFile);
+        if (capacitorFile != null) return openTrustedReferenceFile(context, capacitorFile);
         URL remoteUrl = new URL(source);
         if (!isHttpUrl(remoteUrl)) throw new IOException("参考图地址无效");
         HttpURLConnection connection = openConnectionFollowingRedirects(remoteUrl, null);
@@ -259,16 +249,16 @@ public class ImageAssetStorePlugin extends Plugin {
         return new DisconnectingInputStream(new BufferedInputStream(connection.getInputStream()), connection);
     }
 
-    private InputStream openTrustedReferenceFile(File file) throws IOException {
+    private static InputStream openTrustedReferenceFile(android.content.Context context, File file) throws IOException {
         File canonical = file.getCanonicalFile();
-        if (!isWithinAppStorage(canonical)) throw new IOException("参考图不在应用私有存储中");
+        if (!isWithinAppStorage(context, canonical)) throw new IOException("参考图不在应用私有存储中");
         return new BufferedInputStream(new FileInputStream(canonical));
     }
 
-    private boolean isWithinAppStorage(File candidate) throws IOException {
-        return isWithin(candidate, getContext().getFilesDir())
-            || isWithin(candidate, getContext().getCacheDir())
-            || isWithin(candidate, getContext().getNoBackupFilesDir());
+    private static boolean isWithinAppStorage(android.content.Context context, File candidate) throws IOException {
+        return isWithin(candidate, context.getFilesDir())
+            || isWithin(candidate, context.getCacheDir())
+            || isWithin(candidate, context.getNoBackupFilesDir());
     }
 
     private static boolean isWithin(File candidate, File root) throws IOException {

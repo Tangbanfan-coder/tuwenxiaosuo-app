@@ -146,6 +146,18 @@ export class StoryDatabase extends Dexie {
       summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
       feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
     })
+    this.version(9).stores({
+      projects: 'id, updatedAt, lastOpenedAt',
+      messages: 'id, projectId, [projectId+order], createdAt, backgroundTaskId',
+      chapters: 'id, projectId, [projectId+order], updatedAt',
+      characters: 'id, projectId, [projectId+createdAt], status',
+      illustrations: 'id, projectId, [projectId+createdAt], status',
+      styles: 'id, &projectId, updatedAt',
+      scenes: 'id, projectId, [projectId+order], createdAt',
+      paragraphs: 'id, projectId, sourceType, [projectId+sourceType], [projectId+chapterId], [projectId+messageId], fingerprint, createdAt',
+      summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
+      feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
+    })
   }
 }
 
@@ -1223,6 +1235,25 @@ export async function beginWritingTurn(projectId: string, text: string, autoIllu
   return messages
 }
 
+export async function setWritingTurnBackgroundTask(noticeId: string, taskId: string) {
+  const notice = await storyDatabase.messages.get(noticeId)
+  if (!notice || notice.kind !== 'notice' || notice.status !== 'pending') return false
+  await storyDatabase.messages.update(noticeId, { backgroundTaskId: taskId })
+  return true
+}
+
+export async function listPendingWritingBackgroundTasks() {
+  return storyDatabase.messages.where('backgroundTaskId').notEqual('').filter((message) => (
+    message.kind === 'notice' && message.status === 'pending' && Boolean(message.backgroundTaskId)
+  )).toArray()
+}
+
+/** Native metadata recovery must also see notices whose task link never made it to IndexedDB. */
+export async function getWritingNotice(noticeId: string) {
+  const notice = await storyDatabase.messages.get(noticeId)
+  return notice?.kind === 'notice' ? notice : undefined
+}
+
 export async function completeWritingTurn(
   projectId: string,
   userMessageId: string,
@@ -1230,6 +1261,7 @@ export async function completeWritingTurn(
   result: WritingTurnResult,
   autoIllustrate: boolean,
   forceNewChapter = false,
+  expectedBackgroundTaskId?: string,
 ) {
   const now = Date.now()
   const generatedSummary = result.chapterSummary?.trim() || undefined
@@ -1239,6 +1271,14 @@ export async function completeWritingTurn(
     async () => {
       const project = await storyDatabase.projects.get(projectId)
       if (!project) throw new Error('当前作品不存在')
+      const notice = await storyDatabase.messages.get(noticeId)
+      // A native response can survive a process death after this transaction
+      // commits but before it is acknowledged. The ready notice is the stable,
+      // transactionally committed consumption marker.
+      if (!notice || notice.projectId !== projectId || notice.kind !== 'notice') throw new Error('写作任务不存在')
+      if (notice.status === 'ready') return
+      if (notice.status !== 'pending') throw new Error('写作任务已经失败，不能重复消费结果')
+      if (expectedBackgroundTaskId && notice.backgroundTaskId !== expectedBackgroundTaskId) throw new Error('后台写作结果不属于当前任务')
       let nextOrder = (await getLastMessageOrder(projectId)) + 1
 
       const chapters = await storyDatabase.chapters.where('projectId').equals(projectId).sortBy('order')
@@ -1431,6 +1471,7 @@ export async function failWritingTurn(noticeId: string, message: string, partial
   await storyDatabase.transaction('rw', storyDatabase.messages, async () => {
     const notice = await storyDatabase.messages.get(noticeId)
     if (!notice) return
+    if (notice.status === 'ready') return
 
     const draftHint = draft ? ' 已保留模型已经返回的未完成草稿，未写入章节正文。' : ''
     await storyDatabase.messages.update(noticeId, {

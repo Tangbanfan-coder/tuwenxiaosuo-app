@@ -20,6 +20,8 @@ export {
 } from './writing/instructions'
 export {
   generateWritingTurn,
+  prepareBackgroundWritingRequest,
+  parseBackgroundWritingResponse,
   previewWritingTurnBudget,
   type GenerateWritingTurnOptions,
 } from './writing/orchestration'

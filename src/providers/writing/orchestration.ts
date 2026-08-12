@@ -201,3 +201,42 @@ export async function generateWritingTurn(
   if (!content.trim()) throw new Error('文本模型没有返回内容')
   return parseWritingResult(content)
 }
+
+/** Builds the same validated OpenAI-compatible request but keeps it non-streaming for Android foreground service execution. */
+export async function prepareBackgroundWritingRequest(
+  workspace: ProjectWorkspace,
+  userRequest: string,
+  config: ProviderConfig,
+  options: GenerateWritingTurnOptions = {},
+) {
+  const baseUrl = normalizeBaseUrl(config.baseUrl)
+  if (!baseUrl) throw new Error('请先配置文本模型的 API URL')
+  if (!config.model.trim()) throw new Error('请先选择文本模型')
+  const prepared = await prepareWritingTurnContext(workspace, userRequest, config, options)
+  options.onContextPlan?.(prepared.finalPlan)
+  assertContextCapacity(prepared.finalPlan)
+  if (prepared.rulesTruncated) throw new Error('局部创作设定超过核心预算，本轮已阻止生成。请在“局部创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
+  if (prepared.finalPlan.isOverLimit) throw new Error('最终请求的输入仍超过模型上下文窗口（真实 token 硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
+  return {
+    endpoint: `${baseUrl}/chat/completions`,
+    body: JSON.stringify({
+      model: config.model,
+      stream: false,
+      ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
+      ...outputTokenParameter(config, prepared.initialPlan.outputReserveTokens),
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: prepared.contextMessage },
+        { role: 'user', content: userRequest },
+      ],
+    }),
+  }
+}
+
+export function parseBackgroundWritingResponse(rawResponse: string) {
+  let response: ChatCompletionResponse
+  try { response = JSON.parse(rawResponse) as ChatCompletionResponse } catch { throw new Error('文本模型返回格式无效') }
+  const content = contentToString(response.choices?.[0]?.message?.content)
+  if (!content.trim()) throw new Error('文本模型没有返回内容')
+  return parseWritingResult(content)
+}
