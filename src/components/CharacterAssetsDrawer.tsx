@@ -33,6 +33,7 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
   const [editingCharacterId, setEditingCharacterId] = useState<string>()
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>()
   const [savingProfile, setSavingProfile] = useState(false)
+  const [pendingPortraits, setPendingPortraits] = useState<Record<string, 'portrait' | 'revision'>>({})
   const { present, closing } = usePresence(open, onClose, 180)
 
   useEffect(() => {
@@ -76,6 +77,26 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
     }
   }
 
+  async function requestPortrait(characterId: string, feedbackText?: string) {
+    if (pendingPortraits[characterId]) return
+    const kind = feedbackText ? 'revision' : 'portrait'
+    setPendingPortraits((value) => ({ ...value, [characterId]: kind }))
+    try {
+      await onGenerate(characterId, feedbackText)
+      if (kind === 'revision') {
+        setFeedbackCharacterId(undefined)
+        setFeedback('')
+      }
+    } catch {
+      // The persisted portrait error is rendered on the asset; keep revision input intact for retry.
+    } finally {
+      setPendingPortraits((value) => {
+        const { [characterId]: _completed, ...rest } = value
+        return rest
+      })
+    }
+  }
+
   return (
     <div className={`asset-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) onClose()
@@ -100,13 +121,15 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
           {characters.map((character) => {
             const status = character.portraitStatus ?? (character.status === 'confirmed' ? 'confirmed' : 'planned')
             const isFeedbackOpen = feedbackCharacterId === character.id
+            const pendingPortrait = pendingPortraits[character.id]
+            const portraitGenerating = status === 'generating' || Boolean(pendingPortrait)
             const referenceStyleMode = character.continuity.referenceStyleMode ?? 'project'
             return (
-              <article className="character-asset" key={character.id}>
+              <article className="character-asset" key={character.id} aria-busy={portraitGenerating || undefined}>
                 <div className="portrait-frame">
                   {character.continuity.referenceImageUrl || character.continuity.localUri ? (
                     <img src={resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri)} alt={`${character.name}定妆照候选`} />
-                  ) : status === 'generating' ? (
+                  ) : portraitGenerating ? (
                     <div className="portrait-state"><LoaderCircle className="spin" size={25} /><span>正在生成定妆照…</span></div>
                   ) : (
                     <div className="portrait-state"><ImagePlus size={25} /><span>{status === 'failed' ? '本次生成失败' : '尚未生成定妆照'}</span></div>
@@ -114,18 +137,34 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
                 </div>
 
                 <div className="character-copy">
-                  <header><div><h3>{character.name}</h3><p>{character.role}</p></div><span className={`asset-status ${status}`}>{statusLabel(status)}</span></header>
+                  <header><div><h3>{character.name}</h3><p>{character.role}</p></div><span className={`asset-status ${portraitGenerating ? 'generating' : status}`} role="status" aria-live="polite">{statusLabel(portraitGenerating ? 'generating' : status)}</span></header>
                   {editingCharacterId === character.id && profileDraft ? (
                     <form className="character-profile-editor" onSubmit={(event) => {
                       event.preventDefault()
                       void saveProfile(character.id)
                     }}>
-                      <label>
-                        <span>叙事代词</span>
-                        <select aria-label="叙事代词" value={profileDraft.narrativePronoun ?? ''} onChange={(event) => setProfileDraft({ ...profileDraft, narrativePronoun: event.target.value as NarrativePronoun || undefined })}>
-                          <option value="">请选择</option><option value="she">她</option><option value="he">他</option><option value="ta">TA</option><option value="name">仅使用姓名</option>
-                        </select>
-                      </label>
+                      <fieldset className="pronoun-choice" disabled={savingProfile}>
+                        <legend>叙事代词</legend>
+                        <div role="radiogroup" aria-label="叙事代词">
+                          {([
+                            [undefined, '未选择'],
+                            ['she', '她'],
+                            ['he', '他'],
+                            ['ta', 'TA'],
+                            ['name', '仅使用姓名'],
+                          ] as const).map(([value, label]) => (
+                            <button
+                              key={value ?? 'unset'}
+                              type="button"
+                              role="radio"
+                              aria-checked={profileDraft.narrativePronoun === value}
+                              onClick={() => setProfileDraft({ ...profileDraft, narrativePronoun: value })}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </fieldset>
                       <label>
                         <span>身份锚点</span>
                         <input value={profileDraft.ageAndBuild} placeholder="年龄感与体型" onChange={(event) => setProfileDraft({ ...profileDraft, ageAndBuild: event.target.value })} />
@@ -199,28 +238,26 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
                   {isFeedbackOpen && (
                     <form className="portrait-feedback" onSubmit={(event) => {
                       event.preventDefault()
-                      if (!feedback.trim()) return
-                      void onGenerate(character.id, feedback.trim()).then(() => {
-                        setFeedbackCharacterId(undefined)
-                        setFeedback('')
-                      })
+                      if (!feedback.trim() || pendingPortrait) return
+                      void requestPortrait(character.id, feedback.trim())
                     }}>
                       <label htmlFor={`portrait-feedback-${character.id}`}>具体哪里不满意？</label>
                       <textarea
                         id={`portrait-feedback-${character.id}`}
                         rows={3}
                         value={feedback}
+                        disabled={Boolean(pendingPortrait)}
                         placeholder="例如：发型更利落，年龄年轻两三岁，保留眼下小痣和大衣。"
                         onChange={(event) => setFeedback(event.target.value)}
                       />
-                      <div><button className="quiet-button" type="button" onClick={() => setFeedbackCharacterId(undefined)}>取消</button><button className="confirm-asset-button" type="submit" disabled={!feedback.trim()}><RefreshCw size={17} />生成优化版</button></div>
+                      <div><button className="quiet-button" type="button" disabled={Boolean(pendingPortrait)} onClick={() => setFeedbackCharacterId(undefined)}>取消</button><button className="confirm-asset-button" type="submit" disabled={!feedback.trim() || Boolean(pendingPortrait)}>{pendingPortrait ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{pendingPortrait === 'revision' ? '正在生成优化版' : '生成优化版'}</button></div>
                     </form>
                   )}
 
                   {(status === 'planned' || status === 'failed') && (
-                    <button className="confirm-asset-button full-width" type="button" onClick={() => void onGenerate(character.id)}>
-                      {status === 'failed' ? <RefreshCw size={17} /> : <ImagePlus size={17} />}
-                      {status === 'failed' ? '手动重试定妆照' : '生成定妆照'}
+                    <button className="confirm-asset-button full-width" type="button" disabled={Boolean(pendingPortrait)} onClick={() => void requestPortrait(character.id)}>
+                      {pendingPortrait ? <LoaderCircle className="spin" size={17} /> : status === 'failed' ? <RefreshCw size={17} /> : <ImagePlus size={17} />}
+                      {pendingPortrait ? '正在生成定妆照' : status === 'failed' ? '手动重试定妆照' : '生成定妆照'}
                     </button>
                   )}
 

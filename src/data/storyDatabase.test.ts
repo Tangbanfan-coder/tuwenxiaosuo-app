@@ -22,6 +22,8 @@ import {
   loadProjectScenes,
   removeFeedback,
   restoreChapterSummaryVersion,
+  restoreIllustrationsBlockedByReference,
+  setIllustrationBlockedByReference,
   storyDatabase,
   toggleFeedback,
   toggleFeedbackBatch,
@@ -153,6 +155,9 @@ describe('character narrative pronouns', () => {
     await updateCharacterProfile('legacy-character', { narrativePronoun: 'ta' })
     await confirmCharacterPortrait('legacy-character')
     expect(await storyDatabase.characters.get('legacy-character')).toMatchObject({ narrativePronoun: 'ta', status: 'confirmed' })
+
+    await updateCharacterProfile('legacy-character', { narrativePronoun: undefined })
+    expect((await storyDatabase.characters.get('legacy-character'))?.narrativePronoun).toBeUndefined()
   })
 
   it('creates new drafts without inventing a narrative pronoun', async () => {
@@ -420,7 +425,7 @@ describe('StoryDatabase v5-v6 summary version and feedback schema migrations', (
       upgraded = new StoryDatabase(name)
       await upgraded.open()
 
-      expect(upgraded.verno).toBe(8)
+      expect(upgraded.verno).toBe(9)
       expect(await upgraded.feedback.count()).toBe(0)
       const versions = await upgraded.summaryVersions.where('projectId').equals('project-v4').toArray()
       const migrated = versions.find((version) => version.chapterId === summarizedChapter.id)
@@ -682,7 +687,7 @@ describe('paragraph persistence', () => {
       visualPlan: {
         title: '雨夜', prompt: '雨夜街头', stylePrompt: '', negativePrompt: '',
         action: '撑伞穿过积水', bodyLanguage: '压低肩膀快步前行', expression: '神情紧绷', gaze: '望向巷口灯光', camera: '中景侧拍', motion: '雨水沿伞沿坠落',
-        characters: [{ name: '林昭', role: '主角', ageAndBuild: '青年', fixedTraits: ['黑发'], defaultLook: '清瘦', wardrobe: '灰外套' }],
+        characters: [{ name: '林昭', role: '主角', narrativePronoun: 'she', ageAndBuild: '青年', fixedTraits: ['黑发'], defaultLook: '清瘦', wardrobe: '灰外套' }],
       },
     }
     await completeWritingTurn(project.id, userMessage.id, notice.id, result, false)
@@ -690,7 +695,69 @@ describe('paragraph persistence', () => {
     expect(await storyDatabase.illustrations.where('projectId').equals(project.id).count()).toBe(1)
     expect((await storyDatabase.illustrations.where('projectId').equals(project.id).first())).toMatchObject({
       action: '撑伞穿过积水', bodyLanguage: '压低肩膀快步前行', expression: '神情紧绷', gaze: '望向巷口灯光', camera: '中景侧拍', motion: '雨水沿伞沿坠落',
+      status: 'failed', failureKind: 'reference-unavailable',
     })
+    expect(await storyDatabase.characters.where('projectId').equals(project.id).first()).toMatchObject({
+      narrativePronoun: 'she',
+      identity: { ageAndBuild: '青年', fixedTraits: ['黑发'] },
+      appearance: { defaultLook: '清瘦', wardrobe: '灰外套' },
+    })
+  })
+
+  it('fills only empty draft fields from a matching writing plan and leaves confirmed profiles authoritative', async () => {
+    await storyDatabase.characters.add({
+      id: 'draft-lin', projectId: project.id, name: '林染', role: '',
+      identity: { ageAndBuild: '', fixedTraits: [] }, appearance: { defaultLook: '', wardrobe: '' },
+      continuity: { revision: 0, referenceStyleMode: 'project' }, portraitStatus: 'planned', status: 'draft', createdAt: 1, updatedAt: 1,
+    })
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写作', false)
+    await completeWritingTurn(project.id, userMessage.id, notice.id, {
+      ...writingResult,
+      visualPlan: {
+        title: '雨夜', prompt: '林染走进雨夜街头', stylePrompt: '', negativePrompt: '', characters: [{
+          name: '林染', role: '主角', narrativePronoun: 'ta', ageAndBuild: '青年，身形修长', fixedTraits: ['齐肩黑发'], defaultLook: '眉眼清秀', wardrobe: '深色风衣',
+        }],
+      },
+    }, false)
+    expect(await storyDatabase.characters.get('draft-lin')).toMatchObject({
+      role: '主角', narrativePronoun: 'ta',
+      identity: { ageAndBuild: '青年，身形修长', fixedTraits: ['齐肩黑发'] },
+      appearance: { defaultLook: '眉眼清秀', wardrobe: '深色风衣' },
+    })
+
+    await storyDatabase.characters.update('draft-lin', { status: 'confirmed', role: '用户确认身份', narrativePronoun: 'name' })
+    const [secondUserMessage, secondNotice] = await beginWritingTurn(project.id, '继续写作', false)
+    await completeWritingTurn(project.id, secondUserMessage.id, secondNotice.id, {
+      ...writingResult,
+      visualPlan: {
+        title: '另一幕', prompt: '林染回头', stylePrompt: '', negativePrompt: '', characters: [{
+          name: '林染', role: '模型身份', narrativePronoun: 'she', ageAndBuild: '模型年龄', fixedTraits: ['模型特征'], defaultLook: '模型外貌', wardrobe: '模型服装',
+        }],
+      },
+    }, false)
+    expect(await storyDatabase.characters.get('draft-lin')).toMatchObject({
+      status: 'confirmed', role: '用户确认身份', narrativePronoun: 'name',
+      identity: { ageAndBuild: '青年，身形修长', fixedTraits: ['齐肩黑发'] },
+      appearance: { defaultLook: '眉眼清秀', wardrobe: '深色风衣' },
+    })
+  })
+
+  it('restores only reference blockers, never ordinary image failures', async () => {
+    await storyDatabase.illustrations.bulkAdd([
+      { id: 'reference-blocked', projectId: project.id, title: '待确认', prompt: '场景', referenceCharacterIds: [], status: 'failed', failureKind: 'reference-unavailable', errorMessage: '参考图未确认', createdAt: 1, updatedAt: 1 },
+      { id: 'image-failed', projectId: project.id, title: '模型失败', prompt: '场景', referenceCharacterIds: [], status: 'failed', errorMessage: '网络失败', createdAt: 1, updatedAt: 1 },
+    ])
+    expect(await restoreIllustrationsBlockedByReference(project.id, ['reference-blocked', 'image-failed'])).toBe(1)
+    const restored = await storyDatabase.illustrations.get('reference-blocked')
+    const imageFailed = await storyDatabase.illustrations.get('image-failed')
+    expect(restored).toMatchObject({ status: 'planned' })
+    expect(restored?.failureKind).toBeUndefined()
+    expect(restored?.errorMessage).toBeUndefined()
+    expect(imageFailed).toMatchObject({ status: 'failed', errorMessage: '网络失败' })
+    expect(imageFailed?.failureKind).toBeUndefined()
+
+    await setIllustrationBlockedByReference('image-failed', '参考图未确认')
+    expect(await storyDatabase.illustrations.get('image-failed')).toMatchObject({ status: 'failed', failureKind: 'reference-unavailable' })
   })
   it('writes a prose message and its paragraph rows in one transaction', async () => {
     const [userMessage, notice] = await beginWritingTurn(project.id, '请开始写作', false)

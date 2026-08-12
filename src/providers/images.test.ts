@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HttpTransport, ProviderConfig } from './types'
 import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage } from './images'
 
+const imageAssetStoreMocks = vi.hoisted(() => ({ generateNativeImageAsset: vi.fn() }))
+
+vi.mock('./imageAssetStore', () => ({ generateNativeImageAsset: imageAssetStoreMocks.generateNativeImageAsset }))
+
 const config: ProviderConfig = {
   id: 'image-provider',
   name: '图片模型',
@@ -18,6 +22,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  imageAssetStoreMocks.generateNativeImageAsset.mockReset()
 })
 
 describe('editOpenAiImage', () => {
@@ -55,7 +60,55 @@ describe('editOpenAiImage', () => {
 })
 
 describe('image URL recovery', () => {
-  it('does not send response_format to GPT Image and does not download its returned b64 data', async () => {
+  it('uses the Android generation-and-persist path before any transport request when given a target', async () => {
+    imageAssetStoreMocks.generateNativeImageAsset.mockResolvedValue({ imageUrl: '', localUri: 'file://projects/project-1/images/asset-1.png' })
+    const request = vi.fn()
+    const transport = { request } as unknown as HttpTransport
+
+    await expect(generateOpenAiImage(config, '生成定妆照', transport, '1024x1536', undefined, { projectId: 'project-1', assetId: 'asset-1' }))
+      .resolves.toEqual({ kind: 'local', localUri: 'file://projects/project-1/images/asset-1.png' })
+    expect(imageAssetStoreMocks.generateNativeImageAsset).toHaveBeenCalledWith(expect.objectContaining({
+      endpoint: 'https://api.test/v1/images/generations', model: 'gpt-image-2', prompt: '生成定妆照', size: '1024x1536',
+      target: { projectId: 'project-1', assetId: 'asset-1' }, secretRef: 'image-key',
+    }))
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('uses the native multipart path without first converting local references into JavaScript blobs', async () => {
+    imageAssetStoreMocks.generateNativeImageAsset.mockResolvedValue({ imageUrl: '', localUri: 'file://projects/project-1/images/asset-1.png' })
+    const request = vi.fn()
+    const transport = { request } as unknown as HttpTransport
+    const reference = 'http://localhost/_capacitor_file_/data/user/0/reference.png'
+
+    await expect(editOpenAiImage(config, '保持角色一致', [reference], transport, '1024x1536', undefined, { projectId: 'project-1', assetId: 'asset-1' }))
+      .resolves.toEqual({ kind: 'local', localUri: 'file://projects/project-1/images/asset-1.png' })
+    expect(imageAssetStoreMocks.generateNativeImageAsset).toHaveBeenCalledWith(expect.objectContaining({
+      endpoint: 'https://api.test/v1/images/edits', referenceSources: [reference],
+    }))
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('does not retry through JavaScript when native generation fails', async () => {
+    imageAssetStoreMocks.generateNativeImageAsset.mockRejectedValue(new Error('接口返回 HTTP 500'))
+    const request = vi.fn()
+    const transport = { request } as unknown as HttpTransport
+
+    await expect(generateOpenAiImage(config, '生成定妆照', transport, '1024x1536', undefined, { projectId: 'project-1', assetId: 'asset-1' }))
+      .rejects.toThrow('接口返回 HTTP 500')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('does not retry through JavaScript when native generation returns no local file', async () => {
+    imageAssetStoreMocks.generateNativeImageAsset.mockResolvedValue({ imageUrl: '' })
+    const request = vi.fn()
+    const transport = { request } as unknown as HttpTransport
+
+    await expect(generateOpenAiImage(config, '生成定妆照', transport, '1024x1536', undefined, { projectId: 'project-1', assetId: 'asset-1' }))
+      .rejects.toThrow('原生图片生成未返回本地文件')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('prefers a returned URL so the native storage path can avoid b64 bridge transfer', async () => {
     const request = vi.fn().mockResolvedValue({
       status: 200,
       data: { data: [{ url: 'https://cdn.test/image.png', b64_json: 'generated-image' }] },
@@ -63,7 +116,7 @@ describe('image URL recovery', () => {
     const resolveImageSource = vi.fn()
     const transport = { request, resolveImageSource } as unknown as HttpTransport
 
-    await expect(generateOpenAiImage(config, '生成定妆照', transport)).resolves.toEqual({ kind: 'inline', dataUrl: 'data:image/png;base64,generated-image' })
+    await expect(generateOpenAiImage(config, '生成定妆照', transport)).resolves.toEqual({ kind: 'remote', url: 'https://cdn.test/image.png', auth: undefined })
     expect(JSON.parse(request.mock.calls[0][0].body)).not.toHaveProperty('response_format')
     expect(resolveImageSource).not.toHaveBeenCalled()
   })

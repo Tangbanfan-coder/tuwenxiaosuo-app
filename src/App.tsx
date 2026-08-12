@@ -37,12 +37,15 @@ import {
   listChapterSummaryVersions,
   renameProject,
   restoreChapterSummaryVersion,
+  restoreIllustrationsBlockedByReference,
   setCharacterPortraitFailed,
   setCharacterPortraitGenerating,
   setCharacterPortraitReady,
   setIllustrationFailed,
+  setIllustrationBlockedByReference,
   setIllustrationGenerating,
   setIllustrationReady,
+  setWritingTurnBackgroundTask,
   updateAutoIllustrate,
   updateCharacterProfile,
   updateCharacterReferenceStyleMode,
@@ -67,8 +70,9 @@ import ConfirmDialog from './components/ConfirmDialog'
 import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage } from './providers/images'
 import { analyzeReferenceImage } from './providers/referenceAnalysis'
 import { secretStore } from './providers/secretStore'
+import { BackgroundTaskUncertainError, acknowledgeBackgroundGenerationTask, enqueueBackgroundTextTask, supportsBackgroundGeneration, waitForBackgroundGenerationTask } from './providers/backgroundGeneration'
 import type { ProviderSettings, ProviderSlot, ReasoningEffort } from './providers/types'
-import { explicitlyRequestsNewChapter, generateWritingTurn, projectStreamingProse, type ContextBudgetPlan } from './providers/writing'
+import { explicitlyRequestsNewChapter, generateWritingTurn, parseBackgroundWritingResponse, prepareBackgroundWritingRequest, projectStreamingProse, type ContextBudgetPlan } from './providers/writing'
 
 const APPEARANCE_KEY = 'illustrated-story-chat.appearance.v1'
 
@@ -465,9 +469,9 @@ export default function App() {
     return Boolean(provider.baseUrl.trim() && provider.model.trim() && await secretStore.has(provider.secretRef))
   }
 
-  function enqueueImageTask(task: () => Promise<void>) {
+  function enqueueImageTask<T>(task: () => Promise<T>) {
     const queued = imageQueueRef.current.then(task, task)
-    imageQueueRef.current = queued.catch(() => undefined)
+    imageQueueRef.current = queued.then(() => undefined, () => undefined)
     return queued
   }
 
@@ -494,18 +498,21 @@ export default function App() {
     try {
       const prompt = buildCharacterPortraitPrompt(character, sourceWorkspace.style, feedback)
       const currentReference = resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri)
+      const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: character.id, target: 'portrait' as const }
       const imageUrl = feedback && currentReference
-        ? await editOpenAiImage(providerSettings.image, prompt, [currentReference], browserTransport)
-        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport)
+        ? await editOpenAiImage(providerSettings.image, prompt, [currentReference], browserTransport, '1024x1536', undefined, nativeTarget)
+        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1024x1536', undefined, nativeTarget)
       const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, character.id)
       await setCharacterPortraitReady(character.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)
       showToast(`${character.name}的定妆照等待确认`)
+      return true
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
       await setCharacterPortraitFailed(character.id, message)
       await refreshWorkspace(sourceWorkspace.project.id)
       showToast(`${character.name}的定妆照生成失败`, 'error')
+      return false
     }
   }
 
@@ -520,7 +527,8 @@ export default function App() {
       showToast('请先完成图片模型配置')
       return
     }
-    await enqueueImageTask(() => generateCharacterPortrait(character, workspace, feedback))
+    const succeeded = await enqueueImageTask(() => generateCharacterPortrait(character, workspace, feedback))
+    if (!succeeded) throw new Error('定妆照生成失败')
   }
 
   async function importCharacterReference(target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode, autoAnalyze: boolean) {
@@ -602,7 +610,7 @@ export default function App() {
   async function generateIllustration(illustration: IllustrationAsset, sourceWorkspace: ProjectWorkspace) {
     const referenceResolution = resolveIllustrationReferences(illustration, sourceWorkspace.characters)
     if (!referenceResolution.ready) {
-      await setIllustrationFailed(illustration.id, referenceResolution.reason)
+      await setIllustrationBlockedByReference(illustration.id, referenceResolution.reason)
       await refreshWorkspace(sourceWorkspace.project.id)
       showToast(referenceResolution.reason, 'error')
       return
@@ -623,12 +631,13 @@ export default function App() {
         ? [...characterReferenceSources, sceneReferenceSource]
         : characterReferenceSources
       const prompt = buildIllustrationPrompt(illustration, sourceWorkspace.style, referenceCharacters, Boolean(sceneReferenceSource))
+      const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: illustration.id, target: 'illustration' as const }
       const setStage = (stage: 'waiting' | 'downloading' | 'saving' | 'validating') => {
         setIllustrationGenerationStages((current) => ({ ...current, [illustration.id]: stage }))
       }
       const imageUrl = referenceSources.length
-        ? await editOpenAiImage(providerSettings.image, prompt, referenceSources, browserTransport, '1536x1024', setStage)
-        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1536x1024', setStage)
+        ? await editOpenAiImage(providerSettings.image, prompt, referenceSources, browserTransport, '1536x1024', setStage, nativeTarget)
+        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1536x1024', setStage, nativeTarget)
       const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, illustration.id, 'generated', setStage)
       await setIllustrationReady(illustration.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)
@@ -661,17 +670,40 @@ export default function App() {
 
   async function confirmCharacter(characterId: string) {
     if (!workspace) return
+    const legacyReferenceBlocks = workspace.illustrations.flatMap((illustration) => {
+      if (illustration.status !== 'failed' || illustration.failureKind || !illustration.errorMessage) return []
+      const resolution = resolveIllustrationReferences(illustration, workspace.characters)
+      return !resolution.ready && illustration.errorMessage === resolution.reason
+        ? [{ illustrationId: illustration.id, reason: resolution.reason }]
+        : []
+    })
     try {
       await confirmCharacterPortrait(characterId)
     } catch (error) {
       showToast(error instanceof Error ? error.message : '确认角色失败', 'error')
       return
     }
-    const nextWorkspace = await refreshWorkspace(workspace.project.id)
-    if (!nextWorkspace || !nextWorkspace.project.autoIllustrate || !(await providerIsReady('image'))) return
+    await Promise.all(legacyReferenceBlocks.map(({ illustrationId, reason }) => (
+      setIllustrationBlockedByReference(illustrationId, reason)
+    )))
+    let nextWorkspace = await refreshWorkspace(workspace.project.id)
+    if (!nextWorkspace) return
+    const confirmedWorkspace = nextWorkspace
+    const readyReferenceBlocks = confirmedWorkspace.illustrations.filter((illustration) => {
+      if (illustration.failureKind !== 'reference-unavailable') return false
+      const resolution = resolveIllustrationReferences(illustration, confirmedWorkspace.characters)
+      return resolution.ready && resolution.characters.some((character) => character.id === characterId)
+    })
+    if (readyReferenceBlocks.length) {
+      await restoreIllustrationsBlockedByReference(confirmedWorkspace.project.id, readyReferenceBlocks.map((illustration) => illustration.id))
+      nextWorkspace = await refreshWorkspace(workspace.project.id)
+      if (!nextWorkspace) return
+    }
+    if (!nextWorkspace.project.autoIllustrate || !(await providerIsReady('image'))) return
     const eligible = nextWorkspace.illustrations.filter((illustration) => {
       if (illustration.status !== 'planned') return false
-      return resolveIllustrationReferences(illustration, nextWorkspace.characters).ready
+      const resolution = resolveIllustrationReferences(illustration, nextWorkspace.characters)
+      return resolution.ready && resolution.characters.some((character) => character.id === characterId)
     })
     for (const illustration of eligible) {
       void queueIllustration(illustration, nextWorkspace)
@@ -717,6 +749,8 @@ export default function App() {
     setStreamingText('')
     let noticeId: string | undefined
     let shouldRestoreDraft = false
+    let backgroundOutcome: 'none' | 'issued' | 'failed' | 'uncertain' | 'completed' = 'none'
+    let expectedBackgroundTaskId: string | undefined
     let contextReminder: { text: string; kind: 'success' | 'error' } | undefined
     try {
       const addedMessages = await beginWritingTurn(
@@ -734,11 +768,8 @@ export default function App() {
         messages: [...current.messages, ...addedMessages],
       } : current)
       await refreshProjects()
-      const result = await generateWritingTurn(workspace, text, textProvider, browserTransport, (delta) => {
-        streamingRawRef.current += delta
-        setStreamingText(projectStreamingProse(streamingRawRef.current))
-      }, {
-        onContextPlan: (plan) => {
+      const writingOptions = {
+        onContextPlan: (plan: ContextBudgetPlan) => {
           setContextUsagePlan(plan)
           setContextUsageProjectId(workspace.project.id)
           setContextUsageError('')
@@ -755,15 +786,63 @@ export default function App() {
             contextReminder = { text: reminder, kind: nextTier === 100 ? 'error' : 'success' }
           }
         },
-      })
-      await completeWritingTurn(
-        workspace.project.id,
-        userMessageId,
-        noticeId,
-        result,
-        workspace.project.autoIllustrate,
-        explicitlyRequestsNewChapter(text),
-      )
+      }
+      const forceNewChapter = explicitlyRequestsNewChapter(text)
+      const backgroundTask = supportsBackgroundGeneration()
+        ? await (async () => {
+          const preparedBackgroundRequest = await prepareBackgroundWritingRequest(workspace, text, textProvider, writingOptions)
+          return enqueueBackgroundTextTask({
+            ...preparedBackgroundRequest,
+            secretRef: textProvider.secretRef,
+            metadata: { projectId: workspace.project.id, userMessageId, noticeId, autoIllustrate: workspace.project.autoIllustrate, forceNewChapter },
+          })
+        })()
+        : undefined
+      let result
+      if (backgroundTask) {
+        backgroundOutcome = 'issued'
+        const linked = await setWritingTurnBackgroundTask(noticeId, backgroundTask.id)
+        if (!linked) {
+          backgroundOutcome = 'uncertain'
+          throw new BackgroundTaskUncertainError('请求已发出，正在等待补收结果')
+        }
+        expectedBackgroundTaskId = backgroundTask.id
+        let completed
+        try { completed = await waitForBackgroundGenerationTask(backgroundTask.id) }
+        catch { backgroundOutcome = 'uncertain'; throw new BackgroundTaskUncertainError() }
+        if (completed.state === 'unknown') { backgroundOutcome = 'uncertain'; throw new BackgroundTaskUncertainError() }
+        if (completed.state !== 'completed' || !completed.rawResponse) { backgroundOutcome = 'failed'; throw new Error(completed.error || '后台写作未完成') }
+        try {
+          result = parseBackgroundWritingResponse(completed.rawResponse)
+        } catch (error) {
+          backgroundOutcome = 'failed'
+          throw error
+        }
+        backgroundOutcome = 'completed'
+      } else {
+        result = await generateWritingTurn(workspace, text, textProvider, browserTransport, (delta) => {
+          streamingRawRef.current += delta
+          setStreamingText(projectStreamingProse(streamingRawRef.current))
+        }, writingOptions)
+      }
+      try {
+        await completeWritingTurn(
+          workspace.project.id,
+          userMessageId,
+          noticeId,
+          result,
+          workspace.project.autoIllustrate,
+          forceNewChapter,
+          expectedBackgroundTaskId,
+        )
+      } catch (error) {
+        if (expectedBackgroundTaskId) {
+          backgroundOutcome = 'uncertain'
+          throw new BackgroundTaskUncertainError('结果已保存，正在等待下次补收')
+        }
+        throw error
+      }
+      if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId)
       // The final prose is about to be loaded from storage; do not render the
       // same turn twice while the workspace refresh is in flight.
       streamingRawRef.current = ''
@@ -810,13 +889,19 @@ export default function App() {
       if (contextReminder) showToast(contextReminder.text, contextReminder.kind)
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
-      if (noticeId) {
+      if (noticeId && backgroundOutcome !== 'issued' && backgroundOutcome !== 'uncertain') {
         const partialProse = projectStreamingProse(streamingRawRef.current)
         await failWritingTurn(noticeId, message, partialProse)
+        if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId)
         await refreshWorkspace(workspace.project.id)
       }
-      shouldRestoreDraft = true
-      showToast('本轮写作未完成', 'error')
+      if (backgroundOutcome === 'issued' || backgroundOutcome === 'uncertain' || error instanceof BackgroundTaskUncertainError) {
+        shouldRestoreDraft = false
+        showToast(error instanceof Error ? error.message : '请求已发出，等待补收结果', 'error')
+      } else {
+        shouldRestoreDraft = true
+        showToast('本轮写作未完成', 'error')
+      }
     } finally {
       setSending(false)
       streamingRawRef.current = ''

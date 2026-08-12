@@ -17,6 +17,11 @@ const databaseMocks = vi.hoisted(() => ({
   setCharacterPortraitReady: vi.fn(),
   setIllustrationFailed: vi.fn(),
   setIllustrationReady: vi.fn(),
+  listPendingWritingBackgroundTasks: vi.fn(),
+  getWritingNotice: vi.fn(),
+  setWritingTurnBackgroundTask: vi.fn(),
+  completeWritingTurn: vi.fn(),
+  failWritingTurn: vi.fn(),
 }))
 
 const imageAssetMocks = vi.hoisted(() => ({
@@ -26,10 +31,18 @@ const imageAssetMocks = vi.hoisted(() => ({
 const modelLimitMocks = vi.hoisted(() => ({
   refreshModelLimits: vi.fn(),
 }))
+const backgroundMocks = vi.hoisted(() => ({
+  acknowledgeBackgroundGenerationTask: vi.fn(),
+  listBackgroundGenerationTasks: vi.fn(),
+  readBackgroundGenerationTask: vi.fn(),
+}))
+const writingMocks = vi.hoisted(() => ({ parseBackgroundWritingResponse: vi.fn() }))
 
 vi.mock('../data/storyDatabase', () => databaseMocks)
 vi.mock('../providers/imageAssetStore', () => imageAssetMocks)
 vi.mock('../providers/modelLimits', () => modelLimitMocks)
+vi.mock('../providers/backgroundGeneration', () => backgroundMocks)
+vi.mock('../providers/writing', () => writingMocks)
 
 const project: StoryProject = {
   id: 'project-1',
@@ -68,11 +81,16 @@ beforeEach(() => {
   databaseMocks.initializeStoryDatabase.mockResolvedValue(undefined)
   databaseMocks.listGeneratingImageAssets.mockResolvedValue({ illustrations: [], characters: [] })
   databaseMocks.listReadyLocalIllustrations.mockResolvedValue([])
+  databaseMocks.listPendingWritingBackgroundTasks.mockResolvedValue([])
+  databaseMocks.getWritingNotice.mockResolvedValue(undefined)
   databaseMocks.listProjects.mockResolvedValue([project])
   databaseMocks.getActiveProjectId.mockReturnValue(project.id)
   databaseMocks.markProjectOpened.mockResolvedValue(undefined)
   databaseMocks.loadProjectWorkspace.mockResolvedValue(workspace)
   modelLimitMocks.refreshModelLimits.mockResolvedValue(undefined)
+  backgroundMocks.listBackgroundGenerationTasks.mockResolvedValue([])
+  backgroundMocks.readBackgroundGenerationTask.mockResolvedValue(undefined)
+  writingMocks.parseBackgroundWritingResponse.mockReturnValue({ assistantNote: '完成', chapterAction: 'continue', paragraphs: ['正文'] })
   localStorage.clear()
 })
 
@@ -142,5 +160,56 @@ describe('useAppBootstrap', () => {
     expect(imageAssetMocks.recoverPersistedImageAsset).toHaveBeenCalledWith(project.id, 'illustration-1', 42)
     expect(databaseMocks.setIllustrationReady).toHaveBeenCalledWith('illustration-1', '', 'local://recovered.png')
     expect(onToast).toHaveBeenCalledWith('已恢复 1 个图片任务')
+  })
+
+  it('links and consumes an orphaned completed text task in the same boot', async () => {
+    const notice = { id: 'notice-1', projectId: project.id, kind: 'notice', status: 'pending' }
+    databaseMocks.getWritingNotice.mockResolvedValue(notice)
+    backgroundMocks.listBackgroundGenerationTasks.mockResolvedValue([{
+      id: 'task-1', kind: 'text', state: 'completed', rawResponse: '{"choices":[]}',
+      metadata: { noticeId: notice.id, projectId: project.id, userMessageId: 'user-1', autoIllustrate: false, forceNewChapter: false },
+    }])
+    databaseMocks.setWritingTurnBackgroundTask.mockResolvedValue(true)
+    databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
+    const { result } = renderHook(() => useAppBootstrap({ onEmptyLibrary: vi.fn(), onToast: vi.fn() }))
+
+    await waitFor(() => expect(result.current.booting).toBe(false))
+
+    expect(databaseMocks.setWritingTurnBackgroundTask).toHaveBeenCalledWith(notice.id, 'task-1')
+    expect(databaseMocks.completeWritingTurn).toHaveBeenCalledWith(project.id, 'user-1', notice.id, expect.anything(), false, false, 'task-1')
+    expect(backgroundMocks.acknowledgeBackgroundGenerationTask).toHaveBeenCalledWith('task-1')
+  })
+
+  it('acknowledges a completed task when its notice was already committed', async () => {
+    backgroundMocks.listBackgroundGenerationTasks.mockResolvedValue([{
+      id: 'task-ready', kind: 'text', state: 'completed', metadata: { noticeId: 'notice-ready' }, rawResponse: '{}',
+    }])
+    databaseMocks.getWritingNotice.mockResolvedValue({ id: 'notice-ready', projectId: project.id, kind: 'notice', status: 'ready' })
+    const { result } = renderHook(() => useAppBootstrap({ onEmptyLibrary: vi.fn(), onToast: vi.fn() }))
+    await waitFor(() => expect(result.current.booting).toBe(false))
+    expect(backgroundMocks.acknowledgeBackgroundGenerationTask).toHaveBeenCalledWith('task-ready')
+    expect(databaseMocks.completeWritingTurn).not.toHaveBeenCalled()
+  })
+
+  it('keeps a completed raw response when the local completion transaction temporarily fails', async () => {
+    const notice = { id: 'notice-pending', projectId: project.id, kind: 'notice', status: 'pending', backgroundTaskId: 'task-pending' }
+    backgroundMocks.listBackgroundGenerationTasks.mockResolvedValue([{
+      id: 'task-pending', kind: 'text', state: 'completed', rawResponse: '{}',
+      metadata: { noticeId: notice.id, projectId: project.id, userMessageId: 'user-1', autoIllustrate: false, forceNewChapter: false },
+    }])
+    databaseMocks.getWritingNotice.mockResolvedValue(notice)
+    databaseMocks.completeWritingTurn.mockRejectedValue(new Error('IndexedDB temporarily unavailable'))
+    const { result } = renderHook(() => useAppBootstrap({ onEmptyLibrary: vi.fn(), onToast: vi.fn() }))
+    await waitFor(() => expect(result.current.booting).toBe(false))
+    expect(databaseMocks.failWritingTurn).not.toHaveBeenCalled()
+    expect(backgroundMocks.acknowledgeBackgroundGenerationTask).not.toHaveBeenCalledWith('task-pending')
+  })
+
+  it('acknowledges an unknown image task after image-state recovery without retrying it', async () => {
+    backgroundMocks.listBackgroundGenerationTasks.mockResolvedValue([{ id: 'image-1', kind: 'image', state: 'unknown' }])
+    const { result } = renderHook(() => useAppBootstrap({ onEmptyLibrary: vi.fn(), onToast: vi.fn() }))
+    await waitFor(() => expect(result.current.booting).toBe(false))
+    expect(backgroundMocks.acknowledgeBackgroundGenerationTask).toHaveBeenCalledWith('image-1')
+    expect(backgroundMocks.readBackgroundGenerationTask).not.toHaveBeenCalled()
   })
 })

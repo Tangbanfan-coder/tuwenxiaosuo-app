@@ -947,10 +947,16 @@ label {
 .character-profile-editor { display: grid; gap: 8px; padding: 11px; border: 1px solid #3f3f39; border-radius: 9px; background: #161614; }
 .character-profile-editor label { display: grid; gap: 4px; }
 .character-profile-editor label span { color: #8f8c84; font-size: 11px; }
-.character-profile-editor input,
-.character-profile-editor select { height: 38px; padding: 0 10px; border: 1px solid #484740; border-radius: 7px; outline: 0; background: #11110f; color: #efede7; font-size: 12px; }
-.character-profile-editor input:focus,
-.character-profile-editor select:focus { border-color: #9e8c5e; box-shadow: 0 0 0 2px rgba(215, 193, 141, 0.12); }
+.character-profile-editor input { height: 38px; padding: 0 10px; border: 1px solid #484740; border-radius: 7px; outline: 0; background: #11110f; color: #efede7; font-size: 12px; }
+.character-profile-editor input:focus { border-color: #9e8c5e; box-shadow: 0 0 0 2px rgba(215, 193, 141, 0.12); }
+.pronoun-choice { min-width: 0; margin: 0; padding: 0; border: 0; }
+.pronoun-choice legend { padding: 0; color: #8f8c84; font-size: 11px; }
+.pronoun-choice > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 4px; }
+.pronoun-choice button { min-height: 36px; padding: 0 7px; border: 1px solid #484740; border-radius: 7px; background: #11110f; color: #aaa79e; font-size: 11px; overflow-wrap: anywhere; }
+.pronoun-choice button:hover { border-color: #706a59; background: #24241f; color: #e7e4dc; }
+.pronoun-choice button[aria-checked="true"] { border-color: #8f7c4e; background: #2b271d; color: #f1e6c9; }
+.pronoun-choice button:focus-visible { outline: 2px solid #d7c18d; outline-offset: 1px; }
+.pronoun-choice:disabled button { opacity: 0.55; cursor: not-allowed; }
 .profile-editor-hint { margin: 0; color: #7d7a72; font-size: 11px; line-height: 1.6; }
 .profile-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .edit-profile-button { align-self: flex-start; display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid #3f3f39; border-radius: 7px; background: transparent; color: #8f8c84; font-size: 11px; }
@@ -1054,6 +1060,7 @@ label {
 .provider-streaming-toggle > span:first-child { min-width: 0; display: grid; flex: 1; gap: 4px; }
 .provider-streaming-toggle strong { color: #d7d3c9; font-size: 12px; }
 .provider-streaming-toggle small { color: #85827a; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.provider-streaming-status { color: #c6af7a; font-size: 10px; font-weight: 650; }
 .provider-streaming-toggle input { width: 1px; height: 1px; position: absolute; opacity: 0; }
 .provider-streaming-toggle .switch { flex: none; }
 .provider-streaming-toggle input:checked + .switch { background: #8f7c4e; }
@@ -1411,7 +1418,9 @@ label {
 .app-shell[data-appearance="light"] .character-asset { border-color: #d5d8d1; background: #ffffff; }
 .app-shell[data-appearance="light"] .character-profile-editor { border-color: #d5d8d2; background: #f8f9f6; }
 .app-shell[data-appearance="light"] .character-profile-editor input,
-.app-shell[data-appearance="light"] .character-profile-editor select { border-color: #c4c8c1; background: #ffffff; color: #232723; }
+.app-shell[data-appearance="light"] .pronoun-choice button { border-color: #c4c8c1; background: #ffffff; color: #232723; }
+.app-shell[data-appearance="light"] .pronoun-choice button:hover { background: #f0f2ed; color: #242823; }
+.app-shell[data-appearance="light"] .pronoun-choice button[aria-checked="true"] { border-color: #b7a66f; background: #f3edda; color: #28251d; }
 .app-shell[data-appearance="light"] .edit-profile-button { border-color: #d5d8d2; color: #737a72; }
 .app-shell[data-appearance="light"] .edit-profile-button:hover { border-color: #c4c8c1; color: #8a7c52; }
 .app-shell[data-appearance="light"] .portrait-frame { border-color: #d9dbd5; background: #f2f3ef; }
@@ -1441,6 +1450,7 @@ label {
 .app-shell[data-appearance="light"] .provider-streaming-toggle { border-color: #d2d5ce; background: #f4f5f1; }
 .app-shell[data-appearance="light"] .provider-streaming-toggle strong { color: #303530; }
 .app-shell[data-appearance="light"] .provider-streaming-toggle small { color: #697069; }
+.app-shell[data-appearance="light"] .provider-streaming-status { color: #806b39; }
 .app-shell[data-appearance="light"] .reasoning-effort-options button { border-color: #d2d5ce; background: #f4f5f1; color: #697069; }
 .app-shell[data-appearance="light"] .reasoning-effort-options button[aria-checked="true"] { border-color: #8d7644; background: #eee5cf; color: #4a3e26; }
 .app-shell[data-appearance="light"] .model-picker { border-color: #d2d5ce; background: #ffffff; }

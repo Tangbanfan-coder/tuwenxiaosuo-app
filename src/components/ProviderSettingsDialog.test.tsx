@@ -145,7 +145,10 @@ describe('ProviderSettingsDialog Android streaming', () => {
 
     const toggle = screen.getByRole('checkbox', { name: /流式输出/ })
     expect((toggle as HTMLInputElement).checked).toBe(false)
+    expect(screen.getByRole('status').textContent).toContain('流式传输已关闭')
     await user.click(toggle)
+    expect(screen.getByRole('status').textContent).toContain('流式传输已开启')
+    expect(screen.getByText('流式输出：已开启')).toBeDefined()
     await user.click(screen.getByRole('button', { name: '保存配置' }))
 
     await waitFor(() => expect(onSave).toHaveBeenCalled())

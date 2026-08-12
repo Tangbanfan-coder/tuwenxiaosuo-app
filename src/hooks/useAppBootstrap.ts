@@ -11,10 +11,19 @@ import {
   setCharacterPortraitReady,
   setIllustrationFailed,
   setIllustrationReady,
+  getWritingNotice,
+  setWritingTurnBackgroundTask,
+  completeWritingTurn,
+  failWritingTurn,
 } from '../data/storyDatabase'
 import type { ProjectWorkspace, StoryProject } from '../domain/models'
 import { recoverPersistedImageAsset } from '../providers/imageAssetStore'
 import { refreshModelLimits } from '../providers/modelLimits'
+import {
+  acknowledgeBackgroundGenerationTask,
+  listBackgroundGenerationTasks,
+} from '../providers/backgroundGeneration'
+import { parseBackgroundWritingResponse } from '../providers/writing'
 
 const IMAGE_INTEGRITY_AUDIT_KEY = 'illustrated-story-chat.image-integrity-audit.v1'
 
@@ -51,6 +60,64 @@ async function recoverInterruptedImageTasks() {
   }
 
   return { recoveredCount, failedCount }
+}
+
+async function recoverBackgroundGenerationTasks() {
+  const tasks = await listBackgroundGenerationTasks()
+  let recovered = 0
+  let unknown = 0
+  // Drive recovery from native metadata first. This also closes the narrow
+  // enqueue-success/IndexedDB-link-failure window without recreating a task.
+  for (const task of tasks) {
+    if (task.kind !== 'text') continue
+    const metadata = task.metadata as { noticeId?: string; projectId?: string; userMessageId?: string; autoIllustrate?: boolean; forceNewChapter?: boolean } | undefined
+    if (!metadata?.noticeId) continue
+    const notice = await getWritingNotice(metadata.noticeId)
+    if (!notice) continue
+    // A committed database result is already exactly-once consumed, even if
+    // the acknowledgement after it was interrupted.
+    if (notice.status === 'ready' || notice.status === 'failed') {
+      await acknowledgeBackgroundGenerationTask(task.id)
+      continue
+    }
+    if (notice.status !== 'pending') continue
+    if (!notice.backgroundTaskId) await setWritingTurnBackgroundTask(notice.id, task.id)
+    if (task.state === 'completed' && task.rawResponse) {
+      let parsed
+      try {
+        if (!metadata?.projectId || !metadata.userMessageId) throw new Error('后台任务缺少写作关联信息')
+        parsed = parseBackgroundWritingResponse(task.rawResponse)
+      } catch (error) {
+        await failWritingTurn(notice.id, error instanceof Error ? error.message : '后台写作结果无法解析')
+        await acknowledgeBackgroundGenerationTask(task.id)
+        continue
+      }
+      try {
+        await completeWritingTurn(metadata.projectId, metadata.userMessageId, notice.id, parsed, Boolean(metadata.autoIllustrate), Boolean(metadata.forceNewChapter), task.id)
+        await acknowledgeBackgroundGenerationTask(task.id)
+        recovered += 1
+      } catch {
+        // The raw response remains native-durable. Leave this notice pending
+        // and do not acknowledge so a later boot can retry local consumption.
+      }
+    } else if (task.state === 'failed') {
+      await failWritingTurn(notice.id, task.error || '后台写作失败')
+      await acknowledgeBackgroundGenerationTask(task.id)
+    } else if (task.state === 'unknown') {
+      unknown += 1
+    }
+  }
+  // Image DB state can already have been recovered from a local file before
+  // this scan. Completed native tasks are acknowledgement-only in that case.
+  for (const task of tasks) {
+    // recoverInterruptedImageTasks has already made each generating asset
+    // ready (when a valid local file exists) or failed with a visible manual
+    // retry message. No unknown image task is silently retained or retried.
+    if (task.kind === 'image' && (task.state === 'completed' || task.state === 'failed' || task.state === 'unknown')) {
+      await acknowledgeBackgroundGenerationTask(task.id)
+    }
+  }
+  return { recovered, unknown }
 }
 
 async function auditLegacyLocalIllustrations() {
@@ -104,11 +171,14 @@ export function useAppBootstrap({ onEmptyLibrary, onToast }: UseAppBootstrapOpti
         await initializeStoryDatabase()
         void refreshModelLimits()
         const recovery = await recoverInterruptedImageTasks()
+        const backgroundRecovery = await recoverBackgroundGenerationTasks()
         const invalidLegacyImages = await auditLegacyLocalIllustrations()
         const availableProjects = await listProjects()
         if (cancelled) return
         if (invalidLegacyImages) {
           onToastRef.current(`发现 ${invalidLegacyImages} 张不完整图片，请手动重新生成`)
+        } else if (backgroundRecovery.recovered || backgroundRecovery.unknown) {
+          onToastRef.current(`已补收 ${backgroundRecovery.recovered} 个写作结果${backgroundRecovery.unknown ? `，${backgroundRecovery.unknown} 个已发送任务状态不明且未重试` : ''}`)
         } else if (recovery.recoveredCount || recovery.failedCount) {
           onToastRef.current(`已恢复 ${recovery.recoveredCount} 个图片任务${recovery.failedCount ? `，${recovery.failedCount} 个任务需要手动重试` : ''}`)
         }

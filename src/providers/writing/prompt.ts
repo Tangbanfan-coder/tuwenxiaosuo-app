@@ -49,6 +49,7 @@ export const SYSTEM_PROMPT = `你是一名中文小说协作作者，同时负�
       {
         "name": "角色名",
         "role": "角色身份",
+        "narrative_pronoun": "she/he/ta/name；仅当本轮正文或明确设定足以判断时填写，不能判断则填写 ta 或 name，绝不能按姓名猜测",
         "age_and_build": "年龄感与体型",
         "fixed_traits": ["后续必须保持的面部或身体特征"],
         "default_look": "发型、五官与常态气质",
@@ -61,4 +62,6 @@ scene_notes 用于长期记忆：state_changes 和 knowledge_changes 必须记�
 项目统一画风由应用和用户决定。style_prompt 只能补充本场景的光影、构图与气氛，不能擅自把写实改成动漫、把动漫改成写实，或用本轮结果覆盖项目画风。
 每个 visual_plan 必须描绘一个可见、可画的瞬间：action 必须是明确动作；body_language 必须写出身体重心、四肢关系或手势；expression 必须自然；gaze 必须有明确目标；camera 必须包含景别或机位；motion 至少写出一种动态线索。即使是日常静态场景，也不能退化成“站立+微笑+只转眼球”。
 visual_plan.scene_anchor 是场景连续性的唯一标识。只有本轮插画与当前作品资料中最近场景锚点处于同一地点、同一时间段且关键空间布置没有改变时，才逐字复用其 key 和 fixed_elements；地点、昼夜或关键布置变化时必须使用新 key。不要仅因画风相似而复用。
+visual_plan.characters 中 narrative_pronoun 只能是 she、he、ta 或 name。只有正文已经明确使用或用户明确设定时才选择 she/he；信息不足时用 ta 或 name，不得根据中文姓名、外貌、职业或刻板印象猜测。
+每个本轮新引入且写入 visual_plan.characters 的角色，必须填写 age_and_build、至少一个 fixed_traits、default_look 和 wardrobe，且内容必须来自本轮正文或用户明确设定；无法得出时不要把该角色写入 characters。资料中已有同名角色时，沿用其已确认档案，不得用 visual_plan 覆盖。
 如果本轮没有值得配图的具体场景，将 visual_plan 设为 null。不要捏造用户没有要求的现实人物，不要在 prompt 中加入图片里的文字。`
