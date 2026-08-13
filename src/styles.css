@@ -379,7 +379,7 @@ label {
 .illustration-card figcaption strong { display: block; color: var(--story-text); font-size: 14px; }
 .illustration-card figcaption span { display: block; margin-top: 4px; color: var(--story-muted); font-size: 11px; }
 .illustration-card figcaption button { min-height: 44px; padding: 0 8px; color: var(--story-accent); font-size: 12px; }
-.illustration-card figcaption .illustration-unlock-action { padding: 0 12px; border: 1px solid color-mix(in srgb, var(--story-accent) 55%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--story-accent) 13%, transparent); font-weight: 650; }
+.illustration-card figcaption .illustration-unlock-action { padding: 0 12px; border: 1px solid color-mix(in srgb, var(--story-accent) 55%, transparent); border-radius: 8px; font-weight: 650; }
 .illustration-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px; }
 .visual-prompt { padding: 13px 14px 15px; border-top: 1px solid var(--story-border); background: color-mix(in srgb, var(--story-surface) 82%, var(--story-bg)); }
 .visual-prompt strong { color: var(--story-text); font-size: 12px; }
