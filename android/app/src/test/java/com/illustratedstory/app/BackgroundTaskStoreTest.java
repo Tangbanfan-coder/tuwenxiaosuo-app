@@ -2,6 +2,7 @@ package com.illustratedstory.app;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import com.getcapacitor.JSObject;
 import org.junit.After;
 import org.junit.Test;
 
@@ -75,6 +76,61 @@ public class BackgroundTaskStoreTest {
         String token = "local-test-token";
         assertEquals("token=[REDACTED] authorization=[REDACTED]", BackgroundGenerationService.sanitize("token=local-test-token authorization=Bearer local-test-token", token));
         assertEquals("normal response", BackgroundGenerationService.sanitize("normal response", token));
+    }
+
+    @Test public void copiesOnlyImageMetricsIntoTaskAndPipelineLog() throws Exception {
+        JSONObject stored = new JSONObject()
+            .put("localUri", "file:///private/image.png")
+            .put("endpoint", "https://api.test/private")
+            .put("prompt", "private prompt")
+            .put("bytes", 2400000)
+            .put("format", "png")
+            .put("responseMode", "b64_json")
+            .put("responseMs", 60000)
+            .put("writeMs", 35)
+            .put("validationAndReplaceMs", 12)
+            .put("durationMs", 60047);
+        JSONObject task = new JSONObject();
+
+        BackgroundGenerationService.copyImageMetrics(task, stored);
+        JSONObject logged = new JSONObject(BackgroundGenerationService.imageMetricsLogMessage(stored));
+
+        assertEquals(2400000, task.getInt("bytes"));
+        assertEquals("png", task.getString("format"));
+        assertEquals("b64_json", task.getString("responseMode"));
+        assertEquals(60000, task.getInt("responseMs"));
+        assertEquals(35, task.getInt("writeMs"));
+        assertEquals(12, task.getInt("validationAndReplaceMs"));
+        assertEquals(60047, task.getInt("durationMs"));
+        assertFalse(task.has("endpoint"));
+        assertFalse(task.has("prompt"));
+        assertEquals("background-generation-persist-complete", logged.getString("phase"));
+        assertEquals(2400000, logged.getInt("bytes"));
+        assertFalse(logged.has("localUri"));
+        assertFalse(logged.has("endpoint"));
+        assertFalse(logged.has("prompt"));
+    }
+
+    @Test public void pluginResultForwardsPersistedImageMetrics() throws Exception {
+        JSONObject task = new JSONObject()
+            .put("bytes", 2400000)
+            .put("format", "png")
+            .put("responseMode", "b64_json")
+            .put("responseMs", 60000)
+            .put("writeMs", 35)
+            .put("validationAndReplaceMs", 12)
+            .put("durationMs", 60047);
+        JSObject result = new JSObject();
+
+        BackgroundGenerationPlugin.copyImageMetrics(result, task);
+
+        assertEquals(2400000, result.getInt("bytes"));
+        assertEquals("png", result.getString("format"));
+        assertEquals("b64_json", result.getString("responseMode"));
+        assertEquals(60000, result.getInt("responseMs"));
+        assertEquals(35, result.getInt("writeMs"));
+        assertEquals(12, result.getInt("validationAndReplaceMs"));
+        assertEquals(60047, result.getInt("durationMs"));
     }
 
     private static void delete(File file) {

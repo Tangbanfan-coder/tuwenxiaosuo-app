@@ -74,6 +74,7 @@ public final class BackgroundGenerationPlugin extends Plugin {
                 result.put("error", task.optString("error", "")); result.put("kind", task.optString("kind", ""));
                 if (task.has("metadata")) result.put("metadata", task.getJSONObject("metadata"));
                 if (task.has("localUri")) result.put("localUri", task.getString("localUri"));
+                copyImageMetrics(result, task);
                 if (task.has("responsePath")) result.put("rawResponse", BackgroundGenerationService.readResponse(getContext(), task.getString("responsePath")));
                 call.resolve(result);
             } catch (Exception error) { call.reject("无法读取后台任务结果"); }
@@ -89,6 +90,9 @@ public final class BackgroundGenerationPlugin extends Plugin {
 
     private static void required(JSONObject task, PluginCall call, String name) throws Exception {
         String value = call.getString(name); if (isBlank(value)) throw new IllegalArgumentException("后台生成参数不完整"); task.put(name, value);
+    }
+    static void copyImageMetrics(JSObject result, JSONObject task) throws Exception {
+        for (String field : BackgroundGenerationService.IMAGE_METRIC_FIELDS) if (task.has(field)) result.put(field, task.get(field));
     }
     private static boolean isBlank(String value) { return value == null || value.trim().isEmpty(); }
 }
