@@ -12,9 +12,14 @@ import type {
   IllustrationStylePresetId,
   IllustrationAsset,
   ProjectStyle,
+  ProseEvaluationEvent,
   ProjectWorkspace,
   ReferenceStyleMode,
   SceneNotes,
+  StyleCorpusBinding,
+  StyleCorpusFragment,
+  StyleCorpusLabels,
+  StyleCorpusSource,
   StoryProject,
   StoredParagraph,
   SummaryVersion,
@@ -27,6 +32,7 @@ import { resolveIllustrationReferences } from '../domain/illustrationReferences'
 import { materializeWritingSceneNotes, reconcileForeshadowing } from '../domain/foreshadowing'
 import { createParagraphFingerprint, hashText as hashTextImpl, normalizeText as normalizeParagraphText } from '../domain/paragraphs'
 import { loadGlobalWritingInstructions } from '../providers/config'
+import { detectProseStyleIssues, PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
 
 export { hashText, normalizeText } from '../domain/paragraphs'
 
@@ -43,6 +49,10 @@ export class StoryDatabase extends Dexie {
   paragraphs!: Table<StoredParagraph, string>
   summaryVersions!: Table<SummaryVersion, string>
   feedback!: Table<Feedback, string>
+  styleCorpusSources!: Table<StyleCorpusSource, string>
+  styleCorpusFragments!: Table<StyleCorpusFragment, string>
+  styleCorpusBindings!: Table<StyleCorpusBinding, string>
+  evaluationEvents!: Table<ProseEvaluationEvent, string>
 
   constructor(databaseName = STORY_DATABASE_NAME) {
     super(databaseName)
@@ -158,6 +168,37 @@ export class StoryDatabase extends Dexie {
       summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
       feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
     })
+    this.version(10)
+      .stores({
+        projects: 'id, updatedAt, lastOpenedAt',
+        messages: 'id, projectId, [projectId+order], createdAt, backgroundTaskId',
+        chapters: 'id, projectId, [projectId+order], updatedAt',
+        characters: 'id, projectId, [projectId+createdAt], status',
+        illustrations: 'id, projectId, [projectId+createdAt], status',
+        styles: 'id, &projectId, updatedAt',
+        scenes: 'id, projectId, [projectId+order], createdAt',
+        paragraphs: 'id, projectId, sourceType, [projectId+sourceType], [projectId+chapterId], [projectId+messageId], fingerprint, createdAt',
+        summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
+        feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
+        styleCorpusSources: 'id, &fingerprint, createdAt, updatedAt',
+        styleCorpusFragments: 'id, sourceId, fingerprint, confirmed, usageCount, updatedAt',
+        styleCorpusBindings: 'id, fragmentId, scope, projectId, state, [scope+state], [projectId+state], updatedAt',
+      })
+      .upgrade(async (transaction) => {
+        await backfillStyleIssuesFromV9(transaction)
+      })
+    this.version(11).stores({
+      projects: 'id, updatedAt, lastOpenedAt', messages: 'id, projectId, [projectId+order], createdAt, backgroundTaskId',
+      chapters: 'id, projectId, [projectId+order], updatedAt', characters: 'id, projectId, [projectId+createdAt], status',
+      illustrations: 'id, projectId, [projectId+createdAt], status', styles: 'id, &projectId, updatedAt',
+      scenes: 'id, projectId, [projectId+order], createdAt',
+      paragraphs: 'id, projectId, sourceType, [projectId+sourceType], [projectId+chapterId], [projectId+messageId], fingerprint, createdAt',
+      summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
+      feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
+      styleCorpusSources: 'id, &fingerprint, createdAt, updatedAt', styleCorpusFragments: 'id, sourceId, fingerprint, confirmed, usageCount, updatedAt',
+      styleCorpusBindings: 'id, fragmentId, scope, projectId, state, [scope+state], [projectId+state], updatedAt',
+      evaluationEvents: 'id, eventType, occurredAt, projectId, [projectId+occurredAt]',
+    })
   }
 }
 
@@ -172,6 +213,34 @@ export interface StoredScene {
 }
 
 export const storyDatabase = new StoryDatabase()
+
+const EVALUATION_MAX_EVENTS = 5000
+const EVALUATION_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
+
+export async function recordProseEvaluationEvent(event: Omit<ProseEvaluationEvent, 'id' | 'occurredAt' | 'schemaVersion' | 'appVersion' | 'databaseVersion'> & Partial<Pick<ProseEvaluationEvent, 'occurredAt'>>) {
+  const occurredAt = event.occurredAt ?? Date.now()
+  await storyDatabase.transaction('rw', storyDatabase.evaluationEvents, async () => {
+    if (event.eventType === 'prose_analyzed' && event.paragraphId) {
+      const duplicate = await storyDatabase.evaluationEvents.filter((item) => (
+        item.eventType === 'prose_analyzed' && item.paragraphId === event.paragraphId && item.proseRuleVersion === event.proseRuleVersion
+      )).first()
+      if (duplicate) return
+    }
+    await storyDatabase.evaluationEvents.add({ ...event, id: createId('evaluation'), occurredAt, schemaVersion: 1, appVersion: '0.1.0', databaseVersion: 11, proseRuleVersion: event.proseRuleVersion ?? PROSE_RULE_VERSION_FALLBACK })
+    await storyDatabase.evaluationEvents.where('occurredAt').below(occurredAt - EVALUATION_MAX_AGE_MS).delete()
+    const count = await storyDatabase.evaluationEvents.count()
+    if (count > EVALUATION_MAX_EVENTS) {
+      const overflow = await storyDatabase.evaluationEvents.orderBy('occurredAt').limit(count - EVALUATION_MAX_EVENTS).primaryKeys()
+      await storyDatabase.evaluationEvents.bulkDelete(overflow)
+    }
+  })
+}
+
+const PROSE_RULE_VERSION_FALLBACK = 1
+
+export async function listProseEvaluationEvents() { return storyDatabase.evaluationEvents.orderBy('occurredAt').toArray() }
+export async function clearProseEvaluationEvents() { await storyDatabase.evaluationEvents.clear() }
+export async function clearProseEvaluationEventsByIds(ids: readonly string[]) { if (ids.length) await storyDatabase.evaluationEvents.bulkDelete([...ids]) }
 
 const ACTIVE_PROJECT_KEY = 'illustrated-story-chat.active-project.v1'
 
@@ -344,6 +413,8 @@ async function backfillSummaryVersionsFromV4(transaction: Transaction) {
 function createMessageParagraphRecords(message: ConversationMessage, createdAt = message.createdAt): StoredParagraph[] {
   if (message.kind !== 'prose' || !message.chapterId || !Array.isArray(message.paragraphs)) return []
 
+  const issues = detectProseStyleIssues(message.paragraphs)
+
   return message.paragraphs.map((text, index) => ({
     id: `paragraph-message-${message.id}-${index}`,
     projectId: message.projectId,
@@ -353,8 +424,202 @@ function createMessageParagraphRecords(message: ConversationMessage, createdAt =
     index,
     text,
     fingerprint: createParagraphFingerprint(text),
+    styleIssues: issues[index],
+    styleRuleVersion: PROSE_STYLE_RULE_VERSION,
     createdAt,
   }))
+}
+
+async function backfillStyleIssuesFromV9(transaction: Transaction) {
+  const messageTable = transaction.table('messages') as Table<ConversationMessage, string>
+  const paragraphTable = transaction.table('paragraphs') as Table<StoredParagraph, string>
+  await messageTable.toCollection().each(async (message) => {
+    if (message.kind !== 'prose') return
+    const expected = createMessageParagraphRecords(message)
+    if (!expected.length) return
+    const stored = await paragraphTable.bulkGet(expected.map((paragraph) => paragraph.id))
+    await paragraphTable.bulkPut(expected.map((paragraph, index) => ({
+      ...(stored[index] ?? paragraph),
+      styleIssues: paragraph.styleIssues,
+      styleRuleVersion: paragraph.styleRuleVersion,
+    })))
+  })
+}
+
+function emptyStyleCorpusLabels(): StyleCorpusLabels {
+  return {
+    genres: [], sceneTypes: [], pace: [], techniques: [], emotionalTone: [], imitate: [], avoid: [],
+  }
+}
+
+function normalizeStyleCorpusLabels(labels: Partial<StyleCorpusLabels> | undefined): StyleCorpusLabels {
+  const confidence = typeof labels?.confidence === 'number' && Number.isFinite(labels.confidence)
+    ? Math.max(0, Math.min(1, labels.confidence))
+    : undefined
+  return {
+    genres: stringArray(labels?.genres),
+    sceneTypes: stringArray(labels?.sceneTypes),
+    pov: optionalString(labels?.pov),
+    narrativeDistance: optionalString(labels?.narrativeDistance),
+    pace: stringArray(labels?.pace),
+    techniques: stringArray(labels?.techniques),
+    emotionalTone: stringArray(labels?.emotionalTone),
+    imitate: stringArray(labels?.imitate),
+    avoid: stringArray(labels?.avoid),
+    confidence,
+  }
+}
+
+export interface StyleCorpusDraftParagraph {
+  id: string
+  text: string
+  fingerprint: string
+}
+
+export interface StyleCorpusDraftFragment {
+  id: string
+  paragraphIds: string[]
+  text: string
+  fingerprint: string
+  labels: StyleCorpusLabels
+}
+
+/** Deterministic import boundary: headings and blank lines only, never model-authored text. */
+export function splitStyleCorpusText(rawText: string) {
+  const normalized = rawText.replace(/\r\n?/g, '\n').trim()
+  if (!normalized) return []
+  const blocks = normalized.split(/\n\s*\n+/).flatMap((block) => {
+    const lines = block.split('\n').map((line) => line.trim()).filter(Boolean)
+    return lines.length > 1 && lines.every((line) => line.length >= 20) ? lines : [lines.join('\n')]
+  }).filter((text) => text && !/^(?:第[一二三四五六七八九十百千0-9]+[章节回卷]|chapter\s+\d+)/i.test(text))
+  return blocks.map((text, index): StyleCorpusDraftParagraph => ({
+    id: `import-paragraph-${hashTextImpl(`${index}:${text}`)}`,
+    text,
+    fingerprint: createParagraphFingerprint(text),
+  }))
+}
+
+export function createStyleCorpusDraftFragments(rawText: string): StyleCorpusDraftFragment[] {
+  return splitStyleCorpusText(rawText).map((paragraph) => ({
+    id: `import-fragment-${paragraph.fingerprint}`,
+    paragraphIds: [paragraph.id],
+    text: paragraph.text,
+    fingerprint: paragraph.fingerprint,
+    labels: emptyStyleCorpusLabels(),
+  }))
+}
+
+export async function saveStyleCorpusImport(input: {
+  title: string
+  rawText: string
+  fragments: Array<Pick<StyleCorpusDraftFragment, 'paragraphIds' | 'text' | 'fingerprint'> & {
+    suggestedLabels?: Partial<StyleCorpusLabels>
+    labels?: Partial<StyleCorpusLabels>
+  }>
+}) {
+  const title = input.title.trim() || '未命名语料'
+  const rawText = input.rawText.replace(/\r\n?/g, '\n').trim()
+  if (!rawText) throw new Error('请先导入语料文本')
+  if (!input.fragments.length) throw new Error('没有可保存的语料片段')
+  const now = Date.now()
+  const sourceFingerprint = hashTextImpl(rawText)
+  const existing = await storyDatabase.styleCorpusSources.where('fingerprint').equals(sourceFingerprint).first()
+  if (existing) throw new Error('这份语料已经导入')
+  const source: StyleCorpusSource = {
+    id: createId('style-source'), title, rawText, fingerprint: sourceFingerprint, createdAt: now, updatedAt: now,
+  }
+  const sourceParagraphs = splitStyleCorpusText(rawText)
+  const sourceParagraphById = new Map(sourceParagraphs.map((paragraph) => [paragraph.id, paragraph]))
+  const usedParagraphIds = new Set<string>()
+  const fragments = input.fragments.map((draft, index): StyleCorpusFragment => {
+    const paragraphIds = Array.from(new Set(draft.paragraphIds))
+    const selected = paragraphIds.map((id) => sourceParagraphById.get(id))
+    if (!selected.length || selected.some((paragraph) => !paragraph)) throw new Error(`第 ${index + 1} 个片段引用了无效原文段落`)
+    if (paragraphIds.some((id) => usedParagraphIds.has(id))) throw new Error('同一原文段落不能重复保存到多个片段')
+    const sourceIndexes = paragraphIds.map((id) => sourceParagraphs.findIndex((paragraph) => paragraph.id === id))
+    if (sourceIndexes.some((value, itemIndex) => itemIndex > 0 && value !== sourceIndexes[itemIndex - 1] + 1)) throw new Error('一个语料片段只能组合相邻的原文段落')
+    paragraphIds.forEach((id) => usedParagraphIds.add(id))
+    const text = selected.map((paragraph) => paragraph!.text).join('\n\n')
+    return {
+      id: createId('style-fragment'), sourceId: source.id,
+      paragraphIds, text,
+      fingerprint: createParagraphFingerprint(text),
+      suggestedLabels: draft.suggestedLabels ? normalizeStyleCorpusLabels(draft.suggestedLabels) : undefined,
+      labels: normalizeStyleCorpusLabels(draft.labels ?? draft.suggestedLabels),
+      confirmed: true, usageCount: 0, createdAt: now, updatedAt: now,
+    }
+  })
+  if (usedParagraphIds.size !== sourceParagraphs.length) throw new Error('保存分组必须覆盖全部原文段落')
+  const bindings = fragments.map((fragment): StyleCorpusBinding => ({
+    id: createId('style-binding'), fragmentId: fragment.id, scope: 'global', state: 'enabled', weight: 1, createdAt: now, updatedAt: now,
+  }))
+  await storyDatabase.transaction('rw', [storyDatabase.styleCorpusSources, storyDatabase.styleCorpusFragments, storyDatabase.styleCorpusBindings], async () => {
+    await storyDatabase.styleCorpusSources.add(source)
+    await storyDatabase.styleCorpusFragments.bulkAdd(fragments)
+    await storyDatabase.styleCorpusBindings.bulkAdd(bindings)
+  })
+  return { source, fragments, bindings }
+}
+
+export async function listStyleCorpusSources() {
+  return storyDatabase.styleCorpusSources.orderBy('updatedAt').reverse().toArray()
+}
+
+export async function listStyleCorpusFragments() {
+  return storyDatabase.styleCorpusFragments.orderBy('updatedAt').reverse().toArray()
+}
+
+export async function getStyleCorpusSummary() {
+  const [sourceCount, fragmentCount] = await Promise.all([
+    storyDatabase.styleCorpusSources.count(),
+    storyDatabase.styleCorpusFragments.filter((fragment) => fragment.confirmed).count(),
+  ])
+  return { sourceCount, fragmentCount }
+}
+
+export async function deleteStyleCorpusSource(sourceId: string) {
+  await storyDatabase.transaction('rw', [storyDatabase.styleCorpusSources, storyDatabase.styleCorpusFragments, storyDatabase.styleCorpusBindings], async () => {
+    const fragmentIds = await storyDatabase.styleCorpusFragments.where('sourceId').equals(sourceId).primaryKeys()
+    if (fragmentIds.length) {
+      await storyDatabase.styleCorpusBindings.where('fragmentId').anyOf(fragmentIds).delete()
+      await storyDatabase.styleCorpusFragments.bulkDelete(fragmentIds)
+    }
+    await storyDatabase.styleCorpusSources.delete(sourceId)
+  })
+}
+
+export async function updateStyleCorpusFragment(fragmentId: string, labels: Partial<StyleCorpusLabels>) {
+  const existing = await storyDatabase.styleCorpusFragments.get(fragmentId)
+  if (!existing) throw new Error('语料片段不存在')
+  await storyDatabase.styleCorpusFragments.update(fragmentId, {
+    labels: normalizeStyleCorpusLabels(labels), confirmed: true, updatedAt: Date.now(),
+  })
+}
+
+export async function listMessageParagraphsWithCurrentStyleIssues(projectId: string, messageId: string) {
+  return storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.paragraphs], async () => {
+    const message = await storyDatabase.messages.get(messageId)
+    if (!message || message.projectId !== projectId || message.kind !== 'prose') return []
+    const expected = createMessageParagraphRecords(message)
+    if (!expected.length) return []
+    const stored = await storyDatabase.paragraphs.bulkGet(expected.map((paragraph) => paragraph.id))
+    const rows = expected.map((paragraph, index) => {
+      const current = stored[index]
+      const exact = current
+        && current.projectId === paragraph.projectId
+        && current.messageId === paragraph.messageId
+        && current.chapterId === paragraph.chapterId
+        && current.index === paragraph.index
+        && current.text === paragraph.text
+        && current.fingerprint === paragraph.fingerprint
+      return exact && current.styleRuleVersion === PROSE_STYLE_RULE_VERSION
+        ? current
+        : { ...paragraph, createdAt: exact ? current.createdAt : paragraph.createdAt }
+    })
+    const staleRows = rows.filter((row, index) => row !== stored[index])
+    if (staleRows.length) await storyDatabase.paragraphs.bulkPut(staleRows)
+    return rows
+  })
 }
 
 function splitChapterContent(content: string) {
@@ -1082,7 +1347,7 @@ export async function createCharacterDraft(projectId: string, name: string, role
 export async function deleteProject(projectId: string) {
   await storyDatabase.transaction(
     'rw',
-    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.characters, storyDatabase.illustrations, storyDatabase.styles, storyDatabase.scenes, storyDatabase.paragraphs, storyDatabase.summaryVersions, storyDatabase.feedback],
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.characters, storyDatabase.illustrations, storyDatabase.styles, storyDatabase.scenes, storyDatabase.paragraphs, storyDatabase.summaryVersions, storyDatabase.feedback, storyDatabase.styleCorpusBindings],
     async () => {
       await Promise.all([
         storyDatabase.messages.where('projectId').equals(projectId).delete(),
@@ -1094,6 +1359,7 @@ export async function deleteProject(projectId: string) {
         storyDatabase.paragraphs.where('projectId').equals(projectId).delete(),
         storyDatabase.summaryVersions.where('projectId').equals(projectId).delete(),
         storyDatabase.feedback.where('projectId').equals(projectId).delete(),
+        storyDatabase.styleCorpusBindings.where('projectId').equals(projectId).delete(),
       ])
       await storyDatabase.projects.delete(projectId)
     },
@@ -1233,6 +1499,71 @@ export async function beginWritingTurn(projectId: string, text: string, autoIllu
     await storyDatabase.projects.update(projectId, { autoIllustrate, updatedAt: now })
   })
   return messages
+}
+
+export async function applyParagraphRewrite(input: {
+  projectId: string
+  messageId: string
+  paragraphId: string
+  paragraphIndex: number
+  originalFingerprint: string
+  rewrittenText: string
+}) {
+  const rewrittenText = input.rewrittenText.trim()
+  if (!rewrittenText) throw new Error('建议稿不能为空')
+  const now = Date.now()
+  return storyDatabase.transaction(
+    'rw',
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs],
+    async () => {
+      const message = await storyDatabase.messages.get(input.messageId)
+      if (!message || message.projectId !== input.projectId || message.kind !== 'prose' || !message.chapterId || !message.paragraphs) {
+        throw new Error('正文消息不存在或不属于当前作品')
+      }
+      const paragraph = await storyDatabase.paragraphs.get(input.paragraphId)
+      const currentText = message.paragraphs[input.paragraphIndex]
+      if (
+        !paragraph
+        || paragraph.projectId !== input.projectId
+        || paragraph.messageId !== input.messageId
+        || paragraph.chapterId !== message.chapterId
+        || paragraph.index !== input.paragraphIndex
+        || paragraph.text !== currentText
+        || paragraph.fingerprint !== input.originalFingerprint
+        || createParagraphFingerprint(currentText) !== input.originalFingerprint
+      ) throw new Error('正文已发生变化，请重新生成建议稿')
+
+      const chapter = await storyDatabase.chapters.get(message.chapterId)
+      if (!chapter || chapter.projectId !== input.projectId) throw new Error('正文所属章节不存在')
+      const chapterMessages = await storyDatabase.messages
+        .where('projectId').equals(input.projectId)
+        .filter((item) => item.chapterId === chapter.id && item.kind === 'prose' && Array.isArray(item.paragraphs))
+        .sortBy('order')
+      const indexedMessageParagraphCount = chapterMessages.reduce((count, item) => count + (item.paragraphs?.length ?? 0), 0)
+      const chapterParagraphs = splitChapterContent(chapter.content)
+      const unindexedChapterPrefixCount = chapterParagraphs.length - indexedMessageParagraphCount
+      if (unindexedChapterPrefixCount < 0) throw new Error('章节正文与消息段落数量不一致，未应用建议稿')
+      const priorParagraphCount = chapterMessages
+        .filter((item) => item.order < message.order)
+        .reduce((count, item) => count + (item.paragraphs?.length ?? 0), 0)
+      const chapterParagraphIndex = unindexedChapterPrefixCount + priorParagraphCount + input.paragraphIndex
+      if (chapterParagraphs[chapterParagraphIndex] !== currentText) throw new Error('章节正文与段落索引不一致，未应用建议稿')
+
+      const nextMessageParagraphs = message.paragraphs.slice()
+      nextMessageParagraphs[input.paragraphIndex] = rewrittenText
+      chapterParagraphs[chapterParagraphIndex] = rewrittenText
+      const nextChapter: Chapter = { ...chapter, content: chapterParagraphs.join('\n\n'), updatedAt: now }
+      const messageIssues = detectProseStyleIssues(nextMessageParagraphs)
+      await storyDatabase.messages.update(message.id, { paragraphs: nextMessageParagraphs })
+      const messageParagraphs = createMessageParagraphRecords({ ...message, paragraphs: nextMessageParagraphs }, message.createdAt)
+        .map((row, index) => ({ ...row, styleIssues: messageIssues[index] }))
+      await storyDatabase.paragraphs.bulkPut(messageParagraphs)
+      await storyDatabase.chapters.put(nextChapter)
+      await upsertChapterParagraphs(nextChapter)
+      await storyDatabase.projects.update(input.projectId, { updatedAt: now })
+      return { message: { ...message, paragraphs: nextMessageParagraphs }, chapter: nextChapter }
+    },
+  )
 }
 
 export async function setWritingTurnBackgroundTask(noticeId: string, taskId: string) {

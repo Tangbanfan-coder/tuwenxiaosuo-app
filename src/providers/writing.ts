@@ -26,3 +26,13 @@ export {
   type GenerateWritingTurnOptions,
 } from './writing/orchestration'
 export { parseWritingResult, projectStreamingProse } from './writing/result'
+export { detectProseStyleIssues, PROSE_STYLE_RULES } from '../domain/proseStyle'
+export { parseRewrittenParagraph, rewriteProseParagraph, type RewriteParagraphRequest } from './writing/rewrite'
+export {
+  parseStyleCorpusSuggestions,
+  markStyleCorpusFragmentsUsed,
+  retrieveStyleExamples,
+  StyleCorpusRetriever,
+  suggestStyleCorpusLabels,
+  type SuggestedStyleCorpusFragment,
+} from './writing/styleCorpus'

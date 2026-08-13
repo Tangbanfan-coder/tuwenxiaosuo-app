@@ -92,6 +92,45 @@ function termCounts(tokens: readonly string[]) {
   return counts
 }
 
+export interface Bm25Document<T> {
+  value: T
+  text: string
+  sourceIndex: number
+}
+
+export interface Bm25ScoredDocument<T> extends Bm25Document<T> {
+  score: number
+}
+
+/** Single scoring authority shared by story-history and style-corpus retrieval. */
+export function scoreBigramBm25<T>(query: string, sourceDocuments: readonly Bm25Document<T>[], k1 = 1.2, b = 0.75): Bm25ScoredDocument<T>[] {
+  const queryTerms = Array.from(new Set(tokenizeForBm25(query)))
+  if (!queryTerms.length) return []
+  const documents = sourceDocuments.flatMap((document) => {
+    const tokens = tokenizeForBm25(document.text, true)
+    return tokens.length ? [{ ...document, length: tokens.length, terms: termCounts(tokens) }] : []
+  })
+  if (!documents.length) return []
+  const documentFrequency = new Map<string, number>()
+  for (const document of documents) {
+    for (const term of document.terms.keys()) documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1)
+  }
+  const averageDocumentLength = documents.reduce((sum, document) => sum + document.length, 0) / documents.length
+  return documents.map((document) => {
+    let score = 0
+    for (const term of queryTerms) {
+      const termFrequency = document.terms.get(term) ?? 0
+      if (!termFrequency) continue
+      const frequency = documentFrequency.get(term) ?? 0
+      const inverseDocumentFrequency = Math.log(1 + (documents.length - frequency + 0.5) / (frequency + 0.5))
+      const lengthNormalization = k1 * (1 - b + b * (document.length / averageDocumentLength))
+      score += inverseDocumentFrequency * ((termFrequency * (k1 + 1)) / (termFrequency + lengthNormalization))
+    }
+    return { value: document.value, text: document.text, sourceIndex: document.sourceIndex, score }
+  }).filter((document) => document.score > 0)
+    .sort((left, right) => right.score - left.score || left.sourceIndex - right.sourceIndex)
+}
+
 function toRetrievedParagraph(paragraph: StoredParagraph, score: number): RetrievedParagraph {
   return {
     paragraphId: paragraph.id,
@@ -106,13 +145,6 @@ function toRetrievedParagraph(paragraph: StoredParagraph, score: number): Retrie
   }
 }
 
-interface IndexedParagraph {
-  paragraph: StoredParagraph
-  sourceIndex: number
-  length: number
-  terms: Map<string, number>
-}
-
 /** Zero-dependency BM25 retriever for the local paragraph store. */
 export class BigramBm25Retriever implements Retriever {
   constructor(
@@ -121,47 +153,12 @@ export class BigramBm25Retriever implements Retriever {
   ) {}
 
   async retrieve(request: RetrievalRequest): Promise<RetrievedParagraph[]> {
-    const queryTerms = Array.from(new Set(tokenizeForBm25(request.query)))
-    if (!queryTerms.length) return []
-
-    const documents: IndexedParagraph[] = []
+    const documents: Array<Bm25Document<StoredParagraph>> = []
     for (const [sourceIndex, paragraph] of request.paragraphs.entries()) {
       if (!isUsableParagraph(paragraph)) continue
-      const tokens = tokenizeForBm25(paragraph.text, true)
-      if (!tokens.length) continue
-      documents.push({
-        paragraph,
-        sourceIndex,
-        length: tokens.length,
-        terms: termCounts(tokens),
-      })
+      documents.push({ value: paragraph, text: paragraph.text, sourceIndex })
     }
-    if (!documents.length) return []
-
-    const documentFrequency = new Map<string, number>()
-    for (const document of documents) {
-      for (const term of document.terms.keys()) {
-        documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1)
-      }
-    }
-
-    const averageDocumentLength = documents.reduce((sum, document) => sum + document.length, 0) / documents.length
-    const documentCount = documents.length
-    const scored = documents
-      .map((document) => {
-        let score = 0
-        for (const term of queryTerms) {
-          const termFrequency = document.terms.get(term) ?? 0
-          if (!termFrequency) continue
-          const frequency = documentFrequency.get(term) ?? 0
-          const inverseDocumentFrequency = Math.log(1 + (documentCount - frequency + 0.5) / (frequency + 0.5))
-          const lengthNormalization = this.k1 * (1 - this.b + this.b * (document.length / averageDocumentLength))
-          score += inverseDocumentFrequency * ((termFrequency * (this.k1 + 1)) / (termFrequency + lengthNormalization))
-        }
-        return { document, score }
-      })
-      .filter((item) => item.score > 0)
-      .sort((left, right) => right.score - left.score || left.document.sourceIndex - right.document.sourceIndex)
+    const scored = scoreBigramBm25(request.query, documents, this.k1, this.b)
 
     const topK = request.topK === undefined ? 5 : Math.max(0, Math.floor(request.topK))
     const maxTotalCharacters = request.maxTotalCharacters === undefined
@@ -171,9 +168,9 @@ export class BigramBm25Retriever implements Retriever {
     let usedCharacters = 0
     for (const item of scored) {
       if (results.length >= topK) break
-      const textLength = item.document.paragraph.text.length
+      const textLength = item.value.text.length
       if (usedCharacters + textLength > maxTotalCharacters) continue
-      results.push(toRetrievedParagraph(item.document.paragraph, item.score))
+      results.push(toRetrievedParagraph(item.value, item.score))
       usedCharacters += textLength
     }
     return results

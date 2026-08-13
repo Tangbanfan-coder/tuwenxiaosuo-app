@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ImagePlus, LoaderCircle, Maximize2, Sparkles, ThumbsDown, ThumbsUp, TriangleAlert, X } from 'lucide-react'
-import { listMessageFeedback, storyDatabase, toggleFeedbackBatch } from '../data/storyDatabase'
-import type { CharacterAsset, ConversationMessage, Feedback, FeedbackScope, FeedbackVerdict, IllustrationAsset, StoredParagraph } from '../domain/models'
+import { Check, ImagePlus, LoaderCircle, Maximize2, Sparkles, ThumbsDown, ThumbsUp, TriangleAlert, WandSparkles, X } from 'lucide-react'
+import { listMessageFeedback, listMessageParagraphsWithCurrentStyleIssues, storyDatabase, toggleFeedbackBatch } from '../data/storyDatabase'
+import type { CharacterAsset, ConversationMessage, Feedback, FeedbackScope, FeedbackVerdict, IllustrationAsset, ProseStyleIssue, RewriteStrength, StoredParagraph } from '../domain/models'
 import { resolveIllustrationReferences } from '../domain/illustrationReferences'
 import { createParagraphFingerprint } from '../domain/paragraphs'
 import { resolveImageSource } from '../providers/imageAssetStore'
@@ -55,6 +55,9 @@ export default function TimelineMessage({
   onOpenCharacterAssets,
   onOpenIllustration,
   illustrationGenerationStage,
+  onRewriteParagraph,
+  onApplyRewrite,
+  onProseEvaluation,
 }: {
   message: ConversationMessage
   illustration?: IllustrationAsset
@@ -65,6 +68,9 @@ export default function TimelineMessage({
   onOpenCharacterAssets: () => void
   onOpenIllustration: (source: string, title: string, alt: string, localUri?: string) => void
   illustrationGenerationStage?: IllustrationGenerationStage
+  onRewriteParagraph?: (input: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) => Promise<string>
+  onApplyRewrite?: (input: { message: ConversationMessage; paragraph: StoredParagraph; rewrittenText: string }) => Promise<void>
+  onProseEvaluation?: (event: { type: 'analyzed' | 'rewrite_opened' | 'rewrite_kept_original'; message: ConversationMessage; paragraph: StoredParagraph }) => void
 }) {
   const [showVisualPrompt, setShowVisualPrompt] = useState(false)
   const referenceResolution = illustration ? resolveIllustrationReferences(illustration, characters) : undefined
@@ -73,6 +79,7 @@ export default function TimelineMessage({
   const imageSource = illustration ? resolveImageSource(illustration.imageUrl, illustration.localUri) : undefined
   const directionItems = illustrationDirectionItems(illustration)
   const referenceCharacters = referenceResolution?.ready ? referenceResolution.characters : []
+  const blockedCharacterReadyForConfirmation = Boolean(illustration && referenceReason && illustration.referenceCharacterIds.some((id) => characters.find((character) => character.id === id)?.portraitStatus === 'review'))
 
   if (message.kind === 'user') {
     return <div className="message-row user-row"><div className="user-bubble">{message.text}</div></div>
@@ -93,7 +100,7 @@ export default function TimelineMessage({
     )
   }
 
-  if (message.kind === 'prose') return <FeedbackProse message={message} />
+  if (message.kind === 'prose') return <FeedbackProse message={message} onRewriteParagraph={onRewriteParagraph} onApplyRewrite={onApplyRewrite} onProseEvaluation={onProseEvaluation} />
 
   return (
     <div className="message-row illustration-row">
@@ -116,9 +123,11 @@ export default function TimelineMessage({
                 ? illustrationGenerationStageText(illustrationGenerationStage)
                 : !imageProviderReady
                    ? '请先配置图片模型'
-                   : referenceReason
-                     ? referenceReason
-                     : '点击下方按钮生成插画'}
+                   : blockedCharacterReadyForConfirmation
+                     ? '定妆照已就绪，确认后自动生成'
+                     : referenceReason
+                       ? referenceReason
+                       : '点击下方按钮生成插画'}
             </span>
           </div>
         )}
@@ -126,7 +135,11 @@ export default function TimelineMessage({
           <div><strong>{message.title}</strong><span>{illustrationStatusText(illustration, imageProviderReady, referenceReason, illustrationGenerationStage)}</span></div>
           <div className="illustration-actions">
             {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && !imageProviderReady && <button type="button" onClick={onOpenImageSettings}>配置图片模型</button>}
-            {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && imageProviderReady && referenceReason && <button type="button" onClick={onOpenCharacterAssets}>查看角色资产</button>}
+            {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && imageProviderReady && referenceReason && (
+              blockedCharacterReadyForConfirmation
+                ? <button type="button" className="illustration-unlock-action" onClick={onOpenCharacterAssets}>去确认角色，解锁插画</button>
+                : <button type="button" onClick={onOpenCharacterAssets}>查看角色资产</button>
+            )}
             {illustration && illustration.status === 'failed' && canGenerate && <button type="button" onClick={() => void onRetryIllustration(illustration.id)}>重新生成</button>}
             {illustration && illustration.status === 'planned' && canGenerate && <button type="button" onClick={() => void onRetryIllustration(illustration.id)}>生成插画</button>}
             <button type="button" aria-expanded={showVisualPrompt} onClick={() => setShowVisualPrompt((value) => !value)}>视觉指令</button>
@@ -152,12 +165,14 @@ export default function TimelineMessage({
   )
 }
 
-function FeedbackProse({ message }: { message: ConversationMessage }) {
+function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEvaluation }: { message: ConversationMessage; onRewriteParagraph?: (input: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) => Promise<string>; onApplyRewrite?: (input: { message: ConversationMessage; paragraph: StoredParagraph; rewrittenText: string }) => Promise<void>; onProseEvaluation?: (event: { type: 'analyzed' | 'rewrite_opened' | 'rewrite_kept_original'; message: ConversationMessage; paragraph: StoredParagraph }) => void }) {
   const [panelOpen, setPanelOpen] = useState(false)
   const [feedback, setFeedback] = useState<Feedback[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [selectedVerdict, setSelectedVerdict] = useState<FeedbackVerdict>('up')
+  const [storedParagraphs, setStoredParagraphs] = useState<StoredParagraph[]>([])
+  const [rewriteParagraph, setRewriteParagraph] = useState<StoredParagraph>()
 
   const refreshFeedback = useCallback(async () => {
     setLoading(true)
@@ -175,6 +190,14 @@ function FeedbackProse({ message }: { message: ConversationMessage }) {
     void refreshFeedback()
   }, [refreshFeedback])
 
+  useEffect(() => {
+    let cancelled = false
+    void listMessageParagraphsWithCurrentStyleIssues(message.projectId, message.id).then((rows) => {
+      if (!cancelled) { setStoredParagraphs(rows.sort((left, right) => left.index - right.index)); rows.forEach((paragraph) => onProseEvaluation?.({ type: 'analyzed', message, paragraph })) }
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [message])
+
   function openPanel(verdict: FeedbackVerdict) {
     setSelectedVerdict(verdict)
     setPanelOpen(true)
@@ -183,7 +206,11 @@ function FeedbackProse({ message }: { message: ConversationMessage }) {
 
   return (
     <article className="story-prose">
-      {message.paragraphs?.map((paragraph, index) => <p key={`${message.id}-${index}`}>{paragraph}</p>)}
+      {message.paragraphs?.map((paragraph, index) => {
+        const stored = storedParagraphs.find((item) => item.index === index && item.text === paragraph)
+        const issueCount = stored?.styleIssues?.length ?? 0
+        return <div className="prose-paragraph" key={`${message.id}-${index}`}><p>{paragraph}</p>{issueCount > 0 && <button className="prose-optimize-trigger" type="button" aria-label={`优化第 ${index + 1} 段，${issueCount} 个建议`} onClick={() => { if (stored) onProseEvaluation?.({ type: 'rewrite_opened', message, paragraph: stored }); setRewriteParagraph(stored) }}><WandSparkles size={14} />可优化 {issueCount}</button>}</div>
+      })}
       <div className="message-feedback-actions" aria-label="正文反馈">
         <button
           className={`feedback-trigger ${feedback.some((item) => item.scope === 'message' && item.verdict === 'up') ? 'is-active' : ''}`}
@@ -212,8 +239,27 @@ function FeedbackProse({ message }: { message: ConversationMessage }) {
           refreshFeedback={refreshFeedback}
         />
       )}
+      {rewriteParagraph && <RewritePanel message={message} paragraph={rewriteParagraph} onClose={() => { onProseEvaluation?.({ type: 'rewrite_kept_original', message, paragraph: rewriteParagraph }); setRewriteParagraph(undefined) }} onRewrite={onRewriteParagraph} onApply={async (rewrittenText) => { await onApplyRewrite?.({ message, paragraph: rewriteParagraph, rewrittenText }); setRewriteParagraph(undefined) }} />}
     </article>
   )
+}
+
+function RewritePanel({ message, paragraph, onClose, onRewrite, onApply }: { message: ConversationMessage; paragraph: StoredParagraph; onClose: () => void; onRewrite?: (input: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) => Promise<string>; onApply: (text: string) => Promise<void> }) {
+  const [strength, setStrength] = useState<RewriteStrength>('balanced')
+  const [suggestion, setSuggestion] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [applying, setApplying] = useState(false)
+  const issues: ProseStyleIssue[] = paragraph.styleIssues ?? []
+  async function generate() { if (!onRewrite) return; setBusy(true); setError(''); try { setSuggestion(await onRewrite({ message, paragraph, strength })) } catch (cause) { setError(cause instanceof Error ? cause.message : '建议稿生成失败') } finally { setBusy(false) } }
+  return <div className="rewrite-panel" role="dialog" aria-label="段落优化建议">
+    <header><strong>段落优化</strong><button className="feedback-close" type="button" aria-label="关闭段落优化" onClick={onClose}><X size={16} /></button></header>
+    <div className="rewrite-issues">{issues.map((issue) => <span key={issue.ruleId}>{issue.explanation}</span>)}</div>
+    <div className="rewrite-strength" role="radiogroup" aria-label="改写强度">{([['light','轻度'],['balanced','均衡'],['strong','强力']] as const).map(([value,label]) => <button key={value} type="button" role="radio" aria-checked={strength === value} disabled={busy || applying} onClick={() => { setStrength(value); setSuggestion(''); setError('') }}>{label}</button>)}</div>
+    <div className="rewrite-comparison"><section><h4>原文</h4><p>{paragraph.text}</p></section><section><h4>建议稿</h4>{suggestion ? <p>{suggestion}</p> : <p className="feedback-hint">生成后会显示在这里。</p>}</section></div>
+    {error && <p className="feedback-error" role="alert">{error}</p>}
+    <footer><button type="button" disabled={busy || applying} onClick={onClose}>保留原文</button>{suggestion ? <button className="primary" type="button" disabled={busy || applying} onClick={() => void (async () => { setApplying(true); setError(''); try { await onApply(suggestion) } catch (cause) { setError(cause instanceof Error ? cause.message : '建议稿应用失败') } finally { setApplying(false) } })()}>{applying ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{applying ? '应用中…' : '采用建议稿'}</button> : <button className="primary" type="button" disabled={busy || applying || !onRewrite} onClick={() => void generate()}>{busy ? <LoaderCircle className="spin" size={16} /> : <WandSparkles size={16} />}生成建议稿</button>}</footer>
+  </div>
 }
 
 function FeedbackPanel({

@@ -4,25 +4,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Chapter, ConversationMessage, FeedbackTargetInput, StoryProject, SummaryVersion, UpsertFeedbackInput, WritingSceneNotes, WritingTurnResult } from '../domain/models'
 import { collectOpenForeshadowings } from '../domain/foreshadowing'
 import { createParagraphFingerprint, normalizeText } from '../domain/paragraphs'
+import { PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
 import {
   StoryDatabase,
+  applyParagraphRewrite,
   beginWritingTurn,
   confirmCharacterPortrait,
   createCharacterDraft,
   completeWritingTurn,
   createProject,
   deleteProject,
+  deleteStyleCorpusSource,
   failWritingTurn,
   hashText,
   initializeStoryDatabase,
   listChapterSummaryVersions,
+  listStyleCorpusFragments,
   listMessageFeedback,
+  listMessageParagraphsWithCurrentStyleIssues,
   listProjectParagraphs,
   listRecentProjectFeedback,
   loadProjectScenes,
   removeFeedback,
   restoreChapterSummaryVersion,
   restoreIllustrationsBlockedByReference,
+  saveStyleCorpusImport,
+  splitStyleCorpusText,
   setIllustrationBlockedByReference,
   storyDatabase,
   toggleFeedback,
@@ -105,6 +112,9 @@ async function clearStoryDatabase() {
     storyDatabase.illustrations.clear(),
     storyDatabase.styles.clear(),
     storyDatabase.scenes.clear(),
+    storyDatabase.styleCorpusBindings.clear(),
+    storyDatabase.styleCorpusFragments.clear(),
+    storyDatabase.styleCorpusSources.clear(),
   ])
 }
 
@@ -425,7 +435,7 @@ describe('StoryDatabase v5-v6 summary version and feedback schema migrations', (
       upgraded = new StoryDatabase(name)
       await upgraded.open()
 
-      expect(upgraded.verno).toBe(9)
+      expect(upgraded.verno).toBe(11)
       expect(await upgraded.feedback.count()).toBe(0)
       const versions = await upgraded.summaryVersions.where('projectId').equals('project-v4').toArray()
       const migrated = versions.find((version) => version.chapterId === summarizedChapter.id)
@@ -862,6 +872,102 @@ describe('paragraph persistence', () => {
     expect(await storyDatabase.paragraphs.where('projectId').equals(project.id).count()).toBe(0)
     expect(await storyDatabase.summaryVersions.where('projectId').equals(project.id).count()).toBe(0)
     expect(await storyDatabase.feedback.where('projectId').equals(project.id).count()).toBe(0)
+  })
+})
+
+describe('humanized prose persistence', () => {
+  it('persists local diagnostics on stable message paragraphs', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写', false)
+    await completeWritingTurn(project.id, userMessage.id, notice.id, {
+      ...writingResult,
+      paragraphs: ['她呼吸一滞，眸光一闪，指节泛白。'],
+    }, false)
+    const prose = await storyDatabase.messages.where('projectId').equals(project.id).filter((message) => message.kind === 'prose').first()
+    const paragraph = await storyDatabase.paragraphs.where('[projectId+messageId]').equals([project.id, prose!.id]).first()
+    expect(paragraph?.styleIssues?.map((issue) => issue.ruleId)).toContain('stock-physical-reaction')
+  })
+
+  it('applies a rewrite atomically to message, stable paragraph, chapter and current chapter index', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写', false)
+    await completeWritingTurn(project.id, userMessage.id, notice.id, {
+      ...writingResult,
+      paragraphs: ['她呼吸一滞，眸光一闪。', '门外有人。'],
+    }, false)
+    const prose = await storyDatabase.messages.where('projectId').equals(project.id).filter((message) => message.kind === 'prose').first()
+    const paragraph = await storyDatabase.paragraphs.where('[projectId+messageId]').equals([project.id, prose!.id]).first()
+    await applyParagraphRewrite({
+      projectId: project.id, messageId: prose!.id, paragraphId: paragraph!.id, paragraphIndex: 0,
+      originalFingerprint: paragraph!.fingerprint, rewrittenText: '她把杯子推回桌子中央。',
+    })
+    expect((await storyDatabase.messages.get(prose!.id))?.paragraphs?.[0]).toBe('她把杯子推回桌子中央。')
+    expect((await storyDatabase.paragraphs.get(paragraph!.id))?.text).toBe('她把杯子推回桌子中央。')
+    const chapter = await storyDatabase.chapters.get(prose!.chapterId!)
+    expect(chapter?.content).toContain('她把杯子推回桌子中央。')
+    expect(await storyDatabase.paragraphs.where('[projectId+chapterId]').equals([project.id, prose!.chapterId!]).filter((row) => row.sourceType === 'chapter' && row.text === '她把杯子推回桌子中央。').count()).toBe(1)
+  })
+
+  it('rejects stale rewrite anchors without changing any body text', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写', false)
+    await completeWritingTurn(project.id, userMessage.id, notice.id, writingResult, false)
+    const prose = await storyDatabase.messages.where('projectId').equals(project.id).filter((message) => message.kind === 'prose').first()
+    const paragraph = await storyDatabase.paragraphs.where('[projectId+messageId]').equals([project.id, prose!.id]).first()
+    await expect(applyParagraphRewrite({ projectId: project.id, messageId: prose!.id, paragraphId: paragraph!.id, paragraphIndex: 0, originalFingerprint: 'stale', rewrittenText: '错误建议。' })).rejects.toThrow('发生变化')
+    expect((await storyDatabase.messages.get(prose!.id))?.paragraphs?.[0]).toBe('第一段正文。')
+  })
+
+  it('refreshes missing or stale diagnostic versions without changing message anchors', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写', false)
+    await completeWritingTurn(project.id, userMessage.id, notice.id, { ...writingResult, paragraphs: ['她呼吸一滞，眸光一闪。'] }, false)
+    const prose = await storyDatabase.messages.where('projectId').equals(project.id).filter((message) => message.kind === 'prose').first()
+    const stored = await storyDatabase.paragraphs.where('[projectId+messageId]').equals([project.id, prose!.id]).first()
+    await storyDatabase.paragraphs.update(stored!.id, { styleIssues: [], styleRuleVersion: 0 })
+    const refreshed = await listMessageParagraphsWithCurrentStyleIssues(project.id, prose!.id)
+    expect(refreshed[0]).toMatchObject({ id: stored!.id, createdAt: stored!.createdAt, styleRuleVersion: PROSE_STYLE_RULE_VERSION })
+    expect(refreshed[0].styleIssues?.map((issue) => issue.ruleId)).toContain('stock-physical-reaction')
+  })
+})
+
+describe('style corpus persistence', () => {
+  it('stores source, fragment and global binding separately and cascades source deletion', async () => {
+    const rawText = '门外有人。\n\n她没有开门。'
+    const sourceParagraphs = splitStyleCorpusText(rawText)
+    const saved = await saveStyleCorpusImport({
+      title: '悬疑对白', rawText,
+      fragments: [
+        { paragraphIds: [sourceParagraphs[0].id], text: '伪造文本', fingerprint: 'ignored', labels: { genres: ['悬疑'], sceneTypes: ['等待'] } },
+        { paragraphIds: [sourceParagraphs[1].id], text: '伪造文本', fingerprint: 'ignored', labels: { techniques: ['动作留白'] } },
+      ],
+    })
+    expect(saved.fragments).toHaveLength(2)
+    expect(await storyDatabase.styleCorpusBindings.where('[scope+state]').equals(['global', 'enabled']).count()).toBe(2)
+    expect((await listStyleCorpusFragments())[0].text).not.toContain('门外有人。\n\n她没有开门。')
+    await deleteStyleCorpusSource(saved.source.id)
+    expect(await storyDatabase.styleCorpusSources.count()).toBe(0)
+    expect(await storyDatabase.styleCorpusFragments.count()).toBe(0)
+    expect(await storyDatabase.styleCorpusBindings.count()).toBe(0)
+  })
+
+  it('does not delete global corpus data when deleting a project', async () => {
+    const rawText = '雨停在窗外。'
+    const [paragraph] = splitStyleCorpusText(rawText)
+    await saveStyleCorpusImport({ title: '全局语料', rawText, fragments: [{ paragraphIds: [paragraph.id], text: '伪造文本', fingerprint: 'ignored' }] })
+    await deleteProject(project.id)
+    expect(await storyDatabase.styleCorpusSources.count()).toBe(1)
+    expect(await storyDatabase.styleCorpusFragments.count()).toBe(1)
+  })
+
+  it('rebuilds combined fragment text from ids across different blank-line whitespace', async () => {
+    const rawText = '第一段原文。\n \t\n第二段原文。\n\n\n第三段原文。'
+    const paragraphs = splitStyleCorpusText(rawText)
+    const saved = await saveStyleCorpusImport({
+      title: '空白测试', rawText,
+      fragments: [
+        { paragraphIds: paragraphs.slice(0, 2).map((paragraph) => paragraph.id), text: 'UI 篡改文本', fingerprint: 'tampered' },
+        { paragraphIds: [paragraphs[2].id], text: '另一段篡改文本', fingerprint: 'tampered' },
+      ],
+    })
+    expect(saved.fragments.map((fragment) => fragment.text)).toEqual(['第一段原文。\n\n第二段原文。', '第三段原文。'])
+    expect(saved.fragments[0].fingerprint).toBe(createParagraphFingerprint('第一段原文。\n\n第二段原文。'))
   })
 })
 

@@ -101,6 +101,15 @@ describe('SettingsDrawer', () => {
     expect(onEditGlobalWritingInstructions).toHaveBeenCalledTimes(1)
   })
 
+  it('opens the global style corpus next to global writing instructions', async () => {
+    const onOpenStyleCorpus = vi.fn()
+    render(<SettingsDrawer open projectTitle="测试作品" activeThemeId="neutral" onClose={vi.fn()} onThemeChange={vi.fn().mockResolvedValue(undefined)} activeIllustrationStyleId="unconstrained" activeCustomStylePrompt="" onIllustrationStyleChange={vi.fn().mockResolvedValue(undefined)} activeWritingInstructions="" onEditWritingInstructions={vi.fn()} styleCorpusSummary={{ sourceCount: 2, fragmentCount: 8 }} onOpenStyleCorpus={onOpenStyleCorpus} contextBudget="standard" onContextBudgetChange={vi.fn().mockResolvedValue(undefined)} contextUsageState="empty" onOpenContextUsage={vi.fn()} onOpenSummaryHistory={vi.fn()} providerSettings={providerSettings} onOpenProviderSettings={vi.fn()} appearanceMode="dark" onAppearanceChange={vi.fn()} />)
+    const button = screen.getByRole('button', { name: /风格语料库/ })
+    expect(button.textContent).toContain('2 个来源 · 8 个片段')
+    await userEvent.setup().click(button)
+    expect(onOpenStyleCorpus).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps the settings layer open but ignores Escape while a subpage is above it', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()

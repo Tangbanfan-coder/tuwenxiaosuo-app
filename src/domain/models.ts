@@ -3,6 +3,109 @@ export type AppearanceMode = 'dark' | 'light'
 export type IllustrationStylePresetId = 'unconstrained' | 'realistic-cinematic' | 'anime' | 'manga' | 'watercolor' | 'oil-painting' | 'pixel-art' | 'custom'
 export type ReferenceStyleMode = 'project' | 'reference'
 export type ContextBudget = 'standard' | 'long' | 'full'
+export type RewriteStrength = 'light' | 'balanced' | 'strong'
+
+export type ProseEvaluationEventType =
+  | 'prose_analyzed' | 'rewrite_opened' | 'rewrite_requested' | 'rewrite_succeeded' | 'rewrite_failed'
+  | 'rewrite_kept_original' | 'rewrite_applied' | 'rewrite_apply_failed' | 'writing_turn_completed'
+  | 'style_corpus_retrieved' | 'style_corpus_imported' | 'style_corpus_deleted'
+
+/** Local-only, deliberately text-free event used for prose workflow evaluation. */
+export interface ProseEvaluationEvent {
+  id: string
+  eventType: ProseEvaluationEventType
+  occurredAt: number
+  schemaVersion: 1
+  appVersion: '0.1.0'
+  databaseVersion: 11
+  proseRuleVersion: number
+  projectId?: string
+  messageId?: string
+  paragraphId?: string
+  ruleIds?: string[]
+  severities?: ProseStyleSeverity[]
+  beforeRuleIds?: string[]
+  afterRuleIds?: string[]
+  paragraphLengthBucket?: '0-100' | '101-300' | '301-800' | '801+'
+  suggestionLengthBucket?: '0-100' | '101-300' | '301-800' | '801+'
+  lengthChangeBucket?: 'shorter-30+' | 'shorter-10-29' | 'similar' | 'longer-10-29' | 'longer-30+'
+  rewriteStrength?: RewriteStrength
+  durationBucket?: 'under-1s' | '1-5s' | '5-15s' | '15-60s' | '60s+'
+  corpusFragmentCount?: number
+  contextBudget?: ContextBudget
+  failureKind?: 'configuration' | 'provider' | 'parse' | 'storage' | 'validation' | 'unknown'
+  factProtection?: 'not_checked'
+}
+
+export type ProseStyleRuleCategory =
+  | 'template-simile'
+  | 'contrast'
+  | 'animal-simile'
+  | 'emotion-telling'
+  | 'stock-reaction'
+  | 'dialogue-explanation'
+  | 'repetition'
+  | 'mechanical-list'
+  | 'elevated-ending'
+
+export type ProseStyleSeverity = 'hint' | 'warning' | 'strong'
+
+export interface ProseStyleIssue {
+  ruleId: string
+  category: ProseStyleRuleCategory
+  severity: ProseStyleSeverity
+  explanation: string
+  rewriteGoal: string
+  matchedText?: string
+}
+
+export interface StyleCorpusLabels {
+  genres: string[]
+  sceneTypes: string[]
+  pov?: string
+  narrativeDistance?: string
+  pace: string[]
+  techniques: string[]
+  emotionalTone: string[]
+  imitate: string[]
+  avoid: string[]
+  confidence?: number
+}
+
+export interface StyleCorpusSource {
+  id: string
+  title: string
+  rawText: string
+  fingerprint: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface StyleCorpusFragment {
+  id: string
+  sourceId: string
+  paragraphIds: string[]
+  text: string
+  fingerprint: string
+  suggestedLabels?: StyleCorpusLabels
+  labels: StyleCorpusLabels
+  confirmed: boolean
+  usageCount: number
+  lastUsedAt?: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface StyleCorpusBinding {
+  id: string
+  fragmentId: string
+  scope: 'global' | 'project'
+  projectId?: string
+  state: 'enabled' | 'excluded'
+  weight: number
+  createdAt: number
+  updatedAt: number
+}
 
 export interface WritingInstructionSection {
   id: string
@@ -70,6 +173,9 @@ export interface StoredParagraph {
   index: number
   text: string
   fingerprint: string
+  /** Local editorial diagnostics for this exact paragraph version. */
+  styleIssues?: ProseStyleIssue[]
+  styleRuleVersion?: number
   createdAt: number
 }
 

@@ -270,13 +270,16 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
                   )}
 
                   {status === 'review' && !isFeedbackOpen && (
-                    <div className="asset-actions">
-                      <button className="confirm-asset-button" type="button" disabled={!character.narrativePronoun} title={!character.narrativePronoun ? '请先补充叙事代词' : undefined} onClick={() => void onConfirm(character.id)}><CheckCircle2 size={17} />确认并作为参考</button>
-                      <button className="quiet-button" type="button" onClick={() => {
-                        setFeedbackCharacterId(character.id)
-                        setFeedback('')
-                      }}>不满意，生成优化版</button>
-                    </div>
+                    <>
+                      <p className="asset-review-hint">定妆照已就绪。确认后，等待中的剧情插画会自动继续生成。</p>
+                      <div className="asset-actions">
+                        <button className="confirm-asset-button" type="button" disabled={!character.narrativePronoun} title={!character.narrativePronoun ? '请先补充叙事代词' : undefined} onClick={() => void onConfirm(character.id)}><CheckCircle2 size={17} />确认并作为参考</button>
+                        <button className="quiet-button" type="button" onClick={() => {
+                          setFeedbackCharacterId(character.id)
+                          setFeedback('')
+                        }}>不满意，生成优化版</button>
+                      </div>
+                    </>
                   )}
 
                   {isFeedbackOpen && (
