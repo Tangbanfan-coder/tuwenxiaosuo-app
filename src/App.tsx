@@ -554,7 +554,7 @@ export default function App() {
       const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, character.id)
       await setCharacterPortraitReady(character.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)
-      showToast(`${character.name}的定妆照等待确认`)
+      showToast(`${character.name}的定妆照已生成；去角色资产确认后，相关插画会自动继续`)
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
@@ -743,6 +743,7 @@ export default function App() {
       await restoreIllustrationsBlockedByReference(confirmedWorkspace.project.id, readyReferenceBlocks.map((illustration) => illustration.id))
       nextWorkspace = await refreshWorkspace(workspace.project.id)
       if (!nextWorkspace) return
+      showToast(`已解锁 ${readyReferenceBlocks.length} 张等待中的插画，自动配图开启时会继续生成`)
     }
     if (!nextWorkspace.project.autoIllustrate || !(await providerIsReady('image'))) return
     const eligible = nextWorkspace.illustrations.filter((illustration) => {

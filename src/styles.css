@@ -379,6 +379,7 @@ label {
 .illustration-card figcaption strong { display: block; color: var(--story-text); font-size: 14px; }
 .illustration-card figcaption span { display: block; margin-top: 4px; color: var(--story-muted); font-size: 11px; }
 .illustration-card figcaption button { min-height: 44px; padding: 0 8px; color: var(--story-accent); font-size: 12px; }
+.illustration-card figcaption .illustration-unlock-action { padding: 0 12px; border: 1px solid color-mix(in srgb, var(--story-accent) 55%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--story-accent) 13%, transparent); font-weight: 650; }
 .illustration-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px; }
 .visual-prompt { padding: 13px 14px 15px; border-top: 1px solid var(--story-border); background: color-mix(in srgb, var(--story-surface) 82%, var(--story-bg)); }
 .visual-prompt strong { color: var(--story-text); font-size: 12px; }
@@ -1013,6 +1014,7 @@ label {
 .asset-analysis-note.success { color: #91c6a4; }
 .asset-analysis-note.error { color: #e19a9d; }
 .asset-actions { display: grid; gap: 8px; }
+.asset-review-hint { margin: 0 0 2px; padding: 9px 11px; border: 1px solid #3d3a2e; border-radius: 8px; background: #23221b; color: #d9c58f; font-size: 11px; line-height: 1.6; }
 .confirm-asset-button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; border: 0; border-radius: 8px; background: #d7c18d; color: #1c1a14; font-weight: 680; }
 .confirm-asset-button:hover { background: #ead39d; }
 .confirm-asset-button:disabled { background: #45443f; color: #77756e; }
@@ -1457,6 +1459,7 @@ label {
 .app-shell[data-appearance="light"] .confirmed-note { color: #397953; }
 .app-shell[data-appearance="light"] .asset-analysis-note.success { color: #397953; }
 .app-shell[data-appearance="light"] .asset-analysis-note.error { color: #a8444b; }
+.app-shell[data-appearance="light"] .asset-review-hint { border-color: #ddd0a0; background: #fcf8ea; color: #706440; }
 
 .app-shell[data-appearance="light"] .provider-tabs { border-color: #d9dbd5; background: #f1f2ee; }
 .app-shell[data-appearance="light"] .provider-tabs button { color: #6a716a; }

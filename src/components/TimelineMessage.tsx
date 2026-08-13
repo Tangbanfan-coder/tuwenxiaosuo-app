@@ -79,6 +79,7 @@ export default function TimelineMessage({
   const imageSource = illustration ? resolveImageSource(illustration.imageUrl, illustration.localUri) : undefined
   const directionItems = illustrationDirectionItems(illustration)
   const referenceCharacters = referenceResolution?.ready ? referenceResolution.characters : []
+  const blockedCharacterReadyForConfirmation = Boolean(illustration && referenceReason && illustration.referenceCharacterIds.some((id) => characters.find((character) => character.id === id)?.portraitStatus === 'review'))
 
   if (message.kind === 'user') {
     return <div className="message-row user-row"><div className="user-bubble">{message.text}</div></div>
@@ -122,9 +123,11 @@ export default function TimelineMessage({
                 ? illustrationGenerationStageText(illustrationGenerationStage)
                 : !imageProviderReady
                    ? '请先配置图片模型'
-                   : referenceReason
-                     ? referenceReason
-                     : '点击下方按钮生成插画'}
+                   : blockedCharacterReadyForConfirmation
+                     ? '定妆照已就绪，确认后自动生成'
+                     : referenceReason
+                       ? referenceReason
+                       : '点击下方按钮生成插画'}
             </span>
           </div>
         )}
@@ -132,7 +135,11 @@ export default function TimelineMessage({
           <div><strong>{message.title}</strong><span>{illustrationStatusText(illustration, imageProviderReady, referenceReason, illustrationGenerationStage)}</span></div>
           <div className="illustration-actions">
             {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && !imageProviderReady && <button type="button" onClick={onOpenImageSettings}>配置图片模型</button>}
-            {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && imageProviderReady && referenceReason && <button type="button" onClick={onOpenCharacterAssets}>查看角色资产</button>}
+            {illustration && (illustration.status === 'failed' || illustration.status === 'planned') && imageProviderReady && referenceReason && (
+              blockedCharacterReadyForConfirmation
+                ? <button type="button" className="illustration-unlock-action" onClick={onOpenCharacterAssets}>去确认角色，解锁插画</button>
+                : <button type="button" onClick={onOpenCharacterAssets}>查看角色资产</button>
+            )}
             {illustration && illustration.status === 'failed' && canGenerate && <button type="button" onClick={() => void onRetryIllustration(illustration.id)}>重新生成</button>}
             {illustration && illustration.status === 'planned' && canGenerate && <button type="button" onClick={() => void onRetryIllustration(illustration.id)}>生成插画</button>}
             <button type="button" aria-expanded={showVisualPrompt} onClick={() => setShowVisualPrompt((value) => !value)}>视觉指令</button>

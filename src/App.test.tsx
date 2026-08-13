@@ -695,6 +695,58 @@ describe('composer asset and illustration controls', () => {
     expect(databaseMocks.restoreIllustrationsBlockedByReference).not.toHaveBeenCalledWith(project.id, expect.arrayContaining(['illustration-2']))
     expect(await screen.findByRole('button', { name: '生成插画' })).toBeDefined()
   })
+
+  it('guides the blocked illustration card to character confirmation once the portrait is ready', async () => {
+    providerSettings.image = { ...providerSettings.image, baseUrl: 'https://api.test/v1', model: 'image-model' }
+    secretStoreMocks.has.mockResolvedValue(true)
+    const reviewCharacter = {
+      id: 'character-1', projectId: project.id, name: '林染', role: '主角', narrativePronoun: 'she' as const,
+      identity: { ageAndBuild: '青年', fixedTraits: ['黑发'] }, appearance: { defaultLook: '齐肩黑发', wardrobe: '深色外套' },
+      continuity: { revision: 1, referenceImageUrl: 'data:image/png;base64,dGVzdA==', referenceStyleMode: 'project' as const },
+      portraitStatus: 'review' as const, status: 'draft' as const, createdAt: 1, updatedAt: 1,
+    }
+    const blockedIllustration = {
+      id: 'illustration-1', projectId: project.id, title: '雨夜', prompt: '林染走进雨夜街头', referenceCharacterIds: ['character-1'],
+      status: 'failed' as const, failureKind: 'reference-unavailable' as const,
+      errorMessage: '角色“林染”的参考图尚未确认或图片不可用。请在角色资产中补全档案并确认。',
+      createdAt: 1, updatedAt: 1,
+    }
+    const illustrationMessage = {
+      id: 'illustration-message-1', projectId: project.id, chapterId: 'chapter-1', kind: 'illustration' as const,
+      title: '雨夜', illustrationId: 'illustration-1', order: 1, createdAt: 1,
+    }
+    databaseMocks.loadProjectWorkspace.mockResolvedValue({ ...workspace, messages: [illustrationMessage], characters: [reviewCharacter], illustrations: [blockedIllustration] })
+    render(<App />)
+
+    expect(await screen.findByRole('button', { name: '去确认角色，解锁插画' })).toBeDefined()
+    expect(screen.getByText('定妆照已就绪，确认后自动生成')).toBeDefined()
+  })
+
+  it('keeps the generic character asset entry while the portrait is not ready yet', async () => {
+    providerSettings.image = { ...providerSettings.image, baseUrl: 'https://api.test/v1', model: 'image-model' }
+    secretStoreMocks.has.mockResolvedValue(true)
+    const pendingCharacter = {
+      id: 'character-1', projectId: project.id, name: '林染', role: '主角', narrativePronoun: 'she' as const,
+      identity: { ageAndBuild: '青年', fixedTraits: ['黑发'] }, appearance: { defaultLook: '齐肩黑发', wardrobe: '深色外套' },
+      continuity: { revision: 0, referenceStyleMode: 'project' as const },
+      portraitStatus: 'planned' as const, status: 'draft' as const, createdAt: 1, updatedAt: 1,
+    }
+    const blockedIllustration = {
+      id: 'illustration-1', projectId: project.id, title: '雨夜', prompt: '林染走进雨夜街头', referenceCharacterIds: ['character-1'],
+      status: 'failed' as const, failureKind: 'reference-unavailable' as const,
+      errorMessage: '角色“林染”的参考图尚未确认或图片不可用。请在角色资产中补全档案并确认。',
+      createdAt: 1, updatedAt: 1,
+    }
+    const illustrationMessage = {
+      id: 'illustration-message-1', projectId: project.id, chapterId: 'chapter-1', kind: 'illustration' as const,
+      title: '雨夜', illustrationId: 'illustration-1', order: 1, createdAt: 1,
+    }
+    databaseMocks.loadProjectWorkspace.mockResolvedValue({ ...workspace, messages: [illustrationMessage], characters: [pendingCharacter], illustrations: [blockedIllustration] })
+    render(<App />)
+
+    expect(await screen.findByRole('button', { name: '查看角色资产' })).toBeDefined()
+    expect(screen.queryByRole('button', { name: '去确认角色，解锁插画' })).toBeNull()
+  })
 })
 
 describe('App summary history integration', () => {
