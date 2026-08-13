@@ -115,4 +115,47 @@ describe('CharacterAssetsDrawer', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: '生成优化版' }) as HTMLButtonElement).disabled).toBe(false))
     expect((feedback as HTMLTextAreaElement).value).toBe('保留短发')
   })
+
+  it('shows an in-place analyzing state and disables the analyze button while waiting', async () => {
+    const user = userEvent.setup()
+    const analysis = deferred()
+    const referenceCharacter = { ...character, continuity: { revision: 0, referenceImageUrl: 'data:image/png;base64,aW1hZ2U=' } }
+    const { props } = renderDrawer({
+      characters: [referenceCharacter],
+      onAnalyzeReference: vi.fn().mockReturnValue(analysis.promise),
+    })
+
+    await user.click(screen.getByRole('button', { name: '识别参考图' }))
+
+    const pendingButton = screen.getByRole('button', { name: '正在识别外貌…' }) as HTMLButtonElement
+    expect(pendingButton.disabled).toBe(true)
+    expect(props.onAnalyzeReference).toHaveBeenCalledWith('character-1')
+
+    analysis.resolve()
+    await waitFor(() => expect(screen.queryByRole('button', { name: '正在识别外貌…' })).toBeNull())
+    expect(screen.getByRole('button', { name: '识别参考图' })).toBeDefined()
+  })
+
+  it('shows an in-place success notice after analysis completes', async () => {
+    const user = userEvent.setup()
+    const referenceCharacter = { ...character, continuity: { revision: 0, referenceImageUrl: 'data:image/png;base64,aW1hZ2U=' } }
+    renderDrawer({ characters: [referenceCharacter] })
+
+    await user.click(screen.getByRole('button', { name: '识别参考图' }))
+
+    expect(await screen.findByText('外貌档案已更新，请核对后再次确认')).toBeDefined()
+  })
+
+  it('renders the analysis failure message next to the button for retry context', async () => {
+    const user = userEvent.setup()
+    const referenceCharacter = { ...character, continuity: { revision: 0, referenceImageUrl: 'data:image/png;base64,aW1hZ2U=' } }
+    renderDrawer({
+      characters: [referenceCharacter],
+      onAnalyzeReference: vi.fn().mockRejectedValue(new Error('文本模型没有返回外貌识别结果')),
+    })
+
+    await user.click(screen.getByRole('button', { name: '识别参考图' }))
+
+    expect(await screen.findByText('文本模型没有返回外貌识别结果')).toBeDefined()
+  })
 })

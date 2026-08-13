@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const nativeMocks = vi.hoisted(() => ({ native: true }))
 const nativeAssetStoreMocks = vi.hoisted(() => ({ download: vi.fn(), generate: vi.fn() }))
 const secretStoreMocks = vi.hoisted(() => ({ get: vi.fn() }))
+const backgroundGenerationMocks = vi.hoisted(() => ({ enqueue: vi.fn(), wait: vi.fn(), acknowledge: vi.fn() }))
+const loggerMocks = vi.hoisted(() => ({ write: vi.fn().mockResolvedValue(undefined) }))
 const filesystemMocks = vi.hoisted(() => ({
   files: new Map<string, string>(),
   appendFile: vi.fn(),
@@ -22,7 +24,7 @@ vi.mock('@capacitor/core', () => ({
   },
   registerPlugin: (name: string) => name === 'ImageAssetStore'
     ? nativeAssetStoreMocks
-    : { write: vi.fn().mockResolvedValue(undefined) },
+    : loggerMocks,
 }))
 vi.mock('@capacitor/filesystem', () => ({
   Directory: { Data: 'DATA' },
@@ -30,6 +32,11 @@ vi.mock('@capacitor/filesystem', () => ({
 }))
 vi.mock('@capgo/capacitor-file-sharer', () => ({ FileSharer: { save: vi.fn() } }))
 vi.mock('./secretStore', () => ({ secretStore: secretStoreMocks }))
+vi.mock('./backgroundGeneration', () => ({
+  enqueueBackgroundImageTask: backgroundGenerationMocks.enqueue,
+  waitForBackgroundGenerationTask: backgroundGenerationMocks.wait,
+  acknowledgeBackgroundGenerationTask: backgroundGenerationMocks.acknowledge,
+}))
 
 import { generateNativeImageAsset, persistImageAsset } from './imageAssetStore'
 
@@ -114,6 +121,28 @@ describe('persistImageAsset', () => {
     expect(nativeAssetStoreMocks.generate).toHaveBeenCalledWith(expect.objectContaining({
       endpoint: 'https://api.test/v1/images/generations', projectId: 'project-1', assetId: 'asset-1', bearerToken: 'secret-token',
     }))
+  })
+
+  it('logs background generation metrics before acknowledging the completed task', async () => {
+    const calls: string[] = []
+    backgroundGenerationMocks.enqueue.mockImplementation(async () => { calls.push('enqueue'); return { id: 'background-1', state: 'prepared' } })
+    backgroundGenerationMocks.wait.mockImplementation(async () => {
+      calls.push('wait')
+      return { id: 'background-1', kind: 'image', state: 'completed', localUri: 'file://projects/project-1/images/asset-1.png', bytes: 2_400_000, format: 'png', responseMode: 'b64_json', responseMs: 60_000, writeMs: 35, validationAndReplaceMs: 12, durationMs: 60_047 }
+    })
+    loggerMocks.write.mockImplementation(async () => { calls.push('log') })
+    backgroundGenerationMocks.acknowledge.mockImplementation(async () => { calls.push('acknowledge') })
+
+    await expect(generateNativeImageAsset({
+      endpoint: 'https://api.test/v1/images/generations', model: 'gpt-image-2', prompt: '生成插画', size: '1536x1024',
+      target: { projectId: 'project-1', assetId: 'asset-1' }, secretRef: 'image-key',
+    })).resolves.toEqual({ imageUrl: '', localUri: 'file://projects/project-1/images/asset-1.png' })
+
+    expect(loggerMocks.write).toHaveBeenCalledWith({
+      level: 'info',
+      message: '{"phase":"native-generation-persist-complete","operation":"generation","format":"png","bytes":2400000,"responseMode":"b64_json","responseMs":60000,"writeMs":35,"validationAndReplaceMs":12,"durationMs":60047}',
+    })
+    expect(calls).toEqual(['enqueue', 'wait', 'log', 'acknowledge'])
   })
 
   it('does not invoke the native plugin on Web, preserving the transport fallback', async () => {

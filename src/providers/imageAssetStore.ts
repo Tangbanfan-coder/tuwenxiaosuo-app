@@ -103,8 +103,16 @@ export async function generateNativeImageAsset(request: NativeImageGenerationReq
     }
     const completed = await waitForBackgroundGenerationTask(background.id)
     if (completed.state !== 'completed' || !completed.localUri) throw new Error(completed.error || '后台图片生成未完成')
-    await acknowledgeBackgroundGenerationTask(background.id)
-    const stored = { localUri: completed.localUri, format: 'native', bytes: 0, responseMode: 'native', responseMs: 0, writeMs: 0, validationAndReplaceMs: 0, durationMs: Date.now() - startedAt }
+    const stored = {
+      localUri: completed.localUri,
+      format: completed.format,
+      bytes: completed.bytes,
+      responseMode: completed.responseMode,
+      responseMs: completed.responseMs,
+      writeMs: completed.writeMs,
+      validationAndReplaceMs: completed.validationAndReplaceMs,
+      durationMs: completed.durationMs,
+    }
     logImagePipeline('info', {
       phase: 'native-generation-persist-complete',
       operation: request.referenceSources?.length ? 'edit' : 'generation',
@@ -117,6 +125,7 @@ export async function generateNativeImageAsset(request: NativeImageGenerationReq
       validationAndReplaceMs: stored.validationAndReplaceMs,
       durationMs: stored.durationMs,
     })
+    await acknowledgeBackgroundGenerationTask(background.id)
     return { imageUrl: '', localUri: stored.localUri }
   } catch (error) {
     logImagePipeline('warn', {

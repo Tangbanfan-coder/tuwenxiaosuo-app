@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
+import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 
@@ -38,6 +39,10 @@ public final class BackgroundGenerationService extends Service {
     static final String EXTRA_BEARER_TOKEN = "bearerToken";
     private static final String CHANNEL_ID = "background-generation";
     private static final int NOTIFICATION_ID = 41021;
+    private static final String IMAGE_PIPELINE_TAG = "ImagePipeline";
+    static final String[] IMAGE_METRIC_FIELDS = {
+        "bytes", "format", "responseMode", "responseMs", "writeMs", "validationAndReplaceMs", "durationMs"
+    };
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private BackgroundTaskStore tasks;
 
@@ -131,9 +136,11 @@ public final class BackgroundGenerationService extends Service {
         );
         JSONObject completed = tasks.read(taskId);
         completed.put("localUri", stored.getString("localUri"));
+        copyImageMetrics(completed, stored);
         completed.put("state", BackgroundTaskStore.COMPLETED);
         completed.put("updatedAt", System.currentTimeMillis());
         tasks.write(taskId, completed);
+        Log.i(IMAGE_PIPELINE_TAG, imageMetricsLogMessage(stored));
     }
 
     private File responseFile(String taskId) throws IOException {
@@ -195,6 +202,27 @@ public final class BackgroundGenerationService extends Service {
     static String sanitize(String value, String token) {
         if (value == null || value.isEmpty() || token == null || token.isEmpty()) return value == null ? "" : value;
         return value.replace("Bearer " + token, "[REDACTED]").replace(token, "[REDACTED]");
+    }
+
+    /** Copies the non-sensitive storage metrics shared with the WebView result reader. */
+    static void copyImageMetrics(JSONObject task, JSONObject stored) throws Exception {
+        for (String field : IMAGE_METRIC_FIELDS) {
+            if (stored.has(field)) task.put(field, stored.get(field));
+        }
+    }
+
+    /** Keeps native Logcat diagnostics limited to image pipeline metrics. */
+    static String imageMetricsLogMessage(JSONObject stored) {
+        try {
+            JSONObject metrics = new JSONObject();
+            metrics.put("phase", "background-generation-persist-complete");
+            for (String field : IMAGE_METRIC_FIELDS) {
+                if (stored.has(field)) metrics.put(field, stored.get(field));
+            }
+            return metrics.toString();
+        } catch (Exception ignored) {
+            return "{\"phase\":\"background-generation-persist-complete\"}";
+        }
     }
     private static String safeError(Exception error, String token) { String message = error.getMessage(); return message == null || message.trim().isEmpty() ? "后台生成失败" : sanitize(message, token); }
 }

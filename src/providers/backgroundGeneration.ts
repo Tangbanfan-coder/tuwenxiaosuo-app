@@ -11,6 +11,13 @@ export interface BackgroundTask {
   error?: string
   rawResponse?: string
   localUri?: string
+  bytes?: number
+  format?: string
+  responseMode?: 'url' | 'b64_json'
+  responseMs?: number
+  writeMs?: number
+  validationAndReplaceMs?: number
+  durationMs?: number
   metadata?: Record<string, unknown>
 }
 

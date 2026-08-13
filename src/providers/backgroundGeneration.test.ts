@@ -35,10 +35,10 @@ describe('background generation bridge', () => {
 
   it('observes completed, failed and unknown tasks without creating another request', async () => {
     native.native = true
-    plugin.readResult.mockResolvedValueOnce({ id: 'done', kind: 'text', state: 'completed', rawResponse: '{}' })
+    plugin.readResult.mockResolvedValueOnce({ id: 'done', kind: 'image', state: 'completed', localUri: 'file://image.png', bytes: 2_400_000, format: 'png', responseMode: 'b64_json', responseMs: 60_000, writeMs: 35, validationAndReplaceMs: 12, durationMs: 60_047 })
       .mockResolvedValueOnce({ id: 'failed', kind: 'text', state: 'failed', error: 'HTTP 500' })
       .mockResolvedValueOnce({ id: 'unknown', kind: 'text', state: 'unknown' })
-    await expect(waitForBackgroundGenerationTask('done', 0)).resolves.toMatchObject({ state: 'completed' })
+    await expect(waitForBackgroundGenerationTask('done', 0)).resolves.toMatchObject({ state: 'completed', localUri: 'file://image.png', bytes: 2_400_000, format: 'png', responseMode: 'b64_json', responseMs: 60_000, writeMs: 35, validationAndReplaceMs: 12, durationMs: 60_047 })
     await expect(waitForBackgroundGenerationTask('failed', 0)).resolves.toMatchObject({ state: 'failed' })
     await expect(waitForBackgroundGenerationTask('unknown', 0)).resolves.toMatchObject({ state: 'unknown' })
     expect(plugin.enqueue).not.toHaveBeenCalled()
