@@ -434,6 +434,7 @@ export default function ProviderSettingsDialog({ open, nested = false, settings,
                 {showKey ? <Eye size={18} /> : <EyeOff size={18} />}
               </button>
             </div>
+            {!Capacitor.isNativePlatform() && <small className="field-hint">网页版密钥保存在本机浏览器中，下次打开无需重填；请勿在公用设备上保存。</small>}
           </div>
 
           <label className="field">
