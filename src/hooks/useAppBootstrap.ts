@@ -22,6 +22,7 @@ import { refreshModelLimits } from '../providers/modelLimits'
 import {
   acknowledgeBackgroundGenerationTask,
   listBackgroundGenerationTasks,
+  readBackgroundGenerationTask,
 } from '../providers/backgroundGeneration'
 import { parseBackgroundWritingResponse } from '../providers/writing'
 
@@ -82,11 +83,15 @@ async function recoverBackgroundGenerationTasks() {
     }
     if (notice.status !== 'pending') continue
     if (!notice.backgroundTaskId) await setWritingTurnBackgroundTask(notice.id, task.id)
-    if (task.state === 'completed' && task.rawResponse) {
+    if (task.state === 'completed') {
+      // The native list() payload deliberately omits rawResponse; the detail
+      // call below is the only source for the committed response body.
+      const completedTask = task.rawResponse ? task : await readBackgroundGenerationTask(task.id)
+      if (!completedTask?.rawResponse) continue
       let parsed
       try {
         if (!metadata?.projectId || !metadata.userMessageId) throw new Error('后台任务缺少写作关联信息')
-        parsed = parseBackgroundWritingResponse(task.rawResponse)
+        parsed = parseBackgroundWritingResponse(completedTask.rawResponse)
       } catch (error) {
         await failWritingTurn(notice.id, error instanceof Error ? error.message : '后台写作结果无法解析')
         await acknowledgeBackgroundGenerationTask(task.id)
