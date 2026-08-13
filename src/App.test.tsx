@@ -15,10 +15,14 @@ const databaseMocks = vi.hoisted(() => ({
   createProject: vi.fn(),
   deleteProject: vi.fn(),
   failWritingTurn: vi.fn(),
+  getStyleCorpusSummary: vi.fn().mockResolvedValue({ sourceCount: 0, fragmentCount: 0 }),
+  recordProseEvaluationEvent: vi.fn(() => Promise.resolve()),
+  applyParagraphRewrite: vi.fn(),
   getActiveProjectId: vi.fn(),
   initializeStoryDatabase: vi.fn(),
   listChapterSummaryVersions: vi.fn(),
   listMessageFeedback: vi.fn(),
+  listMessageParagraphsWithCurrentStyleIssues: vi.fn(),
   listGeneratingImageAssets: vi.fn(),
   listProjects: vi.fn(),
   listReadyLocalIllustrations: vi.fn(),
@@ -55,6 +59,9 @@ const writingMocks = vi.hoisted(() => ({
   explicitlyRequestsNewChapter: vi.fn(),
   generateWritingTurn: vi.fn(),
   projectStreamingProse: vi.fn(),
+  markStyleCorpusFragmentsUsed: vi.fn(),
+  retrieveStyleExamples: vi.fn().mockResolvedValue([]),
+  rewriteProseParagraph: vi.fn(),
 }))
 
 
@@ -278,6 +285,10 @@ beforeEach(() => {
   databaseMocks.loadProjectWorkspace.mockResolvedValue(workspace)
   databaseMocks.listChapterSummaryVersions.mockResolvedValue([])
   databaseMocks.listMessageFeedback.mockResolvedValue([])
+  databaseMocks.listMessageParagraphsWithCurrentStyleIssues.mockResolvedValue([])
+  databaseMocks.getStyleCorpusSummary.mockResolvedValue({ sourceCount: 0, fragmentCount: 0 })
+  databaseMocks.recordProseEvaluationEvent.mockResolvedValue(undefined)
+  databaseMocks.applyParagraphRewrite.mockResolvedValue(undefined)
   databaseMocks.toggleFeedback.mockResolvedValue({ id: 'feedback-1', verdict: 'down' })
   databaseMocks.toggleFeedbackBatch.mockResolvedValue([])
   databaseMocks.storyDatabase.paragraphs.where.mockReturnValue({
@@ -287,6 +298,11 @@ beforeEach(() => {
   writingMocks.explicitlyRequestsNewChapter.mockReset()
   writingMocks.generateWritingTurn.mockReset()
   writingMocks.projectStreamingProse.mockReset()
+  writingMocks.retrieveStyleExamples.mockReset()
+  writingMocks.retrieveStyleExamples.mockResolvedValue([])
+  writingMocks.rewriteProseParagraph.mockReset()
+  writingMocks.markStyleCorpusFragmentsUsed.mockReset()
+  writingMocks.markStyleCorpusFragmentsUsed.mockResolvedValue(undefined)
   configMocks.saveGlobalWritingInstructions.mockClear()
   configMocks.saveProviderSettings.mockClear()
   imageAssetMocks.persistImageAsset.mockClear()
@@ -384,6 +400,7 @@ describe('context usage and composer isolation', () => {
     databaseMocks.loadProjectWorkspace.mockResolvedValue(workspace)
     writingMocks.generateWritingTurn.mockImplementation(async (_workspace, _text, _provider, _transport, _onDelta, options) => {
       options.onContextPlan(preparedPlan)
+      options.onStyleFragmentsSelected(['style-1'])
       return { prose: { title: '第一章', paragraphs: ['正文'] }, visualPlan: undefined }
     })
     render(<App />)
@@ -392,6 +409,49 @@ describe('context usage and composer isolation', () => {
     await user.click(screen.getByRole('button', { name: '发送' }))
     await waitFor(() => expect(writingMocks.generateWritingTurn).toHaveBeenCalled())
     expect(screen.getByLabelText('上下文工具栏状态').textContent).toBe('ready:ready:62%')
+    await waitFor(() => expect(writingMocks.markStyleCorpusFragmentsUsed).toHaveBeenCalledWith(['style-1']))
+  })
+
+  it('does not count selected style examples when body persistence fails', async () => {
+    const user = userEvent.setup()
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'test-model' }
+    secretStoreMocks.has.mockResolvedValue(true)
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 1, createdAt: 2 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', order: 2, createdAt: 2 },
+    ])
+    databaseMocks.completeWritingTurn.mockRejectedValue(new Error('正文落库失败'))
+    writingMocks.generateWritingTurn.mockImplementation(async (_workspace, _text, _provider, _transport, _onDelta, options) => {
+      options.onStyleFragmentsSelected(['style-1'])
+      return { prose: { title: '第一章', paragraphs: ['正文'] }, visualPlan: undefined }
+    })
+    render(<App />)
+    await user.type(await screen.findByLabelText('创作要求'), '继续写')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(databaseMocks.completeWritingTurn).toHaveBeenCalled())
+    expect(writingMocks.markStyleCorpusFragmentsUsed).not.toHaveBeenCalled()
+  })
+
+  it('keeps a persisted writing turn successful when auxiliary style usage accounting fails', async () => {
+    const user = userEvent.setup()
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'test-model' }
+    secretStoreMocks.has.mockResolvedValue(true)
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 1, createdAt: 2 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', order: 2, createdAt: 2 },
+    ])
+    databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
+    databaseMocks.loadProjectWorkspace.mockResolvedValue(workspace)
+    writingMocks.markStyleCorpusFragmentsUsed.mockRejectedValue(new Error('计数写入失败'))
+    writingMocks.generateWritingTurn.mockImplementation(async (_workspace, _text, _provider, _transport, _onDelta, options) => {
+      options.onStyleFragmentsSelected(['style-1'])
+      return { prose: { title: '第一章', paragraphs: ['正文'] }, visualPlan: undefined }
+    })
+    render(<App />)
+    await user.type(await screen.findByLabelText('创作要求'), '继续写')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    expect(await screen.findByText('正文已保存')).toBeDefined()
+    expect(databaseMocks.failWritingTurn).not.toHaveBeenCalled()
   })
 
   it('ignores Enter while a Chinese IME composition is active', async () => {
@@ -739,5 +799,89 @@ describe('prose feedback UI', () => {
     await user.click(screen.getByRole('button', { name: '提交反馈' }))
     await waitFor(() => expect(databaseMocks.toggleFeedbackBatch).toHaveBeenCalledTimes(3))
     expect(databaseMocks.toggleFeedbackBatch.mock.calls[2][0]).toEqual(expect.objectContaining({ targets: [expect.objectContaining({ scope: 'message' })], verdict: 'down' }))
+  })
+
+  it('仅在检测命中后按用户操作生成并采用段落建议稿', async () => {
+    const user = userEvent.setup()
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'rewrite-model' }
+    const paragraph = {
+      id: 'paragraph-message-message-1-0', projectId: project.id, sourceType: 'message' as const,
+      messageId: proseMessage.id, chapterId: 'chapter-1', index: 0, text: proseMessage.paragraphs[0],
+      fingerprint: createParagraphFingerprint(proseMessage.paragraphs[0]), createdAt: 2,
+      styleIssues: [{ ruleId: 'stock-physical-reaction', category: 'stock-reaction' as const, severity: 'warning' as const, explanation: '动作反应过于模板化', rewriteGoal: '保留关键动作' }],
+    }
+    databaseMocks.listMessageParagraphsWithCurrentStyleIssues.mockResolvedValue([paragraph])
+    writingMocks.rewriteProseParagraph.mockResolvedValue('她把杯子推到桌子中央。')
+    renderProse()
+    const trigger = await screen.findByRole('button', { name: '优化第 1 段，1 个建议' })
+    expect(writingMocks.rewriteProseParagraph).not.toHaveBeenCalled()
+    await user.click(trigger)
+    expect(screen.getAllByText('第一段正文，介绍场景。')).toHaveLength(2)
+    await user.click(screen.getByRole('button', { name: /生成建议稿/ }))
+    expect(await screen.findByText('她把杯子推到桌子中央。')).toBeDefined()
+    await user.click(screen.getByRole('button', { name: /采用建议稿/ }))
+    await waitFor(() => expect(databaseMocks.applyParagraphRewrite).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: proseMessage.id, paragraphId: paragraph.id, originalFingerprint: paragraph.fingerprint,
+      rewrittenText: '她把杯子推到桌子中央。',
+    })))
+  })
+
+  it('语料使用计数失败时仍展示已经生成的段落建议稿', async () => {
+    const user = userEvent.setup()
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'rewrite-model' }
+    const paragraph = {
+      id: 'paragraph-message-message-1-0', projectId: project.id, sourceType: 'message' as const,
+      messageId: proseMessage.id, chapterId: 'chapter-1', index: 0, text: proseMessage.paragraphs[0],
+      fingerprint: createParagraphFingerprint(proseMessage.paragraphs[0]), createdAt: 2,
+      styleIssues: [{ ruleId: 'stock-physical-reaction', category: 'stock-reaction' as const, severity: 'warning' as const, explanation: '动作反应过于模板化', rewriteGoal: '保留关键动作' }],
+    }
+    databaseMocks.listMessageParagraphsWithCurrentStyleIssues.mockResolvedValue([paragraph])
+    writingMocks.retrieveStyleExamples.mockResolvedValue([{ fragment: { id: 'style-1', text: '参考语料' } }])
+    writingMocks.rewriteProseParagraph.mockResolvedValue('她把杯子推到桌子中央。')
+    writingMocks.markStyleCorpusFragmentsUsed.mockRejectedValue(new Error('计数写入失败'))
+    renderProse()
+    await user.click(await screen.findByRole('button', { name: '优化第 1 段，1 个建议' }))
+    await user.click(screen.getByRole('button', { name: /生成建议稿/ }))
+    expect(await screen.findByText('她把杯子推到桌子中央。')).toBeDefined()
+  })
+
+  it('允许用户保留原文而不写入数据库', async () => {
+    const user = userEvent.setup()
+    const paragraph = {
+      id: 'paragraph-message-message-1-0', projectId: project.id, sourceType: 'message' as const,
+      messageId: proseMessage.id, chapterId: 'chapter-1', index: 0, text: proseMessage.paragraphs[0],
+      fingerprint: createParagraphFingerprint(proseMessage.paragraphs[0]), createdAt: 2,
+      styleIssues: [{ ruleId: 'dialogue-explained-afterward', category: 'dialogue-explanation' as const, severity: 'hint' as const, explanation: '对白后重复解释', rewriteGoal: '删除复述' }],
+    }
+    databaseMocks.listMessageParagraphsWithCurrentStyleIssues.mockResolvedValue([paragraph])
+    renderProse()
+    await user.click(await screen.findByRole('button', { name: '优化第 1 段，1 个建议' }))
+    await user.click(screen.getByRole('button', { name: '保留原文' }))
+    expect(databaseMocks.applyParagraphRewrite).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: '段落优化建议' })).toBeNull()
+  })
+
+  it('切换强度清空旧建议，采用失败时保留面板并显示错误', async () => {
+    const user = userEvent.setup()
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'rewrite-model' }
+    const paragraph = {
+      id: 'paragraph-message-message-1-0', projectId: project.id, sourceType: 'message' as const,
+      messageId: proseMessage.id, chapterId: 'chapter-1', index: 0, text: proseMessage.paragraphs[0],
+      fingerprint: createParagraphFingerprint(proseMessage.paragraphs[0]), createdAt: 2,
+      styleIssues: [{ ruleId: 'stock-physical-reaction', category: 'stock-reaction' as const, severity: 'warning' as const, explanation: '动作模板化', rewriteGoal: '保留关键动作' }],
+    }
+    databaseMocks.listMessageParagraphsWithCurrentStyleIssues.mockResolvedValue([paragraph])
+    writingMocks.rewriteProseParagraph.mockResolvedValue('第一版建议。')
+    databaseMocks.applyParagraphRewrite.mockRejectedValue(new Error('正文已变化'))
+    renderProse()
+    await user.click(await screen.findByRole('button', { name: '优化第 1 段，1 个建议' }))
+    await user.click(screen.getByRole('button', { name: /生成建议稿/ }))
+    expect(await screen.findByText('第一版建议。')).toBeDefined()
+    await user.click(screen.getByRole('radio', { name: '强力' }))
+    expect(screen.queryByText('第一版建议。')).toBeNull()
+    await user.click(screen.getByRole('button', { name: /生成建议稿/ }))
+    await user.click(await screen.findByRole('button', { name: /采用建议稿/ }))
+    expect((await screen.findByRole('alert')).textContent).toContain('正文已变化')
+    expect(screen.getByRole('dialog', { name: '段落优化建议' })).toBeDefined()
   })
 })

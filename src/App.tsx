@@ -25,8 +25,11 @@ import IllustrationLightbox, { type LightboxImage } from './components/Illustrat
 import TimelineMessage from './components/TimelineMessage'
 import WritingInstructionsDialog from './components/WritingInstructionsDialog'
 import SummaryHistoryDialog from './components/SummaryHistoryDialog'
+import StyleCorpusDialog from './components/StyleCorpusDialog'
+import ProseEvaluationDialog from './components/ProseEvaluationDialog'
 import {
   beginWritingTurn,
+  applyParagraphRewrite,
   applyReferenceAppearanceAnalysis,
   completeWritingTurn,
   confirmCharacterPortrait,
@@ -34,6 +37,8 @@ import {
   createProject,
   deleteProject,
   failWritingTurn,
+  getStyleCorpusSummary,
+  recordProseEvaluationEvent,
   listChapterSummaryVersions,
   renameProject,
   restoreChapterSummaryVersion,
@@ -55,10 +60,12 @@ import {
   updateWritingInstructions,
   updateWritingStructure,
 } from './data/storyDatabase'
+import { createEvaluationEvent, evaluationIssueFields, proseDurationBucket, proseLengthBucket, proseLengthChangeBucket, rewriteRequestedEvaluation, writingTurnCompletedEvaluation } from './domain/proseEvaluation'
+import { PROSE_STYLE_RULE_VERSION } from './domain/proseStyle'
 import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
 import { resolveIllustrationReferences } from './domain/illustrationReferences'
 import { resolvePreviousSceneIllustration } from './domain/sceneContinuity'
-import type { AppearanceMode, CharacterAsset, ContextBudget, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, ThemePresetId } from './domain/models'
+import type { AppearanceMode, CharacterAsset, ContextBudget, ConversationMessage, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, RewriteStrength, StoredParagraph, ThemePresetId } from './domain/models'
 import { browserTransport } from './providers/browserTransport'
 import { loadProviderSettings, saveProviderSettings } from './providers/config'
 import { loadGlobalWritingInstructions, saveGlobalWritingInstructions } from './providers/config'
@@ -72,7 +79,7 @@ import { analyzeReferenceImage } from './providers/referenceAnalysis'
 import { secretStore } from './providers/secretStore'
 import { BackgroundTaskUncertainError, acknowledgeBackgroundGenerationTask, enqueueBackgroundTextTask, supportsBackgroundGeneration, waitForBackgroundGenerationTask } from './providers/backgroundGeneration'
 import type { ProviderSettings, ProviderSlot, ReasoningEffort } from './providers/types'
-import { explicitlyRequestsNewChapter, generateWritingTurn, parseBackgroundWritingResponse, prepareBackgroundWritingRequest, projectStreamingProse, type ContextBudgetPlan } from './providers/writing'
+import { explicitlyRequestsNewChapter, generateWritingTurn, markStyleCorpusFragmentsUsed, parseBackgroundWritingResponse, prepareBackgroundWritingRequest, projectStreamingProse, retrieveStyleExamples, rewriteProseParagraph, type ContextBudgetPlan } from './providers/writing'
 
 const APPEARANCE_KEY = 'illustrated-story-chat.appearance.v1'
 
@@ -204,6 +211,9 @@ export default function App() {
   const [writingInstructionsOpen, setWritingInstructionsOpen] = useState(false)
   const [globalWritingInstructionsOpen, setGlobalWritingInstructionsOpen] = useState(false)
   const [globalWritingInstructions, setGlobalWritingInstructions] = useState(() => loadGlobalWritingInstructions())
+  const [styleCorpusOpen, setStyleCorpusOpen] = useState(false)
+  const [proseEvaluationOpen, setProseEvaluationOpen] = useState(false)
+  const [styleCorpusSummary, setStyleCorpusSummary] = useState<{ sourceCount: number; fragmentCount: number }>()
   const portraitGenerationCancelledRef = useRef(false)
   const [portraitGenerationActive, setPortraitGenerationActive] = useState(false)
   const [summaryHistoryOpen, setSummaryHistoryOpen] = useState(false)
@@ -253,6 +263,45 @@ export default function App() {
   useEffect(() => {
     setWorkspace((current) => current ? { ...current, globalWritingInstructions } : current)
   }, [globalWritingInstructions, setWorkspace])
+
+  const refreshStyleCorpusSummary = useCallback(async () => {
+    setStyleCorpusSummary(await getStyleCorpusSummary())
+  }, [])
+
+  useEffect(() => { void refreshStyleCorpusSummary() }, [refreshStyleCorpusSummary])
+
+  async function handleRewriteParagraph({ message, paragraph, strength }: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) {
+    if (!workspace) throw new Error('当前作品尚未加载')
+    if (!providerSettings.text.baseUrl.trim() || !providerSettings.text.model.trim()) throw new Error('请先配置文本模型')
+    const startedAt = Date.now(); const paragraphs = message.paragraphs ?? []
+    void recordProseEvaluationEvent(rewriteRequestedEvaluation({ projectId: message.projectId, messageId: message.id, paragraphId: paragraph.id, originalText: paragraph.text, issues: paragraph.styleIssues ?? [], strength })).catch(() => undefined)
+    const styleExamples = await retrieveStyleExamples(workspace, paragraph.text, 2).catch(() => [])
+    void recordProseEvaluationEvent(createEvaluationEvent('style_corpus_retrieved', { projectId: message.projectId, proseRuleVersion: PROSE_STYLE_RULE_VERSION, corpusFragmentCount: styleExamples.length })).catch(() => undefined)
+    try { const rewritten = await rewriteProseParagraph({
+      originalText: paragraph.text,
+      issues: paragraph.styleIssues ?? [],
+      previousParagraph: paragraphs[paragraph.index - 1],
+      nextParagraph: paragraphs[paragraph.index + 1],
+      styleConstraints: [globalWritingInstructions.slice(0, 1600), workspace.project.writingInstructions?.slice(0, 2400)].filter(Boolean).join('\n'),
+      styleExamples: styleExamples.map((item) => item.fragment.text),
+      strength,
+    }, providerSettings.text, browserTransport)
+      await markStyleCorpusFragmentsUsed(styleExamples.map((item) => item.fragment.id)).catch(() => undefined)
+      void recordProseEvaluationEvent(createEvaluationEvent('rewrite_succeeded', { projectId: message.projectId, messageId: message.id, paragraphId: paragraph.id, proseRuleVersion: PROSE_STYLE_RULE_VERSION, durationBucket: proseDurationBucket(Date.now() - startedAt), corpusFragmentCount: styleExamples.length, paragraphLengthBucket: proseLengthBucket(paragraph.text), suggestionLengthBucket: proseLengthBucket(rewritten), lengthChangeBucket: proseLengthChangeBucket(paragraph.text, rewritten), beforeRuleIds: (paragraph.styleIssues ?? []).map((issue) => issue.ruleId), factProtection: 'not_checked' })).catch(() => undefined)
+      return rewritten
+    } catch (error) { void recordProseEvaluationEvent(createEvaluationEvent('rewrite_failed', { projectId: message.projectId, messageId: message.id, paragraphId: paragraph.id, proseRuleVersion: PROSE_STYLE_RULE_VERSION, durationBucket: proseDurationBucket(Date.now() - startedAt), failureKind: 'provider', factProtection: 'not_checked' })).catch(() => undefined); throw error }
+  }
+
+  async function handleApplyRewrite({ message, paragraph, rewrittenText }: { message: ConversationMessage; paragraph: StoredParagraph; rewrittenText: string }) {
+    try { await applyParagraphRewrite({
+      projectId: message.projectId, messageId: message.id, paragraphId: paragraph.id,
+      paragraphIndex: paragraph.index, originalFingerprint: paragraph.fingerprint, rewrittenText,
+    })
+    void recordProseEvaluationEvent(createEvaluationEvent('rewrite_applied', { projectId: message.projectId, messageId: message.id, paragraphId: paragraph.id, proseRuleVersion: PROSE_STYLE_RULE_VERSION, paragraphLengthBucket: proseLengthBucket(paragraph.text), suggestionLengthBucket: proseLengthBucket(rewrittenText), lengthChangeBucket: proseLengthChangeBucket(paragraph.text, rewrittenText), beforeRuleIds: (paragraph.styleIssues ?? []).map((issue) => issue.ruleId), factProtection: 'not_checked' })).catch(() => undefined)
+    await refreshWorkspace(message.projectId)
+    showToast('已采用建议稿')
+    } catch (error) { void recordProseEvaluationEvent(createEvaluationEvent('rewrite_apply_failed', { projectId: message.projectId, messageId: message.id, paragraphId: paragraph.id, proseRuleVersion: PROSE_STYLE_RULE_VERSION, failureKind: 'storage', factProtection: 'not_checked' })).catch(() => undefined); throw error }
+  }
 
   useEffect(() => {
     if (!workspace) return
@@ -747,6 +796,7 @@ export default function App() {
     let shouldRestoreDraft = false
     let backgroundOutcome: 'none' | 'issued' | 'failed' | 'uncertain' | 'completed' = 'none'
     let expectedBackgroundTaskId: string | undefined
+    let selectedStyleFragmentIds: string[] = []
     let contextReminder: { text: string; kind: 'success' | 'error' } | undefined
     try {
       const addedMessages = await beginWritingTurn(
@@ -765,6 +815,7 @@ export default function App() {
       } : current)
       await refreshProjects()
       const writingOptions = {
+        onStyleFragmentsSelected: (fragmentIds: string[]) => { selectedStyleFragmentIds = fragmentIds },
         onContextPlan: (plan: ContextBudgetPlan) => {
           setContextUsagePlan(plan)
           setContextUsageProjectId(workspace.project.id)
@@ -838,6 +889,8 @@ export default function App() {
         }
         throw error
       }
+      await markStyleCorpusFragmentsUsed(selectedStyleFragmentIds).catch(() => undefined)
+      void recordProseEvaluationEvent(writingTurnCompletedEvaluation({ projectId: workspace.project.id, corpusFragmentCount: selectedStyleFragmentIds.length, contextBudget: workspace.project.contextBudget ?? 'standard' })).catch(() => undefined)
       if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId)
       // The final prose is about to be loaded from storage; do not render the
       // same turn twice while the workspace refresh is in flight.
@@ -1041,6 +1094,17 @@ export default function App() {
                     characters={workspace.characters}
                     onOpenCharacterAssets={openCharacterAssets}
                     onOpenIllustration={(source, title, alt, localUri) => setLightboxImage({ source, title, alt, localUri })}
+                    onRewriteParagraph={handleRewriteParagraph}
+                    onApplyRewrite={handleApplyRewrite}
+                    onProseEvaluation={({ type, message, paragraph }) => {
+                      const issues = paragraph.styleIssues ?? []
+                      const event = type === 'analyzed'
+                        ? createEvaluationEvent('prose_analyzed', { projectId: message.projectId, messageId: message.id, paragraphId: paragraph.id, proseRuleVersion: paragraph.styleRuleVersion ?? PROSE_STYLE_RULE_VERSION, paragraphLengthBucket: proseLengthBucket(paragraph.text), ...evaluationIssueFields(issues) })
+                        : type === 'rewrite_opened'
+                          ? createEvaluationEvent('rewrite_opened', { projectId: message.projectId, messageId: message.id, paragraphId: paragraph.id, proseRuleVersion: PROSE_STYLE_RULE_VERSION, paragraphLengthBucket: proseLengthBucket(paragraph.text), ...evaluationIssueFields(issues) })
+                          : createEvaluationEvent('rewrite_kept_original', { projectId: message.projectId, messageId: message.id, paragraphId: paragraph.id, proseRuleVersion: PROSE_STYLE_RULE_VERSION, factProtection: 'not_checked' })
+                      void recordProseEvaluationEvent(event).catch(() => undefined)
+                    }}
                   />
                 </div>
               )
@@ -1088,7 +1152,7 @@ export default function App() {
 
       <SettingsDrawer
         open={appSettingsOpen}
-        suspended={writingInstructionsOpen || globalWritingInstructionsOpen || summaryHistoryOpen || settingsOpen || contextUsageDetailsOpen}
+        suspended={writingInstructionsOpen || globalWritingInstructionsOpen || styleCorpusOpen || proseEvaluationOpen || summaryHistoryOpen || settingsOpen || contextUsageDetailsOpen}
         projectTitle={workspace.project.title}
         activeThemeId={workspace.project.themeId}
         onClose={() => setAppSettingsOpen(false)}
@@ -1102,6 +1166,9 @@ export default function App() {
         }}
         globalWritingInstructions={globalWritingInstructions}
         onEditGlobalWritingInstructions={() => setGlobalWritingInstructionsOpen(true)}
+        styleCorpusSummary={styleCorpusSummary}
+        onOpenStyleCorpus={() => setStyleCorpusOpen(true)}
+        onOpenProseEvaluation={() => setProseEvaluationOpen(true)}
         contextBudget={workspace.project.contextBudget ?? 'standard'}
         onContextBudgetChange={handleContextBudgetChange}
         contextUsagePlan={activeContextUsagePlan}
@@ -1149,6 +1216,15 @@ export default function App() {
           }
         }}
       />
+      <StyleCorpusDialog
+        open={styleCorpusOpen}
+        textProvider={providerSettings.text}
+        transport={browserTransport}
+        onClose={() => setStyleCorpusOpen(false)}
+        onChanged={() => void refreshStyleCorpusSummary()}
+        onEvaluation={(event) => void recordProseEvaluationEvent(createEvaluationEvent(event.type === 'imported' ? 'style_corpus_imported' : 'style_corpus_deleted', { proseRuleVersion: PROSE_STYLE_RULE_VERSION, corpusFragmentCount: event.fragmentCount })).catch(() => undefined)}
+      />
+      <ProseEvaluationDialog open={proseEvaluationOpen} currentProjectId={workspace.project.id} onClose={() => setProseEvaluationOpen(false)} />
       <WritingInstructionsDialog
         open={globalWritingInstructionsOpen}
         projectTitle="所有作品"

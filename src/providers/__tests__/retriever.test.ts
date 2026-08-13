@@ -14,7 +14,7 @@ import {
   generateWritingTurn,
   type ContextCompressionStage,
 } from '../writing'
-import { BigramBm25Retriever, tokenizeForBm25, type RetrievedParagraph, type Retriever } from '../retriever'
+import { BigramBm25Retriever, scoreBigramBm25, tokenizeForBm25, type RetrievedParagraph, type Retriever } from '../retriever'
 import { resolveTokenEstimator } from '../tokenEstimator'
 import type { HttpTransport, ProviderConfig, TransportRequest } from '../types'
 
@@ -32,6 +32,15 @@ function paragraph(id: string, text: string, index = 0): StoredParagraph {
 }
 
 describe('BigramBm25Retriever', () => {
+  it('exposes the single stable BM25 scoring core for other local corpora', () => {
+    const scored = scoreBigramBm25('rare common', [
+      { value: 'common-1', text: 'common', sourceIndex: 0 },
+      { value: 'rare', text: 'rare', sourceIndex: 1 },
+      { value: 'common-2', text: 'common', sourceIndex: 2 },
+    ])
+    expect(scored.map((item) => item.value)).toEqual(['rare', 'common-1', 'common-2'])
+    expect(scored[0].score).toBeGreaterThan(scored[1].score)
+  })
   it('uses Chinese character bigrams and preserves English/number words', async () => {
     expect(tokenizeForBm25('银色钥匙 Version42')).toEqual([
       'zh:银色', 'zh:色钥', 'zh:钥匙', 'word:version42',

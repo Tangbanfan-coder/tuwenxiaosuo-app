@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { describe, expect, it, vi } from 'vitest'
-import { generateWritingTurn, previewWritingTurnBudget } from '../writing'
+import { generateWritingTurn, prepareBackgroundWritingRequest, previewWritingTurnBudget } from '../writing'
 import { resolveTokenEstimator } from '../tokenEstimator'
 import type { HttpTransport, ProviderConfig, TransportRequest } from '../types'
 
@@ -71,6 +71,19 @@ function captureStreamRequest(onRequest: (request: TransportRequest) => void): H
 }
 
 describe('上下文预算', () => {
+  it('reports selected style ids only for real foreground/background requests, never previews', async () => {
+    const previewSelection = vi.fn()
+    await previewWritingTurnBudget(emptyWorkspace(), '继续写', textProvider, { onStyleFragmentsSelected: previewSelection })
+    expect(previewSelection).not.toHaveBeenCalled()
+
+    const foregroundSelection = vi.fn()
+    await generateWritingTurn(emptyWorkspace(), '继续写', textProvider, noopTransport, undefined, { onStyleFragmentsSelected: foregroundSelection })
+    expect(foregroundSelection).toHaveBeenCalledTimes(1)
+
+    const backgroundSelection = vi.fn()
+    await prepareBackgroundWritingRequest(emptyWorkspace(), '继续写', textProvider, { onStyleFragmentsSelected: backgroundSelection })
+    expect(backgroundSelection).toHaveBeenCalledTimes(1)
+  })
   it('输入超过模型窗口时阻止请求而不是静默发送', async () => {
     const tinyWindow: ProviderConfig = {
       ...textProvider,

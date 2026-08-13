@@ -1533,3 +1533,55 @@ label {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 1ms !important; transition-duration: 1ms !important; }
 }
+.prose-paragraph { position: relative; }
+.prose-optimize-trigger { min-height: 48px; margin: -4px 0 12px; padding: 6px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--muted-text, #8b8b8b); display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; cursor: pointer; }
+.prose-optimize-trigger:hover { background: color-mix(in srgb, currentColor 8%, transparent); color: var(--text-color, #ddd); }
+.rewrite-panel { margin: 12px 0 20px; padding: 14px; border: 1px solid var(--border-color, rgba(128,128,128,.28)); border-radius: 8px; background: var(--panel-bg, rgba(20,20,20,.94)); }
+.rewrite-panel > header, .rewrite-panel > footer, .style-corpus-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.rewrite-issues { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.rewrite-issues span { padding: 4px 7px; border-radius: 4px; background: color-mix(in srgb, #d89a3d 14%, transparent); color: inherit; font-size: 12px; }
+.rewrite-strength { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 10px 0; }
+.rewrite-strength button { min-height: 42px; border: 1px solid var(--border-color, #555); border-radius: 6px; background: transparent; color: inherit; }
+.rewrite-strength button[aria-checked="true"] { border-color: #c99851; background: color-mix(in srgb, #c99851 12%, transparent); }
+.rewrite-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
+.rewrite-comparison section { min-width: 0; }
+.rewrite-comparison h4 { margin: 0 0 6px; font-size: 12px; color: var(--muted-text, #999); }
+.rewrite-comparison p { margin: 0; white-space: pre-wrap; }
+.rewrite-panel footer button { min-height: 48px; padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; }
+.style-corpus-backdrop { z-index: 90; align-items: stretch; justify-content: flex-end; }
+.style-corpus-dialog { width: min(760px, 100%); height: 100%; overflow: hidden; background: var(--app-bg, #161616); color: inherit; box-shadow: -18px 0 50px rgba(0,0,0,.25); display: flex; flex-direction: column; }
+.style-corpus-dialog > .drawer-header .icon-button { width: 48px; height: 48px; }
+.style-corpus-content { padding: 16px; overflow: auto; display: grid; gap: 24px; }
+.style-corpus-import label { display: grid; gap: 6px; margin-bottom: 12px; font-size: 13px; }
+.style-corpus-import input, .style-corpus-import textarea, .style-corpus-drafts input { width: 100%; box-sizing: border-box; border: 1px solid var(--border-color, #555); border-radius: 6px; background: transparent; color: inherit; padding: 10px; font: inherit; }
+.style-corpus-toolbar button { min-height: 48px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.style-corpus-drafts { margin-top: 16px; display: grid; gap: 12px; }
+.style-corpus-drafts article { border-top: 1px solid var(--border-color, #444); padding-top: 12px; }
+.style-corpus-drafts article > p { white-space: pre-wrap; line-height: 1.75; }
+.style-corpus-library h3 { font-size: 14px; }
+.style-corpus-source { min-height: 58px; display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--border-color, #444); }
+.style-corpus-source span { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.style-corpus-source small { color: var(--muted-text, #999); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.style-corpus-source button { width: 48px; height: 48px; border: 0; background: transparent; color: inherit; }
+.prose-evaluation-backdrop { z-index: 91; align-items: stretch; justify-content: flex-end; }
+.prose-evaluation-dialog { width: min(680px, 100%); height: 100%; overflow: hidden; background: var(--app-bg, #161616); color: inherit; display: flex; flex-direction: column; box-shadow: -18px 0 50px rgba(0,0,0,.25); }
+.prose-evaluation-dialog > .drawer-header .icon-button { width: 48px; height: 48px; }
+.prose-evaluation-content { padding: 16px; overflow: auto; display: grid; gap: 16px; }
+.prose-evaluation-content fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.prose-evaluation-content legend { margin-bottom: 8px; color: var(--muted-text, #999); font-size: 13px; }
+.evaluation-options { display: flex; flex-wrap: wrap; gap: 7px; }
+.evaluation-options button, .evaluation-danger button { min-height: 48px; padding: 0 12px; border: 1px solid var(--border-color, #555); border-radius: 6px; background: transparent; color: inherit; font: inherit; }
+.evaluation-options button[aria-checked="true"] { border-color: #c99851; background: color-mix(in srgb, #c99851 12%, transparent); }
+.evaluation-date-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.evaluation-date-inputs label { display: grid; gap: 6px; font-size: 13px; color: var(--muted-text, #999); }
+.evaluation-date-inputs input { min-height: 42px; box-sizing: border-box; border: 1px solid var(--border-color, #555); border-radius: 6px; background: transparent; color: inherit; padding: 0 8px; }
+.evaluation-toggle { display: flex; align-items: center; gap: 8px; min-height: 32px; font-size: 13px; }
+.evaluation-action { min-height: 48px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.evaluation-preview, .evaluation-danger { border-top: 1px solid var(--border-color, #444); padding-top: 16px; }
+.evaluation-preview h3, .evaluation-danger h3 { margin: 0 0 8px; font-size: 15px; }
+.evaluation-preview p, .evaluation-danger p { color: var(--muted-text, #999); font-size: 13px; line-height: 1.6; }
+.evaluation-preview pre { max-height: 220px; overflow: auto; border: 1px solid var(--border-color, #444); border-radius: 6px; padding: 10px; white-space: pre-wrap; word-break: break-word; font-size: 11px; }
+.evaluation-danger { display: grid; gap: 8px; }
+.evaluation-danger > div { display: flex; gap: 8px; }
+.evaluation-danger .danger-button { border-color: #b75858; color: #e98a8a; }
+@media (max-width: 640px) { .rewrite-comparison { grid-template-columns: 1fr; } .style-corpus-dialog, .prose-evaluation-dialog { width: 100%; } .style-corpus-toolbar { align-items: stretch; flex-direction: column; } .evaluation-date-inputs { grid-template-columns: 1fr; } }

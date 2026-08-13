@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Brush, Check, ChevronDown, ChevronRight, FileText, Gauge, History, Image, Moon, Palette, ScrollText, Sun, X } from 'lucide-react'
+import { BookText, Brush, Check, ChevronDown, ChevronRight, FileText, Gauge, History, Image, Moon, Palette, ScrollText, Sun, X } from 'lucide-react'
 import { contextUsageSummary, type ContextUsageState } from './ContextUsage'
 import { ILLUSTRATION_STYLE_PRESETS, getIllustrationStylePreset } from '../domain/illustrationStyles'
 import { THEME_PRESETS, getThemePreset } from '../domain/themes'
@@ -22,6 +22,9 @@ interface Props {
   onEditWritingInstructions: () => void
   globalWritingInstructions?: string
   onEditGlobalWritingInstructions?: () => void
+  styleCorpusSummary?: { sourceCount: number; fragmentCount: number }
+  onOpenStyleCorpus?: () => void
+  onOpenProseEvaluation?: () => void
   contextBudget: ContextBudget
   onContextBudgetChange: (budget: ContextBudget) => Promise<void>
   contextUsagePlan?: ContextBudgetPlan
@@ -54,6 +57,9 @@ export default function SettingsDrawer({
   onEditWritingInstructions,
   globalWritingInstructions,
   onEditGlobalWritingInstructions,
+  styleCorpusSummary,
+  onOpenStyleCorpus,
+  onOpenProseEvaluation,
   contextBudget,
   onContextBudgetChange,
   contextUsagePlan,
@@ -152,6 +158,16 @@ export default function SettingsDrawer({
                   <strong>全局创作设定</strong>
                   <small>{globalWritingInstructions?.trim().replace(/\s+/g, ' ') || '对所有作品生效的默认规则'}</small>
                 </span>
+                <ChevronRight size={17} aria-hidden="true" />
+              </button>
+              <button type="button" onClick={onOpenStyleCorpus} disabled={!onOpenStyleCorpus}>
+                <BookText size={18} aria-hidden="true" />
+                <span><strong>风格语料库</strong><small>{styleCorpusSummary ? `${styleCorpusSummary.sourceCount} 个来源 · ${styleCorpusSummary.fragmentCount} 个片段` : '导入并整理你认可的表达范例'}</small></span>
+                <ChevronRight size={17} aria-hidden="true" />
+              </button>
+              <button type="button" onClick={onOpenProseEvaluation} disabled={!onOpenProseEvaluation}>
+                <Gauge size={18} aria-hidden="true" />
+                <span><strong>文风优化数据</strong><small>仅本地记录，可审阅后导出</small></span>
                 <ChevronRight size={17} aria-hidden="true" />
               </button>
             </div>

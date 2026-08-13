@@ -29,6 +29,7 @@ import {
 import { contentToString } from './instructions'
 import { SYSTEM_PROMPT } from './prompt'
 import { parseWritingResult } from './result'
+import { retrieveStyleExamples } from './styleCorpus'
 
 interface ChatCompletionResponse {
   choices?: Array<{
@@ -45,6 +46,8 @@ export interface GenerateWritingTurnOptions {
   retriever?: Retriever
   /** Receives the exact final plan prepared for this real writing request. */
   onContextPlan?: (plan: ContextBudgetPlan) => void
+  /** Selected examples are reported for durable usage accounting after persistence succeeds. */
+  onStyleFragmentsSelected?: (fragmentIds: string[]) => void
 }
 
 interface PreparedWritingTurnContext {
@@ -52,6 +55,7 @@ interface PreparedWritingTurnContext {
   finalPlan: ContextBudgetPlan
   contextMessage: string
   rulesTruncated: boolean
+  styleFragmentIds: string[]
 }
 
 /**
@@ -69,7 +73,7 @@ async function prepareWritingTurnContext(
   const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model })
   const initialPlan = contextPlanForRequest(config, contextBudget, userRequest, estimator)
 
-  const [scenes, paragraphs, recentFeedback, projectParagraphs] = await Promise.all([
+  const [scenes, paragraphs, recentFeedback, projectParagraphs, styleExamples] = await Promise.all([
     loadProjectScenes(workspace.project.id),
     listRetrievableProjectParagraphs(workspace.project.id),
     // Feedback is supplementary preference context. A workspace can briefly
@@ -77,6 +81,7 @@ async function prepareWritingTurnContext(
     // path with an empty feedback section rather than failing the whole turn.
     listRecentProjectFeedback(workspace.project.id, 8).catch(() => []),
     listProjectParagraphs(workspace.project.id),
+    retrieveStyleExamples(workspace, userRequest).catch(() => []),
   ])
   const feedbackSources = resolveRecentFeedbackContextSources(recentFeedback, workspace, projectParagraphs)
   const retrievedParagraphs = await (options.retriever ?? defaultParagraphRetriever).retrieve({
@@ -94,6 +99,7 @@ async function prepareWritingTurnContext(
     estimator,
     retrievedParagraphs,
     feedbackSources,
+    styleExamples.map((item) => item.fragment),
   )
   const contextDemandTokens = estimatedTokenCount(estimator, `当前作品资料：${rawContext.context}`)
   const compressionStage = contextCompressionStageForPressure(
@@ -106,7 +112,7 @@ async function prepareWritingTurnContext(
     userRequest,
     estimator,
     retrievedParagraphs,
-    { compressionStage, feedbackSources },
+    { compressionStage, feedbackSources, styleCorpusFragments: styleExamples.map((item) => item.fragment) },
   )
   const contextMessage = `当前作品资料：${context}`
   const finalPlan = buildContextBudgetPlan({
@@ -127,7 +133,7 @@ async function prepareWritingTurnContext(
     estimator,
   })
 
-  return { initialPlan, finalPlan, contextMessage, rulesTruncated }
+  return { initialPlan, finalPlan, contextMessage, rulesTruncated, styleFragmentIds: styleExamples.map((item) => item.fragment.id) }
 }
 
 /**
@@ -167,6 +173,7 @@ export async function generateWritingTurn(
   if (prepared.finalPlan.isOverLimit) {
     throw new Error('最终请求的输入仍超过模型上下文窗口（真实 token 硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
   }
+  options.onStyleFragmentsSelected?.(prepared.styleFragmentIds)
 
   const body = JSON.stringify({
     model: config.model,
@@ -217,6 +224,7 @@ export async function prepareBackgroundWritingRequest(
   assertContextCapacity(prepared.finalPlan)
   if (prepared.rulesTruncated) throw new Error('局部创作设定超过核心预算，本轮已阻止生成。请在“局部创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
   if (prepared.finalPlan.isOverLimit) throw new Error('最终请求的输入仍超过模型上下文窗口（真实 token 硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
+  options.onStyleFragmentsSelected?.(prepared.styleFragmentIds)
   return {
     endpoint: `${baseUrl}/chat/completions`,
     body: JSON.stringify({
