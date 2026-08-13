@@ -588,14 +588,10 @@ export default function App() {
     const referenceSource = character
       ? resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri)
       : undefined
-    if (!referenceSource) {
-      showToast('这张参考图无法作为识别输入，请重新导入原图后重试', 'error')
-      return
-    }
+    if (!referenceSource) throw new Error('这张参考图无法作为识别输入，请重新导入原图后重试')
     if (!(await providerIsReady('text'))) {
       openProviderSettings('text')
-      showToast('请先配置可识图的文本模型')
-      return
+      throw new Error('请先配置可识图的文本模型')
     }
     try {
       const analysis = await analyzeReferenceImage(referenceSource, providerSettings.text, browserTransport)
@@ -603,7 +599,7 @@ export default function App() {
       await refreshWorkspace(workspace.project.id)
       showToast('外貌档案已重新识别，请核对并再次确认')
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '外貌识别失败，请手动补充档案', 'error')
+      throw new Error(error instanceof Error ? error.message : '外貌识别失败，请手动补充档案')
     }
   }
 

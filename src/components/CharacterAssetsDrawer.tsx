@@ -34,7 +34,15 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>()
   const [savingProfile, setSavingProfile] = useState(false)
   const [pendingPortraits, setPendingPortraits] = useState<Record<string, 'portrait' | 'revision'>>({})
+  const [analyzingCharacterId, setAnalyzingCharacterId] = useState<string>()
+  const [analysisNotice, setAnalysisNotice] = useState<Record<string, { kind: 'success' | 'error'; text: string }>>({})
+  const analysisNoticeTimerRef = useRef<number | undefined>(undefined)
   const { present, closing } = usePresence(open, onClose, 180)
+
+  useEffect(() => {
+    const timerId = analysisNoticeTimerRef.current
+    return () => { if (timerId !== undefined) window.clearTimeout(timerId) }
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -97,6 +105,31 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
     }
   }
 
+  async function analyzeReference(characterId: string) {
+    if (analyzingCharacterId) return
+    if (analysisNoticeTimerRef.current !== undefined) window.clearTimeout(analysisNoticeTimerRef.current)
+    setAnalyzingCharacterId(characterId)
+    setAnalysisNotice((value) => {
+      const { [characterId]: _cleared, ...rest } = value
+      return rest
+    })
+    try {
+      await onAnalyzeReference(characterId)
+      setAnalysisNotice((value) => ({ ...value, [characterId]: { kind: 'success', text: '外貌档案已更新，请核对后再次确认' } }))
+      analysisNoticeTimerRef.current = window.setTimeout(() => {
+        analysisNoticeTimerRef.current = undefined
+        setAnalysisNotice((value) => {
+          const { [characterId]: _expired, ...rest } = value
+          return rest
+        })
+      }, 4000)
+    } catch (error) {
+      setAnalysisNotice((value) => ({ ...value, [characterId]: { kind: 'error', text: error instanceof Error ? error.message : '外貌识别失败，请手动补充档案' } }))
+    } finally {
+      setAnalyzingCharacterId(undefined)
+    }
+  }
+
   return (
     <div className={`asset-backdrop${closing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) onClose()
@@ -124,6 +157,8 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
             const pendingPortrait = pendingPortraits[character.id]
             const portraitGenerating = status === 'generating' || Boolean(pendingPortrait)
             const referenceStyleMode = character.continuity.referenceStyleMode ?? 'project'
+            const analyzing = analyzingCharacterId === character.id
+            const analysisResult = analysisNotice[character.id]
             return (
               <article className="character-asset" key={character.id} aria-busy={portraitGenerating || undefined}>
                 <div className="portrait-frame">
@@ -221,7 +256,16 @@ export default function CharacterAssetsDrawer({ open, characters, onClose, onGen
                       <p>{referenceStyleMode === 'project'
                         ? '后续插画只参考外貌，并统一转换为作品画风。'
                         : '后续插画会保留该角色参考图的原有画风。'}</p>
-                      <button className="quiet-button" type="button" onClick={() => void onAnalyzeReference(character.id)}><RefreshCw size={16} />识别参考图</button>
+                      <button className="quiet-button" type="button" disabled={analyzing} aria-busy={analyzing} onClick={() => void analyzeReference(character.id)}>
+                        {analyzing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+                        {analyzing ? '正在识别外貌…' : '识别参考图'}
+                      </button>
+                      {analysisResult && (
+                        <p className={`asset-analysis-note ${analysisResult.kind}`} role={analysisResult.kind === 'error' ? 'alert' : 'status'}>
+                          {analysisResult.kind === 'success' && <CheckCircle2 size={13} aria-hidden="true" />}
+                          {analysisResult.text}
+                        </p>
+                      )}
                     </div>
                   )}
 

@@ -1001,6 +1001,9 @@ label {
 .reference-style-choice button[aria-checked="true"] { border-color: #77705d; background: #302e27; color: #f0eadb; }
 .asset-reference-style p,
 .reference-style-choice p { margin: 0; color: #85827a; font-size: 10px; line-height: 1.55; }
+.asset-analysis-note { display: flex; align-items: center; gap: 5px; margin: 7px 0 0; font-size: 11px; line-height: 1.55; }
+.asset-analysis-note.success { color: #91c6a4; }
+.asset-analysis-note.error { color: #e19a9d; }
 .asset-actions { display: grid; gap: 8px; }
 .confirm-asset-button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; border: 0; border-radius: 8px; background: #d7c18d; color: #1c1a14; font-weight: 680; }
 .confirm-asset-button:hover { background: #ead39d; }
@@ -1436,6 +1439,8 @@ label {
 .app-shell[data-appearance="light"] .reasoning-effort-quick-menu button:hover,
 .app-shell[data-appearance="light"] .reasoning-effort-quick-menu button[aria-checked="true"] { background: #eee5cf; color: #4a3e26; }
 .app-shell[data-appearance="light"] .confirmed-note { color: #397953; }
+.app-shell[data-appearance="light"] .asset-analysis-note.success { color: #397953; }
+.app-shell[data-appearance="light"] .asset-analysis-note.error { color: #a8444b; }
 
 .app-shell[data-appearance="light"] .provider-tabs { border-color: #d9dbd5; background: #f1f2ee; }
 .app-shell[data-appearance="light"] .provider-tabs button { color: #6a716a; }
