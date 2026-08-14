@@ -1,7 +1,7 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { secretStore } from './secretStore'
 
-export type BackgroundTaskState = 'prepared' | 'running' | 'completed' | 'failed' | 'unknown'
+export type BackgroundTaskState = 'prepared' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown'
 export type BackgroundTaskKind = 'text' | 'image'
 
 export interface BackgroundTask {
@@ -26,6 +26,7 @@ interface NativeBackgroundGeneration {
   list(): Promise<{ tasks: BackgroundTask[] }>
   readResult(options: { id: string }): Promise<BackgroundTask>
   acknowledge(options: { id: string }): Promise<void>
+  cancel(options: { id: string }): Promise<void>
 }
 
 const NativeBackgroundGeneration = registerPlugin<NativeBackgroundGeneration>('BackgroundGeneration')
@@ -84,12 +85,18 @@ export async function acknowledgeBackgroundGenerationTask(id: string) {
   await NativeBackgroundGeneration.acknowledge({ id })
 }
 
+/** Requests native cancellation for an in-flight task. Cancelling local receipt never guarantees the upstream request was revoked. */
+export async function cancelBackgroundGenerationTask(id: string) {
+  if (!supportsBackgroundGeneration()) return
+  await NativeBackgroundGeneration.cancel({ id })
+}
+
 /** Does not retry or recreate a task. It only observes the single native request. */
 export async function waitForBackgroundGenerationTask(id: string, intervalMs = 800): Promise<BackgroundTask> {
   while (true) {
     const task = await readBackgroundGenerationTask(id)
     if (!task) throw new Error('后台任务不可用')
-    if (task.state === 'completed' || task.state === 'failed' || task.state === 'unknown') return task
+    if (task.state === 'completed' || task.state === 'failed' || task.state === 'cancelled' || task.state === 'unknown') return task
     await new Promise<void>((resolve) => window.setTimeout(resolve, intervalMs))
   }
 }

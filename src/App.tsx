@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  ArrowDown,
   BookPlus,
   BookOpen,
   Check,
@@ -7,8 +8,10 @@ import {
   ImagePlus,
   Menu,
   Plus,
+  Save,
   Send,
   Settings,
+  Square,
   TriangleAlert,
   UserRound,
   X,
@@ -31,6 +34,7 @@ import {
   beginWritingTurn,
   applyParagraphRewrite,
   applyReferenceAppearanceAnalysis,
+  cancelWritingTurn,
   completeWritingTurn,
   confirmCharacterPortrait,
   createCharacterDraft,
@@ -43,6 +47,7 @@ import {
   renameProject,
   restoreChapterSummaryVersion,
   restoreIllustrationsBlockedByReference,
+  retryWritingTurn,
   setCharacterPortraitFailed,
   setCharacterPortraitGenerating,
   setCharacterPortraitReady,
@@ -66,7 +71,7 @@ import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
 import { resolveIllustrationReferences } from './domain/illustrationReferences'
 import { resolvePreviousSceneIllustration } from './domain/sceneContinuity'
 import type { AppearanceMode, CharacterAsset, ContextBudget, ConversationMessage, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, RewriteStrength, StoredParagraph, ThemePresetId } from './domain/models'
-import { browserTransport } from './providers/browserTransport'
+import { browserTransport, TransportCancelledError } from './providers/browserTransport'
 import { loadProviderSettings, saveProviderSettings } from './providers/config'
 import { loadGlobalWritingInstructions, saveGlobalWritingInstructions } from './providers/config'
 import { persistImageAsset, resolveImageSource } from './providers/imageAssetStore'
@@ -77,11 +82,13 @@ import ConfirmDialog from './components/ConfirmDialog'
 import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage, resolveImageSize } from './providers/images'
 import { analyzeReferenceImage } from './providers/referenceAnalysis'
 import { secretStore } from './providers/secretStore'
-import { BackgroundTaskUncertainError, acknowledgeBackgroundGenerationTask, enqueueBackgroundTextTask, supportsBackgroundGeneration, waitForBackgroundGenerationTask } from './providers/backgroundGeneration'
+import { BackgroundTaskUncertainError, acknowledgeBackgroundGenerationTask, cancelBackgroundGenerationTask, enqueueBackgroundTextTask, supportsBackgroundGeneration, waitForBackgroundGenerationTask } from './providers/backgroundGeneration'
 import type { ProviderSettings, ProviderSlot, ReasoningEffort } from './providers/types'
 import { explicitlyRequestsNewChapter, generateWritingTurn, markStyleCorpusFragmentsUsed, parseBackgroundWritingResponse, prepareBackgroundWritingRequest, projectStreamingProse, retrieveStyleExamples, rewriteProseParagraph, type ContextBudgetPlan } from './providers/writing'
 
 const APPEARANCE_KEY = 'illustrated-story-chat.appearance.v1'
+
+type GenerationPhase = 'idle' | 'starting' | 'running' | 'saving' | 'cancelling'
 
 type ContextUsageReminderTier = 0 | 60 | 80 | 100
 
@@ -94,12 +101,13 @@ function contextUsageReminderTier(plan: ContextBudgetPlan): ContextUsageReminder
 }
 
 interface ComposerProps {
-  sending: boolean
+  generationPhase: GenerationPhase
   autoIllustrate: boolean
   reasoningEffort: ReasoningEffort | undefined
   contextUsagePlan?: ContextBudgetPlan
   contextUsageState: ContextUsageState
   onSubmit: (text: string) => Promise<boolean>
+  onStop: () => void
   onOpenContextUsage: () => void
   onOpenCharacterAssets: () => void
   onOpenReferenceImage: () => void
@@ -108,12 +116,13 @@ interface ComposerProps {
 }
 
 function Composer({
-  sending,
+  generationPhase,
   autoIllustrate,
   reasoningEffort,
   contextUsagePlan,
   contextUsageState,
   onSubmit,
+  onStop,
   onOpenContextUsage,
   onOpenCharacterAssets,
   onOpenReferenceImage,
@@ -122,10 +131,13 @@ function Composer({
 }: ComposerProps) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const generating = generationPhase === 'starting' || generationPhase === 'running'
+  const saving = generationPhase === 'saving'
+  const cancelling = generationPhase === 'cancelling'
 
   const submit = async () => {
     const text = draft.trim()
-    if (!text || sending || submitting) return
+    if (!text || generationPhase !== 'idle' || submitting) return
     setSubmitting(true)
     setDraft('')
     try {
@@ -179,8 +191,14 @@ function Composer({
               <strong>{autoIllustrate ? '自动' : '关闭'}</strong>
             </button>
           </div>
-          <button className="send-button" type="button" aria-label="发送" disabled={!draft.trim() || sending || submitting} onClick={() => void submit()}>
-            <span className="send-button-surface"><Send size={18} /></span>
+          <button
+            className="send-button"
+            type="button"
+            aria-label={cancelling ? '正在停止' : saving ? '正在保存' : generating ? '停止生成' : '发送'}
+            disabled={cancelling || saving || (!generating && (!draft.trim() || submitting))}
+            onClick={() => { if (generating) void onStop(); else if (!cancelling && !saving) void submit() }}
+          >
+            <span className="send-button-surface">{saving ? <Save size={16} /> : generating || cancelling ? <Square size={16} /> : <Send size={18} />}</span>
           </button>
         </div>
       </div>
@@ -202,7 +220,8 @@ export default function App() {
   const [contextUsageState, setContextUsageState] = useState<ContextUsageState>('pending')
   const [contextUsageError, setContextUsageError] = useState('')
   const [contextUsageDetailsOpen, setContextUsageDetailsOpen] = useState(false)
-  const [sending, setSending] = useState(false)
+  const [generationPhase, setGenerationPhase] = useState<GenerationPhase>('idle')
+  const generationRef = useRef<{ attemptId: number; cancelled: boolean; phase: GenerationPhase; noticeId?: string; abortController?: AbortController; backgroundTaskId?: string }>({ attemptId: 0, cancelled: false, phase: 'idle' })
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const [appSettingsOpen, setAppSettingsOpen] = useState(false)
   const [characterAssetsOpen, setCharacterAssetsOpen] = useState(false)
@@ -228,6 +247,9 @@ export default function App() {
   const [lightboxImage, setLightboxImage] = useState<LightboxImage>()
   const [streamingText, setStreamingText] = useState('')
   const streamingRawRef = useRef('')
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  const stickToBottomRef = useRef(true)
+  const previousProjectIdRef = useRef<string | undefined>(undefined)
   const [confirmState, setConfirmState] = useState<{
     title: string
     message: string
@@ -325,14 +347,50 @@ export default function App() {
     if (nextChapterId) setVisibleChapterId((current) => current === nextChapterId ? current : nextChapterId)
   }, [])
 
+  const scrollTimelineToBottom = useCallback((instant: boolean) => {
+    const timeline = timelineRef.current
+    if (!timeline) return
+    if (instant) {
+      // Override the CSS `scroll-behavior: smooth` so streaming increments jump
+      // without starting a fresh smooth animation on every delta.
+      timeline.style.scrollBehavior = 'auto'
+      timeline.scrollTop = timeline.scrollHeight
+      timeline.style.scrollBehavior = ''
+    } else {
+      timeline.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' })
+    }
+  }, [])
+
+  const handleTimelineScroll = useCallback(() => {
+    const timeline = timelineRef.current
+    if (!timeline) return
+    const distance = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight
+    const atBottom = distance < 48
+    stickToBottomRef.current = atBottom
+    setShowJumpToLatest(!atBottom)
+    syncVisibleChapterFromScroll()
+  }, [syncVisibleChapterFromScroll])
+
   useEffect(() => {
     if (booting) return
+    const projectChanged = previousProjectIdRef.current !== workspace?.project.id
+    previousProjectIdRef.current = workspace?.project.id
+    if (projectChanged) {
+      stickToBottomRef.current = true
+      setShowJumpToLatest(false)
+      const frame = window.requestAnimationFrame(() => {
+        scrollTimelineToBottom(true)
+        window.requestAnimationFrame(syncVisibleChapterFromScroll)
+      })
+      return () => window.cancelAnimationFrame(frame)
+    }
+    if (!stickToBottomRef.current) return
     const frame = window.requestAnimationFrame(() => {
-      timelineRef.current?.scrollTo({ top: timelineRef.current.scrollHeight, behavior: 'smooth' })
+      scrollTimelineToBottom(true)
       window.requestAnimationFrame(syncVisibleChapterFromScroll)
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [booting, workspace?.project.id, workspace?.messages.length, streamingText, syncVisibleChapterFromScroll])
+  }, [booting, workspace?.project.id, workspace?.messages.length, streamingText, scrollTimelineToBottom, syncVisibleChapterFromScroll])
 
   useEffect(() => {
     const defaultChapterId = workspace?.project.activeChapterId ?? workspace?.chapters[0]?.id
@@ -780,51 +838,46 @@ export default function App() {
     await queueIllustration(illustration, workspace)
   }
 
-  async function sendMessage(text: string) {
-    if (!workspace || sending) return true
+  type WritingAttemptOutcome = 'completed' | 'failed' | 'cancelled' | 'uncertain' | 'superseded'
 
+  async function runWritingAttempt(input: { userMessageId: string; noticeId: string; userText: string }): Promise<WritingAttemptOutcome> {
+    if (!workspace) return 'superseded'
     const textProvider = providerSettings.text
-    if (!textProvider.baseUrl.trim() || !textProvider.model.trim() || !(await secretStore.has(textProvider.secretRef))) {
-      showToast('请先完成文本模型配置')
-      openProviderSettings('text')
-      return true
-    }
+    const { userMessageId, noticeId, userText } = input
+    const projectId = workspace.project.id
+    const autoIllustrate = workspace.project.autoIllustrate
+    const attemptId = ++generationRef.current.attemptId
+    generationRef.current.cancelled = false
+    generationRef.current.phase = 'running'
+    generationRef.current.noticeId = noticeId
+    generationRef.current.backgroundTaskId = undefined
+    generationRef.current.abortController = undefined
 
-    setSending(true)
+    setGenerationPhase('running')
     streamingRawRef.current = ''
     setStreamingText('')
-    let noticeId: string | undefined
-    let shouldRestoreDraft = false
+
     let backgroundOutcome: 'none' | 'issued' | 'failed' | 'uncertain' | 'completed' = 'none'
     let expectedBackgroundTaskId: string | undefined
     let selectedStyleFragmentIds: string[] = []
     let contextReminder: { text: string; kind: 'success' | 'error' } | undefined
+
+    const isCurrent = () => generationRef.current.attemptId === attemptId
+    const isCancelled = () => generationRef.current.cancelled
+
     try {
-      const addedMessages = await beginWritingTurn(
-        workspace.project.id,
-        text,
-        workspace.project.autoIllustrate,
-        workspace.project.activeChapterId,
-      )
-      const userMessageId = addedMessages[0].id
-      noticeId = addedMessages[1].id
       const previousIllustrationIds = new Set(workspace.illustrations.map((illustration) => illustration.id))
-      setWorkspace((current) => current && current.project.id === workspace.project.id ? {
-        ...current,
-        project: { ...current.project, updatedAt: Date.now() },
-        messages: [...current.messages, ...addedMessages],
-      } : current)
-      await refreshProjects()
       const writingOptions = {
+        excludeUserMessageId: userMessageId,
         onStyleFragmentsSelected: (fragmentIds: string[]) => { selectedStyleFragmentIds = fragmentIds },
         onContextPlan: (plan: ContextBudgetPlan) => {
           setContextUsagePlan(plan)
-          setContextUsageProjectId(workspace.project.id)
+          setContextUsageProjectId(projectId)
           setContextUsageError('')
           setContextUsageState(plan.isOverLimit ? 'over-limit' : plan.estimator.isFallback ? 'fallback' : 'ready')
-          const previousTier = contextUsageReminderTiersRef.current.get(workspace.project.id) ?? 0
+          const previousTier = contextUsageReminderTiersRef.current.get(projectId) ?? 0
           const nextTier = contextUsageReminderTier(plan)
-          contextUsageReminderTiersRef.current.set(workspace.project.id, nextTier)
+          contextUsageReminderTiersRef.current.set(projectId, nextTier)
           if (nextTier > previousTier) {
             const reminder = nextTier === 60
               ? '上下文达到 60%，将开始整理近期内容'
@@ -835,20 +888,29 @@ export default function App() {
           }
         },
       }
-      const forceNewChapter = explicitlyRequestsNewChapter(text)
+      const forceNewChapter = explicitlyRequestsNewChapter(userText)
+
       const backgroundTask = supportsBackgroundGeneration()
         ? await (async () => {
-          const preparedBackgroundRequest = await prepareBackgroundWritingRequest(workspace, text, textProvider, writingOptions)
+          const preparedBackgroundRequest = await prepareBackgroundWritingRequest(workspace, userText, textProvider, writingOptions)
           return enqueueBackgroundTextTask({
             ...preparedBackgroundRequest,
             secretRef: textProvider.secretRef,
-            metadata: { projectId: workspace.project.id, userMessageId, noticeId, autoIllustrate: workspace.project.autoIllustrate, forceNewChapter },
+            metadata: { projectId, userMessageId, noticeId, autoIllustrate, forceNewChapter },
           })
         })()
         : undefined
+
+      if (!isCurrent()) return 'superseded'
+
       let result
       if (backgroundTask) {
         backgroundOutcome = 'issued'
+        generationRef.current.backgroundTaskId = backgroundTask.id
+        if (isCancelled()) {
+          await cancelBackgroundGenerationTask(backgroundTask.id).catch(() => undefined)
+          throw new TransportCancelledError('生成已取消')
+        }
         const linked = await setWritingTurnBackgroundTask(noticeId, backgroundTask.id)
         if (!linked) {
           backgroundOutcome = 'uncertain'
@@ -858,7 +920,9 @@ export default function App() {
         let completed
         try { completed = await waitForBackgroundGenerationTask(backgroundTask.id) }
         catch { backgroundOutcome = 'uncertain'; throw new BackgroundTaskUncertainError() }
+        if (!isCurrent()) return 'superseded'
         if (completed.state === 'unknown') { backgroundOutcome = 'uncertain'; throw new BackgroundTaskUncertainError() }
+        if (completed.state === 'cancelled') { backgroundOutcome = 'failed'; throw new TransportCancelledError('生成已取消') }
         if (completed.state !== 'completed' || !completed.rawResponse) { backgroundOutcome = 'failed'; throw new Error(completed.error || '后台写作未完成') }
         try {
           result = parseBackgroundWritingResponse(completed.rawResponse)
@@ -868,18 +932,30 @@ export default function App() {
         }
         backgroundOutcome = 'completed'
       } else {
-        result = await generateWritingTurn(workspace, text, textProvider, browserTransport, (delta) => {
+        const abortController = new AbortController()
+        generationRef.current.abortController = abortController
+        if (isCancelled()) abortController.abort()
+        result = await generateWritingTurn(workspace, userText, textProvider, browserTransport, (delta) => {
+          if (!isCurrent()) return
           streamingRawRef.current += delta
           setStreamingText(projectStreamingProse(streamingRawRef.current))
-        }, writingOptions)
+        }, { ...writingOptions, signal: abortController.signal })
       }
+
+      if (!isCurrent()) return 'superseded'
+      if (isCancelled()) throw new TransportCancelledError('生成已取消')
+      // Saving starts before the async database call. This synchronous control
+      // barrier closes the same-event-loop window where a stale stop callback
+      // could otherwise queue a cancellation behind the completion transaction.
+      generationRef.current.phase = 'saving'
+      setGenerationPhase('saving')
       try {
         await completeWritingTurn(
-          workspace.project.id,
+          projectId,
           userMessageId,
           noticeId,
           result,
-          workspace.project.autoIllustrate,
+          autoIllustrate,
           forceNewChapter,
           expectedBackgroundTaskId,
         )
@@ -891,15 +967,15 @@ export default function App() {
         throw error
       }
       await markStyleCorpusFragmentsUsed(selectedStyleFragmentIds).catch(() => undefined)
-      void recordProseEvaluationEvent(writingTurnCompletedEvaluation({ projectId: workspace.project.id, corpusFragmentCount: selectedStyleFragmentIds.length, contextBudget: workspace.project.contextBudget ?? 'standard' })).catch(() => undefined)
+      void recordProseEvaluationEvent(writingTurnCompletedEvaluation({ projectId, corpusFragmentCount: selectedStyleFragmentIds.length, contextBudget: workspace.project.contextBudget ?? 'standard' })).catch(() => undefined)
       if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId)
       // The final prose is about to be loaded from storage; do not render the
       // same turn twice while the workspace refresh is in flight.
       streamingRawRef.current = ''
       setStreamingText('')
-      const nextWorkspace = await refreshWorkspace(workspace.project.id)
+      const nextWorkspace = await refreshWorkspace(projectId)
       await refreshProjects()
-      if (result.visualPlan && nextWorkspace) {
+      if (result.kind === 'prose' && result.visualPlan && nextWorkspace) {
         const newCharacterNames = new Set(result.visualPlan.characters.map((character) => character.name.toLocaleLowerCase()))
         const portraits = nextWorkspace.characters.filter((character) =>
           newCharacterNames.has(character.name.toLocaleLowerCase()) && (character.portraitStatus ?? 'planned') === 'planned',
@@ -909,7 +985,7 @@ export default function App() {
         const readyIllustrations = newIllustrations.filter((illustration) => (
           illustration.status === 'planned' && resolveIllustrationReferences(illustration, nextWorkspace.characters).ready
         ))
-        if (portraits.length && imageReady && workspace.project.autoIllustrate) {
+        if (portraits.length && imageReady && autoIllustrate) {
           portraitGenerationCancelledRef.current = false
           setPortraitGenerationActive(true)
           void enqueueImageTask(async () => {
@@ -923,7 +999,7 @@ export default function App() {
             }
           })
           showToast('正文已保存，定妆照已进入生成队列')
-        } else if (!workspace.project.autoIllustrate) {
+        } else if (!autoIllustrate) {
           showToast('正文和视觉计划已保存；自动配图未开启，可稍后手动生成')
         } else if (!imageReady) {
           showToast('正文和视觉计划已保存；请先配置图片模型')
@@ -933,31 +1009,117 @@ export default function App() {
         } else {
           showToast(newIllustrations.length ? '正文和视觉计划已保存；请先确认角色定妆照' : '正文和视觉计划已保存')
         }
-      } else {
+      } else if (result.kind === 'prose') {
         showToast('正文已保存')
       }
       if (contextReminder) showToast(contextReminder.text, contextReminder.kind)
+      return 'completed'
     } catch (error) {
+      if (!isCurrent()) return 'superseded'
+      if (isCancelled() || error instanceof TransportCancelledError) {
+        await cancelWritingTurn(noticeId)
+        if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId).catch(() => undefined)
+        await refreshWorkspace(projectId).catch(() => undefined)
+        return 'cancelled'
+      }
       const message = error instanceof Error ? error.message : '未知错误'
-      if (noticeId && backgroundOutcome !== 'issued' && backgroundOutcome !== 'uncertain') {
+      if (backgroundOutcome !== 'issued' && backgroundOutcome !== 'uncertain') {
         const partialProse = projectStreamingProse(streamingRawRef.current)
         await failWritingTurn(noticeId, message, partialProse)
         if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId)
-        await refreshWorkspace(workspace.project.id)
+        await refreshWorkspace(projectId)
       }
       if (backgroundOutcome === 'issued' || backgroundOutcome === 'uncertain' || error instanceof BackgroundTaskUncertainError) {
-        shouldRestoreDraft = false
         showToast(error instanceof Error ? error.message : '请求已发出，等待补收结果', 'error')
-      } else {
-        shouldRestoreDraft = true
-        showToast('本轮写作未完成', 'error')
+        return 'uncertain'
       }
+      showToast('本轮写作未完成', 'error')
+      return 'failed'
     } finally {
-      setSending(false)
-      streamingRawRef.current = ''
-      setStreamingText('')
+      if (isCurrent()) {
+        generationRef.current.phase = 'idle'
+        setGenerationPhase('idle')
+        streamingRawRef.current = ''
+        setStreamingText('')
+      }
     }
-    return shouldRestoreDraft
+  }
+
+  async function sendMessage(text: string) {
+    if (!workspace || generationPhase !== 'idle') return true
+
+    const textProvider = providerSettings.text
+    if (!textProvider.baseUrl.trim() || !textProvider.model.trim() || !(await secretStore.has(textProvider.secretRef))) {
+      showToast('请先完成文本模型配置')
+      openProviderSettings('text')
+      return true
+    }
+
+    let addedMessages: ConversationMessage[]
+    try {
+      addedMessages = await beginWritingTurn(
+        workspace.project.id,
+        text,
+        workspace.project.autoIllustrate,
+        workspace.project.activeChapterId,
+      )
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '无法创建写作任务', 'error')
+      return true
+    }
+    const userMessageId = addedMessages[0].id
+    const noticeId = addedMessages[1].id
+    setWorkspace((current) => current && current.project.id === workspace.project.id ? {
+      ...current,
+      project: { ...current.project, updatedAt: Date.now() },
+      messages: [...current.messages, ...addedMessages],
+    } : current)
+    try {
+      await refreshProjects()
+    } catch {
+      // The messages are already persisted; resolve the notice so it never
+      // stays pending forever without a request ever starting.
+      await failWritingTurn(noticeId, '作品列表刷新失败，本轮写作未启动').catch(() => undefined)
+      await refreshWorkspace(workspace.project.id).catch(() => undefined)
+      showToast('本轮写作未能启动，请重试', 'error')
+      return true
+    }
+
+    setGenerationPhase('starting')
+    const outcome = await runWritingAttempt({ userMessageId, noticeId, userText: text })
+    return outcome === 'failed'
+  }
+
+  async function retryWriting(message: ConversationMessage) {
+    if (!workspace || generationPhase !== 'idle' || message.kind !== 'notice') return
+    try {
+      const retry = await retryWritingTurn(message.projectId, message.id)
+      setWorkspace((current) => current && current.project.id === workspace.project.id ? {
+        ...current,
+        project: { ...current.project, updatedAt: Date.now() },
+        messages: current.messages.map((item) => item.id === message.id ? { ...item, text: retry.autoIllustrate ? '正在重新生成正文并整理视觉计划…' : '正在重新生成正文…', status: 'pending' as const, backgroundTaskId: '' } : item),
+      } : current)
+      setGenerationPhase('starting')
+      await runWritingAttempt({ userMessageId: message.userMessageId ?? '', noticeId: message.id, userText: retry.userText })
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '重新生成失败', 'error')
+    }
+  }
+
+  async function handleStopGeneration() {
+    const controlPhase = generationRef.current.phase
+    if (controlPhase !== 'starting' && controlPhase !== 'running') return
+    generationRef.current.phase = 'cancelling'
+    setGenerationPhase('cancelling')
+    generationRef.current.cancelled = true
+    generationRef.current.abortController?.abort()
+    const { noticeId, backgroundTaskId } = generationRef.current
+    // Persist the cancellation immediately so any in-flight completeWritingTurn
+    // transaction observes a 'cancelled' notice and rejects instead of
+    // committing the fully received response as a successful turn.
+    if (noticeId) await cancelWritingTurn(noticeId).catch(() => undefined)
+    if (backgroundTaskId) await cancelBackgroundGenerationTask(backgroundTaskId).catch(() => undefined)
+    showToast('已停止本地接收；上游若已开始计费可能无法撤销。')
   }
 
   if (bootError) {
@@ -1068,7 +1230,7 @@ export default function App() {
           </button>
         </section>
 
-        <section ref={timelineRef} className="timeline" aria-label="创作对话" aria-live="polite" onScroll={syncVisibleChapterFromScroll}>
+        <section ref={timelineRef} className="timeline" aria-label="创作对话" aria-live="polite" onScroll={handleTimelineScroll}>
           {workspace.messages.length === 0 ? (
             <div className="empty-story">
               <BookOpen size={28} />
@@ -1090,6 +1252,7 @@ export default function App() {
                     illustration={illustration}
                     illustrationGenerationStage={illustration ? illustrationGenerationStages[illustration.id] : undefined}
                     onRetryIllustration={retryIllustration}
+                    onRetryWriting={retryWriting}
                     imageProviderReady={imageProviderReady}
                     onOpenImageSettings={() => openProviderSettings('image')}
                     characters={workspace.characters}
@@ -1111,25 +1274,40 @@ export default function App() {
               )
             })
           )}
-          {sending && streamingText && (
+          {generationPhase !== 'idle' && streamingText && (
             <div className="timeline-entry">
               <article className="streaming-prose" aria-live="polite">{streamingText}</article>
             </div>
           )}
           <div className="ready-state" role="status">
             <span /><span /><span />
-            <em>{sending ? '正在保存你的想法…' : '等待你的下一步'}</em>
+            <em>{generationPhase === 'cancelling' ? '正在停止…' : generationPhase !== 'idle' ? '正在保存你的想法…' : '等待你的下一步'}</em>
           </div>
         </section>
+        {showJumpToLatest && (
+          <button
+            className="jump-to-latest"
+            type="button"
+            aria-label="回到最新内容"
+            onClick={() => {
+              stickToBottomRef.current = true
+              setShowJumpToLatest(false)
+              scrollTimelineToBottom(false)
+            }}
+          >
+            <ArrowDown size={18} />
+          </button>
+        )}
       </div>
 
       <Composer
-        sending={sending}
+        generationPhase={generationPhase}
         autoIllustrate={workspace.project.autoIllustrate}
         reasoningEffort={providerSettings.text.reasoningEffort}
         contextUsagePlan={activeContextUsagePlan}
         contextUsageState={activeContextUsageState}
         onSubmit={sendMessage}
+        onStop={handleStopGeneration}
         onOpenContextUsage={() => setContextUsageDetailsOpen(true)}
         onOpenCharacterAssets={openCharacterAssets}
         onOpenReferenceImage={() => setReferenceImageOpen(true)}

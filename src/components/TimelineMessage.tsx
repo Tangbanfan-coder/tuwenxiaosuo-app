@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Check, ImagePlus, LoaderCircle, Maximize2, Sparkles, ThumbsDown, ThumbsUp, TriangleAlert, WandSparkles, X } from 'lucide-react'
+import { Check, ImagePlus, LoaderCircle, Maximize2, Sparkles, Square, ThumbsDown, ThumbsUp, TriangleAlert, WandSparkles, X } from 'lucide-react'
 import { listMessageFeedback, listMessageParagraphsWithCurrentStyleIssues, storyDatabase, toggleFeedbackBatch } from '../data/storyDatabase'
 import type { CharacterAsset, ConversationMessage, Feedback, FeedbackScope, FeedbackVerdict, IllustrationAsset, ProseStyleIssue, RewriteStrength, StoredParagraph } from '../domain/models'
 import { resolveIllustrationReferences } from '../domain/illustrationReferences'
@@ -49,6 +49,7 @@ export default function TimelineMessage({
   message,
   illustration,
   onRetryIllustration,
+  onRetryWriting,
   imageProviderReady,
   onOpenImageSettings,
   characters,
@@ -62,6 +63,7 @@ export default function TimelineMessage({
   message: ConversationMessage
   illustration?: IllustrationAsset
   onRetryIllustration: (illustrationId: string) => Promise<void>
+  onRetryWriting?: (message: ConversationMessage) => void
   imageProviderReady: boolean
   onOpenImageSettings: () => void
   characters: CharacterAsset[]
@@ -86,15 +88,22 @@ export default function TimelineMessage({
   }
 
   if (message.kind === 'notice') {
+    const failed = message.status === 'failed'
+    const cancelled = message.status === 'cancelled'
     return (
       <div className="message-row assistant-row notice-indent">
-        <div className={`assistant-notice ${message.status ?? 'ready'}`} role={message.status === 'failed' ? 'alert' : 'status'}>
+        <div className={`assistant-notice ${message.status ?? 'ready'}`} role={failed ? 'alert' : 'status'}>
           {message.status === 'pending'
             ? <LoaderCircle className="spin" size={14} />
-            : message.status === 'failed'
-              ? <TriangleAlert size={14} />
-              : <Sparkles size={14} />}
-          {message.text}
+            : cancelled
+              ? <Square size={13} />
+              : failed
+                ? <TriangleAlert size={14} />
+                : <Sparkles size={14} />}
+          <span>{message.text}</span>
+          {(failed || cancelled) && onRetryWriting && (
+            <button className="notice-retry" type="button" onClick={() => onRetryWriting(message)}>重新生成</button>
+          )}
         </div>
       </div>
     )

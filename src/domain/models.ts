@@ -153,9 +153,11 @@ export interface ConversationMessage {
   paragraphs?: string[]
   title?: string
   illustrationId?: string
-  status?: 'ready' | 'pending' | 'failed'
+  status?: 'ready' | 'pending' | 'failed' | 'cancelled'
   /** Native foreground task linked while this writing result is pending. */
   backgroundTaskId?: string
+  /** For notices, links back to the user message that started this turn. */
+  userMessageId?: string
 }
 
 export type ParagraphSourceType = 'message' | 'chapter'
@@ -302,7 +304,12 @@ export interface WritingSceneNotes extends SceneNoteFacts {
   legacyResolvedForeshadowingTexts?: string[]
 }
 
-export interface WritingTurnResult {
+/**
+ * A prose turn advances the story: it always carries non-empty paragraphs and
+ * may create a chapter, scene notes, a summary and a visual plan.
+ */
+export interface WritingProseResult {
+  kind: 'prose'
   assistantNote: string
   chapterAction: 'continue' | 'new'
   chapterTitle?: string
@@ -311,6 +318,17 @@ export interface WritingTurnResult {
   sceneNotes?: WritingSceneNotes
   visualPlan?: VisualPlan
 }
+
+/**
+ * A collaboration-only turn responds without advancing the plot. It must not
+ * create chapters, scenes, prose messages, summaries or visual plans.
+ */
+export interface WritingAssistantOnlyResult {
+  kind: 'assistant-only'
+  assistantNote: string
+}
+
+export type WritingTurnResult = WritingProseResult | WritingAssistantOnlyResult
 
 export interface Chapter {
   id: string

@@ -1472,9 +1472,10 @@ async function getLastMessageOrder(projectId: string) {
 export async function beginWritingTurn(projectId: string, text: string, autoIllustrate: boolean, chapterId?: string) {
   const now = Date.now()
   const nextOrder = (await getLastMessageOrder(projectId)) + 1
+  const userMessageId = createId('message')
   const messages: ConversationMessage[] = [
     {
-      id: createId('message'),
+      id: userMessageId,
       projectId,
       chapterId,
       kind: 'user',
@@ -1491,6 +1492,7 @@ export async function beginWritingTurn(projectId: string, text: string, autoIllu
       createdAt: now + 1,
       text: autoIllustrate ? '正在创作正文并整理视觉计划…' : '正在创作正文…',
       status: 'pending',
+      userMessageId,
     },
   ]
 
@@ -1595,6 +1597,20 @@ export async function completeWritingTurn(
   expectedBackgroundTaskId?: string,
 ) {
   const now = Date.now()
+  if (result.kind === 'assistant-only') {
+    // A collaboration-only turn never creates chapters, scenes, prose,
+    // summaries or visual plans. It only resolves the notice.
+    await storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.projects], async () => {
+      const notice = await storyDatabase.messages.get(noticeId)
+      if (!notice || notice.projectId !== projectId || notice.kind !== 'notice') throw new Error('写作任务不存在')
+      if (notice.status === 'ready') return
+      if (notice.status !== 'pending') throw new Error('写作任务已经结束，不能重复消费结果')
+      if (expectedBackgroundTaskId && notice.backgroundTaskId !== expectedBackgroundTaskId) throw new Error('后台写作结果不属于当前任务')
+      await storyDatabase.messages.update(noticeId, { text: result.assistantNote, status: 'ready' })
+      await storyDatabase.projects.update(projectId, { updatedAt: now })
+    })
+    return
+  }
   const generatedSummary = result.chapterSummary?.trim() || undefined
   await storyDatabase.transaction(
     'rw',
@@ -1608,7 +1624,7 @@ export async function completeWritingTurn(
       // transactionally committed consumption marker.
       if (!notice || notice.projectId !== projectId || notice.kind !== 'notice') throw new Error('写作任务不存在')
       if (notice.status === 'ready') return
-      if (notice.status !== 'pending') throw new Error('写作任务已经失败，不能重复消费结果')
+      if (notice.status !== 'pending') throw new Error('写作任务已经结束，不能重复消费结果')
       if (expectedBackgroundTaskId && notice.backgroundTaskId !== expectedBackgroundTaskId) throw new Error('后台写作结果不属于当前任务')
       let nextOrder = (await getLastMessageOrder(projectId)) + 1
 
@@ -1802,7 +1818,7 @@ export async function failWritingTurn(noticeId: string, message: string, partial
   await storyDatabase.transaction('rw', storyDatabase.messages, async () => {
     const notice = await storyDatabase.messages.get(noticeId)
     if (!notice) return
-    if (notice.status === 'ready') return
+    if (notice.status !== 'pending') return
 
     const draftHint = draft ? ' 已保留模型已经返回的未完成草稿，未写入章节正文。' : ''
     await storyDatabase.messages.update(noticeId, {
@@ -1822,6 +1838,49 @@ export async function failWritingTurn(noticeId: string, message: string, partial
       paragraphs: draft.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean),
       status: 'failed',
     })
+  })
+}
+
+/**
+ * Marks a pending turn as cancelled without writing any prose. The user
+ * message is kept; the notice becomes a stable, non-failed `cancelled` state.
+ */
+export async function cancelWritingTurn(noticeId: string) {
+  await storyDatabase.transaction('rw', storyDatabase.messages, async () => {
+    const notice = await storyDatabase.messages.get(noticeId)
+    if (!notice) return
+    if (notice.status !== 'pending') return
+    await storyDatabase.messages.update(noticeId, {
+      text: '已停止生成，未写入正文。',
+      status: 'cancelled',
+    })
+  })
+}
+
+/**
+ * Re-opens a failed or cancelled turn for regeneration. It reuses the original
+ * user message and its existing notice, so no duplicate user bubble is created.
+ * Returns the original user text and the project's current auto-illustrate flag.
+ */
+export async function retryWritingTurn(projectId: string, noticeId: string): Promise<{ userText: string; autoIllustrate: boolean }> {
+  const now = Date.now()
+  return storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.projects], async () => {
+    const notice = await storyDatabase.messages.get(noticeId)
+    if (!notice || notice.projectId !== projectId || notice.kind !== 'notice') throw new Error('写作任务不存在')
+    if (notice.status !== 'failed' && notice.status !== 'cancelled') throw new Error('只有失败或已停止的回合才能重新生成')
+    const userMessage = notice.userMessageId ? await storyDatabase.messages.get(notice.userMessageId) : undefined
+    if (!userMessage || userMessage.projectId !== projectId || userMessage.kind !== 'user') throw new Error('原用户消息不存在或不属于当前作品')
+    const userText = userMessage.text?.trim()
+    if (!userText) throw new Error('原用户消息没有可用文本')
+    const project = await storyDatabase.projects.get(projectId)
+    if (!project) throw new Error('当前作品不存在')
+    await storyDatabase.messages.update(noticeId, {
+      text: project.autoIllustrate ? '正在重新生成正文并整理视觉计划…' : '正在重新生成正文…',
+      status: 'pending',
+      backgroundTaskId: '',
+    })
+    await storyDatabase.projects.update(projectId, { updatedAt: now })
+    return { userText, autoIllustrate: project.autoIllustrate }
   })
 }
 

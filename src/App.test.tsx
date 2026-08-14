@@ -9,6 +9,7 @@ import type { ProviderSettings } from './providers/types'
 const databaseMocks = vi.hoisted(() => ({
   applyReferenceAppearanceAnalysis: vi.fn(),
   beginWritingTurn: vi.fn(),
+  cancelWritingTurn: vi.fn(),
   completeWritingTurn: vi.fn(),
   confirmCharacterPortrait: vi.fn(),
   createCharacterDraft: vi.fn(),
@@ -31,6 +32,7 @@ const databaseMocks = vi.hoisted(() => ({
   renameProject: vi.fn(),
   restoreChapterSummaryVersion: vi.fn(),
   restoreIllustrationsBlockedByReference: vi.fn(),
+  retryWritingTurn: vi.fn(),
   setCharacterPortraitFailed: vi.fn(),
   setCharacterPortraitGenerating: vi.fn(),
   setCharacterPortraitReady: vi.fn(),
@@ -38,6 +40,7 @@ const databaseMocks = vi.hoisted(() => ({
   setIllustrationBlockedByReference: vi.fn(),
   setIllustrationGenerating: vi.fn(),
   setIllustrationReady: vi.fn(),
+  setWritingTurnBackgroundTask: vi.fn(),
   toggleFeedback: vi.fn(),
   toggleFeedbackBatch: vi.fn(),
   updateAutoIllustrate: vi.fn(),
@@ -227,7 +230,7 @@ vi.mock('./providers/modelLimits', () => ({ refreshModelLimits: vi.fn().mockReso
 vi.mock('./providers/imageAssetStore', () => ({
   ...imageAssetMocks,
 }))
-vi.mock('./providers/browserTransport', () => ({ browserTransport: {} }))
+vi.mock('./providers/browserTransport', () => ({ browserTransport: {}, TransportCancelledError: class TransportCancelledError extends Error {} }))
 vi.mock('./providers/images', () => ({
   buildCharacterPortraitPrompt: vi.fn(),
   editOpenAiImage: vi.fn(),
@@ -241,6 +244,7 @@ vi.mock('./providers/writing', () => ({
 
 import App from './App'
 import { createParagraphFingerprint } from './domain/paragraphs'
+import { TransportCancelledError } from './providers/browserTransport'
 
 const project: StoryProject = {
   id: 'project-1',
@@ -401,7 +405,7 @@ describe('context usage and composer isolation', () => {
     writingMocks.generateWritingTurn.mockImplementation(async (_workspace, _text, _provider, _transport, _onDelta, options) => {
       options.onContextPlan(preparedPlan)
       options.onStyleFragmentsSelected(['style-1'])
-      return { prose: { title: '第一章', paragraphs: ['正文'] }, visualPlan: undefined }
+      return { kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['正文'], visualPlan: undefined }
     })
     render(<App />)
 
@@ -423,7 +427,7 @@ describe('context usage and composer isolation', () => {
     databaseMocks.completeWritingTurn.mockRejectedValue(new Error('正文落库失败'))
     writingMocks.generateWritingTurn.mockImplementation(async (_workspace, _text, _provider, _transport, _onDelta, options) => {
       options.onStyleFragmentsSelected(['style-1'])
-      return { prose: { title: '第一章', paragraphs: ['正文'] }, visualPlan: undefined }
+      return { kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['正文'], visualPlan: undefined }
     })
     render(<App />)
     await user.type(await screen.findByLabelText('创作要求'), '继续写')
@@ -445,7 +449,7 @@ describe('context usage and composer isolation', () => {
     writingMocks.markStyleCorpusFragmentsUsed.mockRejectedValue(new Error('计数写入失败'))
     writingMocks.generateWritingTurn.mockImplementation(async (_workspace, _text, _provider, _transport, _onDelta, options) => {
       options.onStyleFragmentsSelected(['style-1'])
-      return { prose: { title: '第一章', paragraphs: ['正文'] }, visualPlan: undefined }
+      return { kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['正文'], visualPlan: undefined }
     })
     render(<App />)
     await user.type(await screen.findByLabelText('创作要求'), '继续写')
@@ -482,7 +486,7 @@ describe('context usage and composer isolation', () => {
     const pressures = [0.61, 0.7, 0.81, 0.79, 1.02, 0.5, 0.61]
     writingMocks.generateWritingTurn.mockImplementation(async (_workspace, _text, _provider, _transport, _onDelta, options) => {
       options.onContextPlan({ ...preparedPlan, contextPressureRatio: pressures.shift() ?? 0.61 })
-      return { prose: { title: '第一章', paragraphs: ['正文'] }, visualPlan: undefined }
+      return { kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['正文'], visualPlan: undefined }
     })
     render(<App />)
 
@@ -935,5 +939,272 @@ describe('prose feedback UI', () => {
     await user.click(await screen.findByRole('button', { name: /采用建议稿/ }))
     expect((await screen.findByRole('alert')).textContent).toContain('正文已变化')
     expect(screen.getByRole('dialog', { name: '段落优化建议' })).toBeDefined()
+  })
+})
+
+describe('生成停止与重试', () => {
+  const failedWorkspace: ProjectWorkspace = {
+    ...workspace,
+    messages: [
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 0, createdAt: 1 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', text: '网络失败', order: 1, createdAt: 2, status: 'failed', userMessageId: 'user-1' },
+    ],
+  }
+
+  function configureSendable() {
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'test-model' }
+    secretStoreMocks.has.mockResolvedValue(true)
+  }
+
+  it('发送按钮在生成中切换为停止按钮，停止后恢复且不落库', async () => {
+    const user = userEvent.setup()
+    configureSendable()
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 0, createdAt: 1 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', order: 1, createdAt: 1 },
+    ])
+    databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
+    databaseMocks.cancelWritingTurn.mockResolvedValue(undefined)
+    writingMocks.generateWritingTurn.mockImplementation((_w: unknown, _t: unknown, _p: unknown, _transport: unknown, _onDelta: unknown, options: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => reject(new TransportCancelledError('已取消')))
+      }))
+    render(<App />)
+
+    await user.type(await screen.findByLabelText('创作要求'), '继续写')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await screen.findByRole('button', { name: '停止生成' })
+    expect(screen.queryByRole('button', { name: '发送' })).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: '停止生成' }))
+    await waitFor(() => expect(databaseMocks.cancelWritingTurn).toHaveBeenCalled())
+    expect(await screen.findByRole('button', { name: '发送' })).toBeDefined()
+    expect(databaseMocks.completeWritingTurn).not.toHaveBeenCalled()
+  })
+
+  it('停止后迟到的模型结果不会写入正文', async () => {
+    const user = userEvent.setup()
+    configureSendable()
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 0, createdAt: 1 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', order: 1, createdAt: 1 },
+    ])
+    databaseMocks.cancelWritingTurn.mockResolvedValue(undefined)
+    let resolveGeneration: (value: unknown) => void = () => undefined
+    writingMocks.generateWritingTurn.mockImplementation(() => new Promise((resolve) => { resolveGeneration = resolve }))
+    render(<App />)
+
+    await user.type(await screen.findByLabelText('创作要求'), '继续写')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await screen.findByRole('button', { name: '停止生成' })
+    await user.click(screen.getByRole('button', { name: '停止生成' }))
+
+    resolveGeneration({ kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['迟到正文。'], visualPlan: undefined })
+    await waitFor(() => expect(databaseMocks.cancelWritingTurn).toHaveBeenCalled())
+    expect(await screen.findByRole('button', { name: '发送' })).toBeDefined()
+    expect(databaseMocks.completeWritingTurn).not.toHaveBeenCalled()
+  })
+
+  it('本地保存开始后禁用停止按钮，旧点击不会取消已开始的事务', async () => {
+    const user = userEvent.setup()
+    configureSendable()
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 0, createdAt: 1 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', order: 1, createdAt: 1 },
+    ])
+    let completeSave: () => void = () => undefined
+    databaseMocks.completeWritingTurn.mockImplementation(() => new Promise<void>((resolve) => { completeSave = resolve }))
+    writingMocks.generateWritingTurn.mockResolvedValue({ kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['已保存正文。'], visualPlan: undefined })
+    render(<App />)
+
+    await user.type(await screen.findByLabelText('创作要求'), '继续写')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(databaseMocks.completeWritingTurn).toHaveBeenCalledWith(
+      project.id,
+      'user-1',
+      'notice-1',
+      expect.anything(),
+      false,
+      undefined,
+      undefined,
+    ))
+
+    const savingButton = await screen.findByRole('button', { name: '正在保存' })
+    expect((savingButton as HTMLButtonElement).disabled).toBe(true)
+    expect(savingButton.querySelector('svg.lucide-save')).not.toBeNull()
+    expect(savingButton.querySelector('svg.lucide-square')).toBeNull()
+    fireEvent.click(savingButton)
+    expect(databaseMocks.cancelWritingTurn).not.toHaveBeenCalled()
+
+    completeSave()
+    expect(await screen.findByRole('button', { name: '发送' })).toBeDefined()
+  })
+
+  it('失败后重新生成复用原用户消息，不重复发送用户气泡', async () => {
+    const user = userEvent.setup()
+    configureSendable()
+    databaseMocks.loadProjectWorkspace.mockResolvedValue(failedWorkspace)
+    databaseMocks.retryWritingTurn.mockResolvedValue({ userText: '继续写', autoIllustrate: false })
+    databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
+    writingMocks.generateWritingTurn.mockResolvedValue({ kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['重试正文。'], visualPlan: undefined })
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '重新生成' }))
+    await waitFor(() => expect(databaseMocks.retryWritingTurn).toHaveBeenCalledWith(project.id, 'notice-1'))
+    await waitFor(() => expect(writingMocks.generateWritingTurn).toHaveBeenCalled())
+    expect(databaseMocks.beginWritingTurn).not.toHaveBeenCalled()
+    expect(writingMocks.generateWritingTurn.mock.calls[0][1]).toBe('继续写')
+  })
+
+  it('重试请求从上下文排除本轮原用户消息，避免重复注入', async () => {
+    const user = userEvent.setup()
+    configureSendable()
+    databaseMocks.loadProjectWorkspace.mockResolvedValue(failedWorkspace)
+    databaseMocks.retryWritingTurn.mockResolvedValue({ userText: '继续写', autoIllustrate: false })
+    databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
+    writingMocks.generateWritingTurn.mockResolvedValue({ kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['重试正文。'], visualPlan: undefined })
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '重新生成' }))
+    await waitFor(() => expect(writingMocks.generateWritingTurn).toHaveBeenCalled())
+    const options = writingMocks.generateWritingTurn.mock.calls[0][5] as { excludeUserMessageId?: string }
+    expect(options.excludeUserMessageId).toBe('user-1')
+  })
+
+  it('取消后的消息同样显示重新生成入口', async () => {
+    databaseMocks.loadProjectWorkspace.mockResolvedValue({
+      ...workspace,
+      messages: [
+        { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 0, createdAt: 1 },
+        { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', text: '已停止生成，未写入正文。', order: 1, createdAt: 2, status: 'cancelled', userMessageId: 'user-1' },
+      ],
+    })
+    render(<App />)
+    expect(await screen.findByRole('button', { name: '重新生成' })).toBeDefined()
+  })
+
+  it('点击停止立即持久化取消状态，不等模型结果返回', async () => {
+    const user = userEvent.setup()
+    configureSendable()
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 0, createdAt: 1 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', order: 1, createdAt: 1 },
+    ])
+    databaseMocks.cancelWritingTurn.mockResolvedValue(undefined)
+    writingMocks.generateWritingTurn.mockImplementation(() => new Promise(() => { /* 永不返回 */ }))
+    render(<App />)
+
+    await user.type(await screen.findByLabelText('创作要求'), '继续写')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await screen.findByRole('button', { name: '停止生成' })
+    await user.click(screen.getByRole('button', { name: '停止生成' }))
+
+    // 停止动作本身就把 notice 持久化为 cancelled，后续任何迟到完成都无法提交。
+    await waitFor(() => expect(databaseMocks.cancelWritingTurn).toHaveBeenCalledWith('notice-1'))
+    expect(databaseMocks.completeWritingTurn).not.toHaveBeenCalled()
+  })
+
+  it('创建写作任务失败时保留输入并提示，不进入生成流程', async () => {
+    const user = userEvent.setup()
+    configureSendable()
+    databaseMocks.beginWritingTurn.mockRejectedValue(new Error('本地写入失败'))
+    render(<App />)
+
+    const input = await screen.findByLabelText('创作要求')
+    await user.type(input, '继续写')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+
+    expect(await screen.findByText('本地写入失败')).toBeDefined()
+    expect((input as HTMLTextAreaElement).value).toBe('继续写')
+    expect(writingMocks.generateWritingTurn).not.toHaveBeenCalled()
+  })
+
+  it('作品列表刷新失败时失败本轮任务并恢复输入，不留下永久 pending', async () => {
+    const user = userEvent.setup()
+    configureSendable()
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 0, createdAt: 1 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', order: 1, createdAt: 1 },
+    ])
+    databaseMocks.failWritingTurn.mockResolvedValue(undefined)
+    render(<App />)
+
+    await screen.findByLabelText('创作要求')
+    databaseMocks.listProjects.mockRejectedValue(new Error('列表刷新失败'))
+    await user.type(screen.getByLabelText('创作要求'), '继续写')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+
+    await waitFor(() => expect(databaseMocks.failWritingTurn).toHaveBeenCalledWith('notice-1', expect.stringContaining('作品列表刷新失败')))
+    expect(writingMocks.generateWritingTurn).not.toHaveBeenCalled()
+    expect(await screen.findByText('本轮写作未能启动，请重试')).toBeDefined()
+    expect((screen.getByLabelText('创作要求') as HTMLTextAreaElement).value).toBe('继续写')
+  })
+})
+
+describe('流式滚动行为', () => {
+  const secondProject = { ...project, id: 'project-2', title: '第二部作品' }
+  const secondWorkspace: ProjectWorkspace = { ...workspace, project: secondProject }
+
+  function stickyFrame() {
+    window.requestAnimationFrame = ((callback: FrameRequestCallback) => { callback(0); return 1 }) as typeof window.requestAnimationFrame
+  }
+
+  function trackScroll(timeline: HTMLElement, scrollHeight: number, initialTop: number) {
+    let top = initialTop
+    Object.defineProperty(timeline, 'scrollHeight', { value: scrollHeight, configurable: true })
+    Object.defineProperty(timeline, 'clientHeight', { value: 400, configurable: true })
+    Object.defineProperty(timeline, 'scrollTop', { get: () => top, set: (value: number) => { top = value }, configurable: true })
+    return { get top() { return top } }
+  }
+
+  it('用户上滑离开底部后停止跟随并显示回到最新按钮', async () => {
+    stickyFrame()
+    render(<App />)
+    const timeline = await screen.findByLabelText('创作对话')
+    const tracked = trackScroll(timeline, 1000, 100)
+    fireEvent.scroll(timeline)
+    expect(await screen.findByRole('button', { name: '回到最新内容' })).toBeDefined()
+    expect(tracked.top).toBe(100)
+  })
+
+  it('点击回到最新按钮恢复跟随并隐藏按钮', async () => {
+    const user = userEvent.setup()
+    stickyFrame()
+    render(<App />)
+    const timeline = await screen.findByLabelText('创作对话')
+    const scrollTo = vi.fn()
+    timeline.scrollTo = scrollTo
+    trackScroll(timeline, 1000, 100)
+    fireEvent.scroll(timeline)
+    await user.click(await screen.findByRole('button', { name: '回到最新内容' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: '回到最新内容' })).toBeNull())
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
+  })
+
+  it('停留在底部时不显示回到最新按钮', async () => {
+    stickyFrame()
+    render(<App />)
+    const timeline = await screen.findByLabelText('创作对话')
+    trackScroll(timeline, 1000, 960)
+    fireEvent.scroll(timeline)
+    expect(screen.queryByRole('button', { name: '回到最新内容' })).toBeNull()
+  })
+
+  it('切换作品后强制滚动到底部并清除回到最新状态', async () => {
+    const user = userEvent.setup()
+    stickyFrame()
+    databaseMocks.listProjects.mockResolvedValue([project, secondProject])
+    databaseMocks.loadProjectWorkspace.mockImplementation(async (id) => id === secondProject.id ? secondWorkspace : workspace)
+    render(<App />)
+    const timeline = await screen.findByLabelText('创作对话')
+    const tracked = trackScroll(timeline, 1000, 100)
+    fireEvent.scroll(timeline)
+    expect(await screen.findByRole('button', { name: '回到最新内容' })).toBeDefined()
+
+    await user.click(screen.getByRole('button', { name: '打开作品列表' }))
+    await user.click(await screen.findByRole('button', { name: '切换测试作品' }))
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: '回到最新内容' })).toBeNull())
+    await waitFor(() => expect(tracked.top).toBe(1000))
   })
 })

@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import Dexie from 'dexie'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Chapter, ConversationMessage, FeedbackTargetInput, StoryProject, SummaryVersion, UpsertFeedbackInput, WritingSceneNotes, WritingTurnResult } from '../domain/models'
+import type { Chapter, ConversationMessage, FeedbackTargetInput, StoryProject, SummaryVersion, UpsertFeedbackInput, WritingProseResult, WritingSceneNotes, WritingTurnResult } from '../domain/models'
 import { collectOpenForeshadowings } from '../domain/foreshadowing'
 import { createParagraphFingerprint, normalizeText } from '../domain/paragraphs'
 import { PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
@@ -9,6 +9,7 @@ import {
   StoryDatabase,
   applyParagraphRewrite,
   beginWritingTurn,
+  cancelWritingTurn,
   confirmCharacterPortrait,
   createCharacterDraft,
   completeWritingTurn,
@@ -28,9 +29,11 @@ import {
   removeFeedback,
   restoreChapterSummaryVersion,
   restoreIllustrationsBlockedByReference,
+  retryWritingTurn,
   saveStyleCorpusImport,
   splitStyleCorpusText,
   setIllustrationBlockedByReference,
+  setWritingTurnBackgroundTask,
   storyDatabase,
   toggleFeedback,
   toggleFeedbackBatch,
@@ -49,7 +52,8 @@ const project: StoryProject = {
   lastOpenedAt: 1,
 }
 
-const writingResult: WritingTurnResult = {
+const writingResult: WritingProseResult = {
+  kind: 'prose',
   assistantNote: '正文已完成。',
   chapterAction: 'new',
   chapterTitle: '第一章',
@@ -75,10 +79,11 @@ function sceneNotes(overrides: Partial<WritingSceneNotes> = {}): WritingSceneNot
 
 function writingResultWithSceneNotes(
   notes: WritingSceneNotes,
-  chapterAction: WritingTurnResult['chapterAction'] = 'continue',
+  chapterAction: 'continue' | 'new' = 'continue',
   paragraphs = ['本轮正文。'],
 ): WritingTurnResult {
   return {
+    kind: 'prose',
     assistantNote: '正文已完成。',
     chapterAction,
     chapterTitle: '伏笔测试章节',
@@ -89,7 +94,7 @@ function writingResultWithSceneNotes(
 
 async function completeScene(
   notes: WritingSceneNotes,
-  chapterAction: WritingTurnResult['chapterAction'] = 'continue',
+  chapterAction: 'continue' | 'new' = 'continue',
   paragraphs?: string[],
 ) {
   const [userMessage, notice] = await beginWritingTurn(project.id, '继续写作', false)
@@ -515,12 +520,13 @@ describe('stable foreshadowing persistence', () => {
 
 describe('chapter summary versions', () => {
   async function completeWithSummary(
-    chapterAction: WritingTurnResult['chapterAction'],
+    chapterAction: 'continue' | 'new',
     paragraphs: string[],
     chapterSummary: string,
   ) {
     const [userMessage, notice] = await beginWritingTurn(project.id, '继续写作', false)
     await completeWritingTurn(project.id, userMessage.id, notice.id, {
+      kind: 'prose',
       assistantNote: '正文已完成。',
       chapterAction,
       chapterTitle: '摘要版本测试章节',
@@ -571,6 +577,7 @@ describe('chapter summary versions', () => {
 
     try {
       await expect(completeWritingTurn(project.id, userMessage.id, notice.id, {
+        kind: 'prose',
         assistantNote: '正文已完成。',
         chapterAction: 'new',
         chapterTitle: '会回滚的章节',
@@ -991,6 +998,66 @@ describe('failed writing turn persistence', () => {
     expect(await storyDatabase.chapters.count()).toBe(0)
     expect(await storyDatabase.scenes.count()).toBe(0)
     expect(await storyDatabase.paragraphs.count()).toBe(0)
+  })
+})
+
+describe('writing turn stop and retry', () => {
+  it('resolves an assistant-only turn without creating chapters, scenes, prose, summaries or visuals', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '打个招呼', false)
+
+    await completeWritingTurn(project.id, userMessage.id, notice.id, { kind: 'assistant-only', assistantNote: '你好，我们先讨论设定。' }, false)
+
+    const messages = await storyDatabase.messages.where('projectId').equals(project.id).toArray()
+    expect(messages.find((message) => message.id === notice.id)).toMatchObject({ status: 'ready', text: '你好，我们先讨论设定。' })
+    expect(messages.filter((message) => message.kind === 'prose')).toHaveLength(0)
+    expect(await storyDatabase.chapters.count()).toBe(0)
+    expect(await storyDatabase.scenes.count()).toBe(0)
+    expect(await storyDatabase.paragraphs.count()).toBe(0)
+    expect(await storyDatabase.summaryVersions.count()).toBe(0)
+    expect(await storyDatabase.illustrations.count()).toBe(0)
+  })
+
+  it('marks a pending notice cancelled without writing prose and stays idempotent', async () => {
+    const [, notice] = await beginWritingTurn(project.id, '继续写', false)
+
+    await cancelWritingTurn(notice.id)
+    expect(await storyDatabase.messages.get(notice.id)).toMatchObject({ status: 'cancelled', text: '已停止生成，未写入正文。' })
+    expect(await storyDatabase.chapters.count()).toBe(0)
+    expect(await storyDatabase.paragraphs.count()).toBe(0)
+
+    await cancelWritingTurn(notice.id)
+    expect((await storyDatabase.messages.get(notice.id))?.status).toBe('cancelled')
+  })
+
+  it('rejects a late completion after the notice was cancelled, writing nothing', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写', false)
+    await cancelWritingTurn(notice.id)
+
+    await expect(completeWritingTurn(project.id, userMessage.id, notice.id, writingResult, false)).rejects.toThrow('写作任务已经结束')
+    expect(await storyDatabase.chapters.count()).toBe(0)
+    expect(await storyDatabase.scenes.count()).toBe(0)
+    expect(await storyDatabase.paragraphs.count()).toBe(0)
+    expect(await storyDatabase.illustrations.count()).toBe(0)
+    expect((await storyDatabase.messages.get(notice.id))?.status).toBe('cancelled')
+  })
+
+  it('retry reuses the original user message and notice without duplicating the user bubble', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写', false)
+    await failWritingTurn(notice.id, '网络失败')
+    const userCountBefore = (await storyDatabase.messages.toArray()).filter((message) => message.kind === 'user').length
+
+    const retry = await retryWritingTurn(project.id, notice.id)
+    expect(retry.userText).toBe('继续写')
+    expect(retry.autoIllustrate).toBe(false)
+    expect((await storyDatabase.messages.toArray()).filter((message) => message.kind === 'user')).toHaveLength(userCountBefore)
+    expect(await storyDatabase.messages.get(notice.id)).toMatchObject({ status: 'pending', backgroundTaskId: '' })
+    expect(userMessage.id).toBeTruthy()
+  })
+
+  it('rejects a result whose background task no longer matches the linked task', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写', false)
+    await setWritingTurnBackgroundTask(notice.id, 'task-old')
+    await expect(completeWritingTurn(project.id, userMessage.id, notice.id, writingResult, false, false, 'task-new')).rejects.toThrow('后台写作结果不属于当前任务')
   })
 })
 

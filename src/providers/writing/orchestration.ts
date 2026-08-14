@@ -40,6 +40,10 @@ export interface GenerateWritingTurnOptions {
   onContextPlan?: (plan: ContextBudgetPlan) => void
   /** Selected examples are reported for durable usage accounting after persistence succeeds. */
   onStyleFragmentsSelected?: (fragmentIds: string[]) => void
+  /** Caller-provided cancellation for the underlying stream request. */
+  signal?: AbortSignal
+  /** The user message that started this turn; excluded from recent-message context so a retry does not inject the requirement twice. */
+  excludeUserMessageId?: string
 }
 
 interface PreparedWritingTurnContext {
@@ -92,6 +96,7 @@ async function prepareWritingTurnContext(
     retrievedParagraphs,
     feedbackSources,
     styleExamples.map((item) => item.fragment),
+    { excludeUserMessageId: options.excludeUserMessageId },
   )
   const contextDemandTokens = estimatedTokenCount(estimator, `当前作品资料：${rawContext.context}`)
   const compressionStage = contextCompressionStageForPressure(
@@ -104,7 +109,7 @@ async function prepareWritingTurnContext(
     userRequest,
     estimator,
     retrievedParagraphs,
-    { compressionStage, feedbackSources, styleCorpusFragments: styleExamples.map((item) => item.fragment) },
+    { compressionStage, feedbackSources, styleCorpusFragments: styleExamples.map((item) => item.fragment), excludeUserMessageId: options.excludeUserMessageId },
   )
   const contextMessage = `当前作品资料：${context}`
   const finalPlan = buildContextBudgetPlan({
@@ -196,6 +201,7 @@ export async function generateWritingTurn(
     timeoutMs: 120_000,
     body,
     androidTransport: transportDecision.androidTransport,
+    signal: options.signal,
   }
 
   let content: string

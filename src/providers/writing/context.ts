@@ -139,6 +139,8 @@ interface InternalProjectContextOptions extends BuildProjectContextOptions {
   untrimmed?: boolean
   feedbackSources?: readonly FeedbackContextSource[]
   styleCorpusFragments?: readonly StyleCorpusFragment[]
+  /** The user message that started the current turn; excluded from the recent-message section so a retry never injects the same requirement twice. */
+  excludeUserMessageId?: string
 }
 
 /**
@@ -448,6 +450,7 @@ function buildProjectContextWithBudget(
     chapter?.id,
     untrimmed ? Number.MAX_SAFE_INTEGER : Math.floor(normalizedBudget * profile.recentMessagesBudgetRatio),
     measure,
+    options.excludeUserMessageId,
   )
   if (recentMessagesText) sections.push({ label: '近期对话', text: recentMessagesText, priority: 35, keepOrder: 'tail', planKey: 'recentMessages' })
 
@@ -553,6 +556,7 @@ export function buildUntrimmedProjectContextForDemand(
   retrievedParagraphs: readonly RetrievedParagraph[],
   feedbackSources: readonly FeedbackContextSource[],
   styleCorpusFragments: readonly StyleCorpusFragment[] = [],
+  options: InternalProjectContextOptions = {},
 ) {
   return buildProjectContextForTokenBudget(
     workspace,
@@ -561,7 +565,7 @@ export function buildUntrimmedProjectContextForDemand(
     userRequest,
     estimator,
     retrievedParagraphs,
-    { untrimmed: true, feedbackSources, styleCorpusFragments },
+    { ...options, untrimmed: true, feedbackSources, styleCorpusFragments },
   )
 }
 
@@ -670,12 +674,16 @@ function buildRecentMessages(
   currentChapterId: string | undefined,
   budgetUnits: number,
   measure: ContextTextMeasure,
+  excludeUserMessageId?: string,
 ) {
   const lines: string[] = []
   let remaining = budgetUnits
   for (let index = workspace.messages.length - 1; index >= 0; index--) {
     const message = workspace.messages[index]
     if (message.kind === 'notice') continue
+    // The current turn's own user message is re-sent as userRequest; including
+    // it again here would inject the requirement twice on a retry.
+    if (message.id === excludeUserMessageId) continue
     if (message.kind === 'prose' && message.chapterId === currentChapterId) continue
     const content = message.kind === 'prose' ? message.paragraphs?.join('\n\n') ?? '' : message.text ?? message.title ?? ''
     if (!content) continue

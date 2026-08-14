@@ -84,6 +84,8 @@ export interface TransportRequest {
   body?: BodyInit
   timeoutMs?: number
   androidTransport?: 'native' | 'webview-stream'
+  /** Caller-provided cancellation, combined with the transport's own timeout. */
+  signal?: AbortSignal
 }
 
 export interface TransportResponse<T> {

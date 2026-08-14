@@ -88,6 +88,22 @@ public final class BackgroundGenerationPlugin extends Plugin {
         catch (Exception error) { call.reject("无法确认后台任务"); }
     }
 
+    @PluginMethod
+    public void cancel(PluginCall call) {
+        String taskId = call.getString("id"); if (isBlank(taskId)) { call.reject("后台任务 ID 缺失"); return; }
+        getBridge().execute(() -> {
+            try {
+                BackgroundTaskStore store = new BackgroundTaskStore(getContext());
+                // Guarded transition: only an active task may become CANCELLED,
+                // so a terminal task is never flipped back by a stale cancel.
+                if (store.cancelIfActive(taskId, "任务已取消")) {
+                    BackgroundGenerationService.cancelConnection(taskId);
+                }
+                call.resolve();
+            } catch (Exception error) { call.reject("无法取消后台任务"); }
+        });
+    }
+
     private static void required(JSONObject task, PluginCall call, String name) throws Exception {
         String value = call.getString(name); if (isBlank(value)) throw new IllegalArgumentException("后台生成参数不完整"); task.put(name, value);
     }

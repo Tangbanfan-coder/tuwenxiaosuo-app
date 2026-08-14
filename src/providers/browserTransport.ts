@@ -102,6 +102,14 @@ export class TransportError extends Error {
   }
 }
 
+/** A caller-requested cancellation, distinct from timeout and network failure. */
+export class TransportCancelledError extends Error {
+  constructor(message = '请求已取消') {
+    super(message)
+    this.name = 'TransportCancelledError'
+  }
+}
+
 export class BrowserFetchTransport implements HttpTransport {
   private async prepareRequest({ headers, auth }: { headers?: Record<string, string>; auth?: RequestAuth }) {
     const requestHeaders = { ...headers }
@@ -113,9 +121,10 @@ export class BrowserFetchTransport implements HttpTransport {
     return requestHeaders
   }
 
-  async request<T>({ url, method, headers, auth, body, timeoutMs = 15_000 }: TransportRequest) {
+  async request<T>({ url, method, headers, auth, body, timeoutMs = 15_000, signal }: TransportRequest) {
     if (Capacitor.isNativePlatform()) {
       try {
+        if (signal?.aborted) throw new TransportCancelledError()
         const requestHeaders = await this.prepareRequest({ headers, auth })
         const formDataBody = typeof FormData !== 'undefined' && body instanceof FormData
         if (formDataBody && !Object.keys(requestHeaders).some((key) => key.toLowerCase() === 'content-type')) {
@@ -135,15 +144,22 @@ export class BrowserFetchTransport implements HttpTransport {
           const detail = errorDetail(response.data)
           throw new TransportError(`接口返回 HTTP ${response.status}${detail ? `：${detail}` : ''}`, response.status)
         }
+        if (signal?.aborted) throw new TransportCancelledError()
         return { status: response.status, data: response.data as T }
       } catch (error) {
         if (error instanceof TransportError) throw error
+        if (signal?.aborted) throw new TransportCancelledError()
         if (isTimeoutError(error)) throw new TransportError('连接超时，请检查 API URL')
         throw new TransportError('无法连接接口，请检查网络与 API URL')
       }
     }
 
     const controller = new AbortController()
+    const abortFromCaller = () => controller.abort()
+    if (signal) {
+      if (signal.aborted) controller.abort()
+      else signal.addEventListener('abort', abortFromCaller)
+    }
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
 
     try {
@@ -173,11 +189,13 @@ export class BrowserFetchTransport implements HttpTransport {
       }
     } catch (error) {
       if (error instanceof TransportError) throw error
+      if (signal?.aborted) throw new TransportCancelledError()
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw new TransportError('连接超时，请检查 API URL')
       }
       throw new TransportError('无法连接接口；Web 预览也可能受到 CORS 限制')
     } finally {
+      if (signal) signal.removeEventListener('abort', abortFromCaller)
       window.clearTimeout(timeout)
     }
   }
@@ -250,6 +268,11 @@ export class BrowserFetchTransport implements HttpTransport {
     }
 
     const controller = new AbortController()
+    const abortFromCaller = () => controller.abort()
+    if (request.signal) {
+      if (request.signal.aborted) controller.abort()
+      else request.signal.addEventListener('abort', abortFromCaller)
+    }
     const timeout = window.setTimeout(() => controller.abort(), request.timeoutMs ?? 120_000)
 
     try {
@@ -306,6 +329,7 @@ export class BrowserFetchTransport implements HttpTransport {
       return collected
     } catch (error) {
       if (error instanceof TransportError) throw error
+      if (request.signal?.aborted) throw new TransportCancelledError('生成已取消')
       if (isTimeoutError(error)) {
         throw new TransportError('连接超时，请检查 API URL')
       }
@@ -314,6 +338,7 @@ export class BrowserFetchTransport implements HttpTransport {
       }
       throw new TransportError('无法连接接口；Web 预览也可能受到 CORS 限制')
     } finally {
+      if (request.signal) request.signal.removeEventListener('abort', abortFromCaller)
       window.clearTimeout(timeout)
     }
   }

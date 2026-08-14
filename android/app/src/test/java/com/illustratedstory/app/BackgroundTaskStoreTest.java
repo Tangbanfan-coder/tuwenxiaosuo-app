@@ -133,6 +133,93 @@ public class BackgroundTaskStoreTest {
         assertEquals(60047, result.getInt("durationMs"));
     }
 
+    @Test public void cancellationIsTerminalAndSurvivesRestartReclassification() throws Exception {
+        BackgroundTaskStore store = new BackgroundTaskStore(directory);
+        JSONObject prepared = store.create(new JSONObject().put("kind", "text"));
+        store.transition(prepared.getString("id"), BackgroundTaskStore.CANCELLED, "任务已取消");
+        JSONObject running = store.create(new JSONObject().put("kind", "text"));
+        store.transition(running.getString("id"), BackgroundTaskStore.RUNNING, null);
+        store.transition(running.getString("id"), BackgroundTaskStore.CANCELLED, "任务已取消");
+
+        store.markInFlightUnknown();
+
+        assertEquals(BackgroundTaskStore.CANCELLED, store.read(prepared.getString("id")).getString("state"));
+        assertEquals(BackgroundTaskStore.CANCELLED, store.read(running.getString("id")).getString("state"));
+    }
+
+    @Test public void cancelledTaskDoesNotPersistALateCompletedResponse() throws Exception {
+        BackgroundTaskStore store = new BackgroundTaskStore(directory);
+        JSONObject task = store.create(new JSONObject().put("kind", "text"));
+        store.transition(task.getString("id"), BackgroundTaskStore.RUNNING, null);
+        Files.write(store.responseFile(task.getString("id")).toPath(), "{\"choices\":[{\"message\":{\"content\":\"迟到正文\"}}]}".getBytes(StandardCharsets.UTF_8));
+        store.transition(task.getString("id"), BackgroundTaskStore.CANCELLED, "任务已取消");
+
+        store.markInFlightUnknown();
+
+        JSONObject read = store.read(task.getString("id"));
+        assertEquals(BackgroundTaskStore.CANCELLED, read.getString("state"));
+        assertFalse(read.has("responsePath"));
+    }
+
+    @Test public void completeIfRunningPersistsOnlyWhileRunning() throws Exception {
+        BackgroundTaskStore store = new BackgroundTaskStore(directory);
+        JSONObject running = store.create(new JSONObject().put("kind", "text"));
+        store.transition(running.getString("id"), BackgroundTaskStore.RUNNING, null);
+        assertTrue(store.completeIfRunning(running.getString("id"), completed -> completed.put("responsePath", "r.json")));
+        JSONObject read = store.read(running.getString("id"));
+        assertEquals(BackgroundTaskStore.COMPLETED, read.getString("state"));
+        assertEquals("r.json", read.getString("responsePath"));
+        assertFalse(read.has("error"));
+
+        JSONObject cancelled = store.create(new JSONObject().put("kind", "text"));
+        store.transition(cancelled.getString("id"), BackgroundTaskStore.CANCELLED, "任务已取消");
+        assertFalse(store.completeIfRunning(cancelled.getString("id"), completed -> completed.put("responsePath", "late.json")));
+        JSONObject late = store.read(cancelled.getString("id"));
+        assertEquals(BackgroundTaskStore.CANCELLED, late.getString("state"));
+        assertFalse(late.has("responsePath"));
+    }
+
+    @Test public void failUnlessCancelledPreservesCancellation() throws Exception {
+        BackgroundTaskStore store = new BackgroundTaskStore(directory);
+        JSONObject cancelled = store.create(new JSONObject().put("kind", "text"));
+        store.transition(cancelled.getString("id"), BackgroundTaskStore.CANCELLED, "任务已取消");
+        assertFalse(store.failUnlessCancelled(cancelled.getString("id"), "迟到错误"));
+        assertEquals(BackgroundTaskStore.CANCELLED, store.read(cancelled.getString("id")).getString("state"));
+
+        JSONObject running = store.create(new JSONObject().put("kind", "text"));
+        store.transition(running.getString("id"), BackgroundTaskStore.RUNNING, null);
+        assertTrue(store.failUnlessCancelled(running.getString("id"), "接口超时"));
+        JSONObject failed = store.read(running.getString("id"));
+        assertEquals(BackgroundTaskStore.FAILED, failed.getString("state"));
+        assertEquals("接口超时", failed.getString("error"));
+    }
+
+    @Test public void startRunningRefusesACancelledTask() throws Exception {
+        BackgroundTaskStore store = new BackgroundTaskStore(directory);
+        JSONObject task = store.create(new JSONObject().put("kind", "text"));
+        store.transition(task.getString("id"), BackgroundTaskStore.CANCELLED, "任务已取消");
+        assertFalse(store.startRunning(task.getString("id")));
+        assertEquals(BackgroundTaskStore.CANCELLED, store.read(task.getString("id")).getString("state"));
+    }
+
+    @Test public void cancelIfActiveNeverFlipsATerminalTask() throws Exception {
+        BackgroundTaskStore store = new BackgroundTaskStore(directory);
+        JSONObject completed = store.create(new JSONObject().put("kind", "image"));
+        store.transition(completed.getString("id"), BackgroundTaskStore.COMPLETED, null);
+        assertFalse(store.cancelIfActive(completed.getString("id"), "任务已取消"));
+        assertEquals(BackgroundTaskStore.COMPLETED, store.read(completed.getString("id")).getString("state"));
+    }
+
+    @Test public void guardedTransitionsAreSharedAcrossStoreInstances() throws Exception {
+        String id = new BackgroundTaskStore(directory).create(new JSONObject().put("kind", "text")).getString("id");
+        BackgroundTaskStore other = new BackgroundTaskStore(directory);
+        other.transition(id, BackgroundTaskStore.RUNNING, null);
+        other.cancelIfActive(id, "任务已取消");
+        // A different instance must observe the cancellation and refuse the late completion.
+        assertFalse(new BackgroundTaskStore(directory).completeIfRunning(id, completed -> completed.put("responsePath", "late.json")));
+        assertEquals(BackgroundTaskStore.CANCELLED, new BackgroundTaskStore(directory).read(id).getString("state"));
+    }
+
     private static void delete(File file) {
         File[] files = file.listFiles(); if (files != null) for (File child : files) delete(child);
         file.delete();

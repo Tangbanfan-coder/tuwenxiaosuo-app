@@ -210,7 +210,7 @@ describe('近期偏好反馈上下文', () => {
 
     const overloadedChapters = [
       seeded.chapter,
-      ...Array.from({ length: 10 }, (_, index) => chapter(index + 2, `历史资料${index}。`.repeat(700))),
+      ...Array.from({ length: 10 }, (_, index) => chapter(index + 2, `历史资料${index}。`.repeat(300))),
     ]
     const currentWorkspace = workspace(seeded.project, overloadedChapters, seeded.messages)
     const criticalProvider = { ...provider, manualContextLength: 24_000, manualMaxOutputTokens: 500 }

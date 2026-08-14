@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const native = vi.hoisted(() => ({ native: false, platform: 'android' }))
-const plugin = vi.hoisted(() => ({ enqueue: vi.fn(), list: vi.fn(), readResult: vi.fn(), acknowledge: vi.fn() }))
+const plugin = vi.hoisted(() => ({ enqueue: vi.fn(), list: vi.fn(), readResult: vi.fn(), acknowledge: vi.fn(), cancel: vi.fn() }))
 const secrets = vi.hoisted(() => ({ get: vi.fn() }))
 
 vi.mock('@capacitor/core', () => ({
@@ -12,6 +12,7 @@ vi.mock('./secretStore', () => ({ secretStore: secrets }))
 
 import {
   acknowledgeBackgroundGenerationTask,
+  cancelBackgroundGenerationTask,
   enqueueBackgroundTextTask,
   listBackgroundGenerationTasks,
   readBackgroundGenerationTask,
@@ -52,5 +53,21 @@ describe('background generation bridge', () => {
     await acknowledgeBackgroundGenerationTask('task-2')
     expect(plugin.acknowledge).toHaveBeenCalledTimes(1)
     await expect(readBackgroundGenerationTask('task-2')).resolves.toBeUndefined()
+  })
+
+  it('forwards cancellation only on Android', async () => {
+    native.native = true
+    await cancelBackgroundGenerationTask('task-1')
+    expect(plugin.cancel).toHaveBeenCalledWith({ id: 'task-1' })
+    native.native = false
+    await cancelBackgroundGenerationTask('task-2')
+    expect(plugin.cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('observes a cancelled task as cancelled without creating another request', async () => {
+    native.native = true
+    plugin.readResult.mockResolvedValueOnce({ id: 'cancelled', kind: 'text', state: 'cancelled' })
+    await expect(waitForBackgroundGenerationTask('cancelled', 0)).resolves.toMatchObject({ state: 'cancelled' })
+    expect(plugin.enqueue).not.toHaveBeenCalled()
   })
 })

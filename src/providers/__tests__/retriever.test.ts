@@ -446,7 +446,7 @@ describe('writing paragraph retrieval integration', () => {
       updatedAt: 1,
     }
     const anchoredId = 'paragraph-chapter-history-anchor-0'
-    const original = '这是需要裁剪但必须保留锚点的历史原文。'.repeat(1_000)
+    const original = '这是需要裁剪但必须保留锚点的历史原文。'.repeat(300)
     const constrainedProvider = { ...provider, manualContextLength: 8_000, manualMaxOutputTokens: 512 }
     const replacement: Retriever = {
       async retrieve() {

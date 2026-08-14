@@ -15,6 +15,7 @@ import {
   setWritingTurnBackgroundTask,
   completeWritingTurn,
   failWritingTurn,
+  cancelWritingTurn,
 } from '../data/storyDatabase'
 import type { ProjectWorkspace, StoryProject } from '../domain/models'
 import { recoverPersistedImageAsset } from '../providers/imageAssetStore'
@@ -76,8 +77,9 @@ async function recoverBackgroundGenerationTasks() {
     const notice = await getWritingNotice(metadata.noticeId)
     if (!notice) continue
     // A committed database result is already exactly-once consumed, even if
-    // the acknowledgement after it was interrupted.
-    if (notice.status === 'ready' || notice.status === 'failed') {
+    // the acknowledgement after it was interrupted. A cancelled notice is also
+    // terminal: its native task was stopped locally and only needs cleanup.
+    if (notice.status === 'ready' || notice.status === 'failed' || notice.status === 'cancelled') {
       await acknowledgeBackgroundGenerationTask(task.id)
       continue
     }
@@ -107,6 +109,9 @@ async function recoverBackgroundGenerationTasks() {
       }
     } else if (task.state === 'failed') {
       await failWritingTurn(notice.id, task.error || '后台写作失败')
+      await acknowledgeBackgroundGenerationTask(task.id)
+    } else if (task.state === 'cancelled') {
+      await cancelWritingTurn(notice.id)
       await acknowledgeBackgroundGenerationTask(task.id)
     } else if (task.state === 'unknown') {
       unknown += 1

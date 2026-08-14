@@ -15,7 +15,7 @@ vi.mock('./secretStore', () => ({
   secretStore: { get: mocks.secretGet },
 }))
 
-import { BrowserFetchTransport } from './browserTransport'
+import { BrowserFetchTransport, TransportCancelledError } from './browserTransport'
 
 describe('BrowserFetchTransport', () => {
   beforeEach(() => {
@@ -235,5 +235,48 @@ describe('BrowserFetchTransport', () => {
     expect(onDelta.mock.calls).toEqual([['第一段'], ['第二段']])
     expect(fetchSpy).toHaveBeenCalledOnce()
     expect(mocks.nativeRequest).not.toHaveBeenCalled()
+  })
+
+  it('classifies an external abort as a caller cancellation', async () => {
+    mocks.native = false
+    const controller = new AbortController()
+    const fetchSpy = vi.fn().mockImplementation((_url: string, options: RequestInit) => new Promise((_resolve, reject) => {
+      const rejectAbort = () => reject(new DOMException('Aborted', 'AbortError'))
+      if (options.signal?.aborted) { rejectAbort(); return }
+      options.signal?.addEventListener('abort', rejectAbort)
+    }))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const promise = new BrowserFetchTransport().stream({
+      url: 'https://api.test/v1/chat/completions',
+      method: 'POST',
+      body: '{}',
+      signal: controller.signal,
+    }, () => undefined)
+
+    controller.abort()
+    await expect(promise).rejects.toThrow(TransportCancelledError)
+  })
+
+  it('classifies an AbortError without an external signal as a timeout', async () => {
+    mocks.native = false
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('The operation was aborted', 'AbortError')))
+
+    await expect(new BrowserFetchTransport().stream({
+      url: 'https://api.test/v1/chat/completions',
+      method: 'POST',
+      body: '{}',
+    }, () => undefined)).rejects.toThrow('连接超时')
+  })
+
+  it('classifies a plain network rejection as a connection failure', async () => {
+    mocks.native = false
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+
+    await expect(new BrowserFetchTransport().stream({
+      url: 'https://api.test/v1/chat/completions',
+      method: 'POST',
+      body: '{}',
+    }, () => undefined)).rejects.toThrow('无法连接接口')
   })
 })
