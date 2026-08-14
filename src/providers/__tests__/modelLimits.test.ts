@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { heuristicModelContextTokens, isModelKnown, lookupModelLimit, MODEL_LIMIT_URLS, withModelMetadata } from '../modelLimits'
+import { heuristicModelContextTokens, isModelKnown, lookupModelLimit, MODEL_LIMIT_URLS, resolveModelWindow, withModelMetadata } from '../modelLimits'
 import type { ProviderConfig } from '../types'
 
 describe('模型窗口匹配', () => {
@@ -71,5 +71,34 @@ describe('切换模型时的元数据隔离', () => {
     const next = withModelMetadata(current, { id: 'claude-3-7-sonnet', contextLength: 200_000, maxOutputTokens: 32_000 })
     expect(next.contextLength).toBe(200_000)
     expect(next.maxOutputTokens).toBe(32_000)
+  })
+})
+
+describe('模型窗口来源区分', () => {
+  it('手动配置优先于一切自动来源', () => {
+    const result = resolveModelWindow({ manualContextLength: 100_000, contextLength: 1_000_000, model: 'gpt-4o' })
+    expect(result).toEqual({ tokens: 100_000, source: 'manual' })
+  })
+
+  it('供应商元数据（/models 列表）优先于模型表', () => {
+    const result = resolveModelWindow({ contextLength: 1_000_000, model: 'gpt-4o' })
+    expect(result).toEqual({ tokens: 1_000_000, source: 'provider-metadata' })
+  })
+
+  it('模型表命中标记为 model-table', () => {
+    const limit = lookupModelLimit('gpt-4o')
+    expect(limit).toBeDefined()
+    const result = resolveModelWindow({ model: 'gpt-4o' })
+    expect(result).toEqual({ tokens: limit!.context, source: 'model-table' })
+  })
+
+  it('名称启发式命中（不在模型表）标记为 heuristic', () => {
+    const result = resolveModelWindow({ model: 'grok-5' })
+    expect(result).toEqual({ tokens: 256_000, source: 'heuristic' })
+  })
+
+  it('完全未知模型落入 unknown-default 32K 兜底', () => {
+    const result = resolveModelWindow({ model: 'totally-unknown-model-xyz' })
+    expect(result).toEqual({ tokens: 32_000, source: 'unknown-default' })
   })
 })

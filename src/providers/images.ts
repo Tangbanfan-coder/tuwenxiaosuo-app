@@ -3,6 +3,7 @@ import { resolveProjectIllustrationStyle } from '../domain/illustrationStyles'
 import { logImagePipeline } from './imagePipelineLog'
 import { generateNativeImageAsset } from './imageAssetStore'
 import { normalizeBaseUrl } from './openAiCompatible'
+import { resolveCapabilities } from './providerCapabilities'
 import type { GeneratedImageSource, HttpTransport, NativeImagePersistenceTarget, ProviderConfig, RequestAuth } from './types'
 
 interface ImageResponse {
@@ -101,6 +102,36 @@ function supportsB64ResponseFormat(model: string) {
   return /^dall-e-(?:2|3)$/i.test(model.trim())
 }
 
+export type ImageOrientation = 'portrait' | 'landscape'
+
+function aspectOf(size: string): ImageOrientation | 'square' {
+  const match = /^(\d+)x(\d+)$/.exec(size.trim())
+  if (!match) return 'square'
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (width > height) return 'landscape'
+  if (width < height) return 'portrait'
+  return 'square'
+}
+
+/**
+ * Resolves the generation size from provider capabilities instead of call-site
+ * hard-coding. Manual portraitSize/sceneSize win; otherwise the supported
+ * imageSizes list is used when the default is not among them; absent config
+ * keeps the legacy defaults. Never silently substitutes an incompatible size.
+ */
+export function resolveImageSize(config: ProviderConfig, orientation: ImageOrientation, fallback: string): string {
+  const caps = resolveCapabilities(config)
+  const preferred = orientation === 'portrait' ? caps.portraitSize : caps.sceneSize
+  const desired = (preferred ?? fallback).trim()
+  const supported = caps.imageSizes?.map((size) => size.trim()).filter(Boolean) ?? []
+  if (!supported.length) return desired
+  if (supported.includes(desired)) return desired
+  const compatible = supported.find((size) => aspectOf(size) === orientation)
+  if (compatible) return compatible
+  throw new Error(`图片供应商不支持${orientation === 'portrait' ? '竖版' : '横版'}尺寸；可用尺寸：${supported.join('、')}`)
+}
+
 export async function generateOpenAiImage(
   config: ProviderConfig,
   prompt: string,
@@ -119,7 +150,7 @@ export async function generateOpenAiImage(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     auth: { kind: 'bearer', secretRef: config.secretRef },
-    timeoutMs: 180_000,
+    timeoutMs: 300_000,
     body: JSON.stringify({
       model: config.model,
       prompt,
@@ -159,6 +190,18 @@ export async function editOpenAiImage(
   const baseUrl = assertImageConfig(config)
   if (!referenceSources.length) return generateOpenAiImage(config, prompt, transport, size, onStageChange, nativeTarget)
 
+  // Capability gates run before any network request (native or Web) so a
+  // billed request is never sent for an unsupported feature.
+  const caps = resolveCapabilities(config)
+  if (caps.imageEdits === 'unsupported') {
+    throw new Error('当前图片供应商不支持参考图编辑（/images/edits）。请在图片模型设置的“兼容能力”中启用参考图编辑，或改用支持参考图的服务。')
+  }
+  if (caps.maxReferenceImages !== undefined && referenceSources.length > caps.maxReferenceImages) {
+    throw new Error(
+      `参考图数量超出该图片供应商限制：当前 ${referenceSources.length} 张，上限 ${caps.maxReferenceImages} 张。请减少参考图后重试。`,
+    )
+  }
+
   try {
     onStageChange?.('waiting')
     const nativeImage = await generateNativelyWhenTargeted(baseUrl, config, prompt, size, nativeTarget, referenceSources)
@@ -177,7 +220,7 @@ export async function editOpenAiImage(
       url: `${baseUrl}/images/edits`,
       method: 'POST',
       auth: { kind: 'bearer', secretRef: config.secretRef },
-      timeoutMs: 180_000,
+      timeoutMs: 300_000,
       body: form,
     })
     logImagePipeline('info', {
@@ -191,10 +234,22 @@ export async function editOpenAiImage(
     return imageSource(response.data, baseUrl, config, transport, onStageChange)
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(
-      `参考图生图失败：该功能依赖 OpenAI 兼容的 /images/edits multipart 接口，中转服务可能不支持。原始错误：${detail}`,
-      { cause: error },
-    )
+    const status = error && typeof error === 'object'
+      ? Number((error as { status?: unknown }).status ?? (error as { data?: { status?: unknown } }).data?.status)
+      : undefined
+    // Only endpoint-level rejection (404/405/501) is evidence that the
+    // upstream lacks /images/edits. Timeout, network and other provider
+    // failures are not multipart compatibility issues and must not be
+    // misattributed to it.
+    const unsupportedEndpoint = status === 404 || status === 405 || status === 501
+      || (typeof detail === 'string' && /HTTP\s+(?:40[45]|501)\b/i.test(detail))
+    if (unsupportedEndpoint) {
+      throw new Error(
+        `参考图生图失败：该功能依赖 OpenAI 兼容的 /images/edits multipart 接口，中转服务可能不支持。原始错误：${detail}`,
+        { cause: error },
+      )
+    }
+    throw new Error(`参考图生图失败：${detail}`, { cause: error })
   }
 }
 

@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BookPlus,
   BookOpen,
@@ -74,7 +74,7 @@ import { logImagePipeline } from './providers/imagePipelineLog'
 import { buildIllustrationPrompt } from './providers/illustrationPrompt'
 import { useAppBootstrap } from './hooks/useAppBootstrap'
 import ConfirmDialog from './components/ConfirmDialog'
-import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage } from './providers/images'
+import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage, resolveImageSize } from './providers/images'
 import { analyzeReferenceImage } from './providers/referenceAnalysis'
 import { secretStore } from './providers/secretStore'
 import { BackgroundTaskUncertainError, acknowledgeBackgroundGenerationTask, enqueueBackgroundTextTask, supportsBackgroundGeneration, waitForBackgroundGenerationTask } from './providers/backgroundGeneration'
@@ -549,8 +549,8 @@ export default function App() {
       const currentReference = resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri)
       const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: character.id, target: 'portrait' as const }
       const imageUrl = feedback && currentReference
-        ? await editOpenAiImage(providerSettings.image, prompt, [currentReference], browserTransport, '1024x1536', undefined, nativeTarget)
-        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1024x1536', undefined, nativeTarget)
+        ? await editOpenAiImage(providerSettings.image, prompt, [currentReference], browserTransport, resolveImageSize(providerSettings.image, 'portrait', '1024x1536'), undefined, nativeTarget)
+        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, resolveImageSize(providerSettings.image, 'portrait', '1024x1536'), undefined, nativeTarget)
       const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, character.id)
       await setCharacterPortraitReady(character.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)
@@ -681,8 +681,8 @@ export default function App() {
         setIllustrationGenerationStages((current) => ({ ...current, [illustration.id]: stage }))
       }
       const imageUrl = referenceSources.length
-        ? await editOpenAiImage(providerSettings.image, prompt, referenceSources, browserTransport, '1536x1024', setStage, nativeTarget)
-        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, '1536x1024', setStage, nativeTarget)
+        ? await editOpenAiImage(providerSettings.image, prompt, referenceSources, browserTransport, resolveImageSize(providerSettings.image, 'landscape', '1536x1024'), setStage, nativeTarget)
+        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, resolveImageSize(providerSettings.image, 'landscape', '1536x1024'), setStage, nativeTarget)
       const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, illustration.id, 'generated', setStage)
       await setIllustrationReady(illustration.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)

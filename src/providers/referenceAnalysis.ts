@@ -1,5 +1,7 @@
 import type { NarrativePronoun } from '../domain/models'
 import { normalizeBaseUrl } from './openAiCompatible'
+import { resolveCapabilities } from './providerCapabilities'
+import { buildChatCompletionPayload, extractTextResponse } from './chatCompatibility'
 import type { HttpTransport, ProviderConfig } from './types'
 
 export interface ReferenceAppearanceAnalysis {
@@ -10,19 +12,9 @@ export interface ReferenceAppearanceAnalysis {
   wardrobe: string
 }
 
-interface ChatResponse {
-  choices?: Array<{ message?: { content?: unknown } }>
-}
-
 const ANALYSIS_PROMPT = `分析这张角色参考图，仅输出严格 JSON：
 {"narrative_pronoun":"she|he|ta|name","age_and_build":"","fixed_traits":[""],"default_look":"","wardrobe":""}
 只描述清晰可见的外貌、发型、服装和非敏感视觉特征。不得猜测姓名、族裔、健康状况、职业、身份、性别认同或图片中不可见的事实。narrative_pronoun 只能在画面明确时建议 she/he；不明确时用 ta。所有值用中文。`
-
-function contentToString(content: unknown) {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) return content.map((part) => typeof part === 'object' && part && 'text' in part && typeof part.text === 'string' ? part.text : '').join('')
-  return ''
-}
 
 function text(value: unknown) {
   return typeof value === 'string' ? value.trim() : ''
@@ -78,22 +70,30 @@ export async function analyzeReferenceImage(
 ): Promise<ReferenceAppearanceAnalysis> {
   const baseUrl = normalizeBaseUrl(config.baseUrl)
   if (!baseUrl || !config.model.trim()) throw new Error('请先配置可识图的文本模型')
+  // Vision capability gate: reject before any network request, not after billing.
+  if (resolveCapabilities(config).visionInput === 'unsupported') {
+    throw new Error('当前文本模型不支持视觉输入（识图）。请在文本模型设置的“兼容能力”中启用视觉输入，或改用支持识图的模型。')
+  }
   const dataUrl = await referenceSourceToDataUrl(source)
-  const response = await transport.request<ChatResponse>({
+  const response = await transport.request<unknown>({
     url: `${baseUrl}/chat/completions`,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     auth: { kind: 'bearer', secretRef: config.secretRef },
     timeoutMs: 120_000,
-    body: JSON.stringify({
+    body: JSON.stringify(buildChatCompletionPayload(config, {
       model: config.model,
+      // Auxiliary task: hard non-streaming, never overridden by a stream preset.
+      stream: false,
+      forceNonStream: true,
+      reasoningEffort: config.reasoningEffort,
       messages: [{ role: 'user', content: [
         { type: 'text', text: ANALYSIS_PROMPT },
         { type: 'image_url', image_url: { url: dataUrl } },
       ] }],
-    }),
+    })),
   })
-  const content = contentToString(response.data.choices?.[0]?.message?.content)
-  if (!content) throw new Error('文本模型没有返回外貌识别结果')
+  const content = extractTextResponse(response.data)
+  if (!content.trim()) throw new Error('文本模型没有返回外貌识别结果')
   return parseReferenceAppearanceAnalysis(content)
 }

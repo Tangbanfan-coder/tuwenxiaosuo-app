@@ -208,7 +208,7 @@ describe('BrowserFetchTransport', () => {
       method: 'POST',
       body: '{}',
       androidTransport: 'webview-stream',
-    }, vi.fn())).rejects.toThrow('关闭“流式输出”后手动重试；本次没有自动重发')
+    }, vi.fn())).rejects.toThrow('关闭“流式输出”后手动重试。本次没有自动重发')
 
     expect(fetchSpy).toHaveBeenCalledOnce()
     expect(mocks.nativeRequest).not.toHaveBeenCalled()

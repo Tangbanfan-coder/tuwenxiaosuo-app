@@ -8,6 +8,8 @@ import {
 import { resolveTokenEstimator } from '../tokenEstimator'
 import type { HttpTransport, ProviderConfig } from '../types'
 import { normalizeBaseUrl } from '../openAiCompatible'
+import { resolveCapabilities } from '../providerCapabilities'
+import { buildChatCompletionPayload, extractTextResponse, resolveTextTransport } from '../chatCompatibility'
 import { BigramBm25Retriever, type Retriever } from '../retriever'
 import {
   assertContextCapacity,
@@ -16,7 +18,6 @@ import {
   contextPlanForRequest,
   contextPressureRatioForDemand,
   estimatedTokenCount,
-  outputTokenParameter,
   type ContextBudgetPlan,
 } from './budget'
 import {
@@ -26,18 +27,9 @@ import {
   buildUntrimmedProjectContextForDemand,
   resolveRecentFeedbackContextSources,
 } from './context'
-import { contentToString } from './instructions'
 import { SYSTEM_PROMPT } from './prompt'
 import { parseWritingResult } from './result'
 import { retrieveStyleExamples } from './styleCorpus'
-
-interface ChatCompletionResponse {
-  choices?: Array<{
-    message?: {
-      content?: unknown
-    }
-  }>
-}
 
 const defaultParagraphRetriever = new BigramBm25Retriever()
 
@@ -70,7 +62,7 @@ async function prepareWritingTurnContext(
   options: GenerateWritingTurnOptions,
 ): Promise<PreparedWritingTurnContext> {
   const contextBudget = workspace.project.contextBudget ?? 'standard'
-  const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model })
+  const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model, tokenizerStrategy: resolveCapabilities(config).tokenizerStrategy })
   const initialPlan = contextPlanForRequest(config, contextBudget, userRequest, estimator)
 
   const [scenes, paragraphs, recentFeedback, projectParagraphs, styleExamples] = await Promise.all([
@@ -171,21 +163,30 @@ export async function generateWritingTurn(
     throw new Error('局部创作设定超过核心预算，本轮已阻止生成。请在“局部创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
   }
   if (prepared.finalPlan.isOverLimit) {
-    throw new Error('最终请求的输入仍超过模型上下文窗口（真实 token 硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
+    throw new Error('最终请求的输入仍超过模型上下文窗口（本地估算 token 校验未通过，估算可能与模型真实分词存在偏差），请缩短本条输入或改用更大窗口的模型。')
   }
   options.onStyleFragmentsSelected?.(prepared.styleFragmentIds)
 
-  const body = JSON.stringify({
+  // One decision drives both the body stream field and the actual transport
+  // method, so a stream body is always consumed by a stream() transport and a
+  // non-stream body by request() — never mismatched.
+  const transportDecision = resolveTextTransport(config, {
+    transportMethod: onDelta ? 'stream' : 'request',
+    androidTransport: config.androidStreamingEnabled ? 'webview-stream' : 'native',
+  })
+  const stream = transportDecision.transportMethod === 'stream'
+  const configuredOutput = config.manualMaxOutputTokens ?? config.maxOutputTokens
+  const body = JSON.stringify(buildChatCompletionPayload(config, {
     model: config.model,
-    stream: true,
-    ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
-    ...outputTokenParameter(config, prepared.initialPlan.outputReserveTokens),
+    stream,
+    reasoningEffort: config.reasoningEffort,
+    maxOutputTokens: configuredOutput ? prepared.initialPlan.outputReserveTokens : undefined,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'system', content: prepared.contextMessage },
       { role: 'user', content: userRequest },
     ],
-  })
+  }))
 
   const request = {
     url: `${baseUrl}/chat/completions`,
@@ -194,15 +195,15 @@ export async function generateWritingTurn(
     auth: { kind: 'bearer' as const, secretRef: config.secretRef },
     timeoutMs: 120_000,
     body,
-    androidTransport: config.androidStreamingEnabled ? 'webview-stream' as const : 'native' as const,
+    androidTransport: transportDecision.androidTransport,
   }
 
   let content: string
-  if (onDelta) {
+  if (stream) {
     content = await transport.stream(request, onDelta)
   } else {
-    const response = await transport.request<ChatCompletionResponse>(request)
-    content = contentToString(response.data.choices?.[0]?.message?.content)
+    const response = await transport.request<unknown>(request)
+    content = extractTextResponse(response.data)
   }
 
   if (!content.trim()) throw new Error('文本模型没有返回内容')
@@ -223,28 +224,33 @@ export async function prepareBackgroundWritingRequest(
   options.onContextPlan?.(prepared.finalPlan)
   assertContextCapacity(prepared.finalPlan)
   if (prepared.rulesTruncated) throw new Error('局部创作设定超过核心预算，本轮已阻止生成。请在“局部创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
-  if (prepared.finalPlan.isOverLimit) throw new Error('最终请求的输入仍超过模型上下文窗口（真实 token 硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
+  if (prepared.finalPlan.isOverLimit) throw new Error('最终请求的输入仍超过模型上下文窗口（本地估算 token 校验未通过，估算可能与模型真实分词存在偏差），请缩短本条输入或改用更大窗口的模型。')
   options.onStyleFragmentsSelected?.(prepared.styleFragmentIds)
+  const configuredOutput = config.manualMaxOutputTokens ?? config.maxOutputTokens
   return {
     endpoint: `${baseUrl}/chat/completions`,
-    body: JSON.stringify({
+    body: JSON.stringify(buildChatCompletionPayload(config, {
       model: config.model,
+      // Android background must stay non-streaming even when the provider's
+      // stream capability is enabled; the foreground service sends this body
+      // over a native non-streaming request.
       stream: false,
-      ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
-      ...outputTokenParameter(config, prepared.initialPlan.outputReserveTokens),
+      forceNonStream: true,
+      reasoningEffort: config.reasoningEffort,
+      maxOutputTokens: configuredOutput ? prepared.initialPlan.outputReserveTokens : undefined,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'system', content: prepared.contextMessage },
         { role: 'user', content: userRequest },
       ],
-    }),
+    })),
   }
 }
 
 export function parseBackgroundWritingResponse(rawResponse: string) {
-  let response: ChatCompletionResponse
-  try { response = JSON.parse(rawResponse) as ChatCompletionResponse } catch { throw new Error('文本模型返回格式无效') }
-  const content = contentToString(response.choices?.[0]?.message?.content)
+  let response: unknown
+  try { response = JSON.parse(rawResponse) } catch { throw new Error('文本模型返回格式无效') }
+  const content = extractTextResponse(response)
   if (!content.trim()) throw new Error('文本模型没有返回内容')
   return parseWritingResult(content)
 }

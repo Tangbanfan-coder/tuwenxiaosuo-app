@@ -10,7 +10,7 @@ export interface TokenEstimator {
   estimate(text: string): number
 }
 
-export type TokenEstimatorSource = 'o200k_base' | 'chars-per-token' | 'custom'
+export type TokenEstimatorSource = 'o200k_base' | 'chars-per-token' | 'conservative' | 'custom'
 
 export interface TokenEstimatorMetadata {
   source: TokenEstimatorSource
@@ -30,6 +30,8 @@ export interface TokenEstimatorContext {
   protocol?: string
   providerId?: string
   model?: string
+  /** Provider capability: 'conservative' over-estimates, 'o200k_base' forces o200k. */
+  tokenizerStrategy?: 'auto' | 'o200k_base' | 'conservative'
 }
 
 export type TokenEstimatorFactory = (context: TokenEstimatorContext) => ResolvedTokenEstimator
@@ -71,6 +73,27 @@ export function createFallbackTokenEstimator(): ResolvedTokenEstimator {
     estimator: { estimate: fallbackTokenCount },
     source: 'chars-per-token',
     isFallback: true,
+  }
+}
+
+/**
+ * Conservative char-based upper bound, used when a provider declares
+ * tokenizerStrategy 'conservative' (e.g. strict relays whose real tokenizer
+ * is unknown). Source of the coefficient: for Chinese text o200k_base
+ * typically measures 0.6-1.2 tokens per character; 1.5 tokens/char is a
+ * deliberate, testable upper bound that leaves margin instead of guessing.
+ */
+export const CONSERVATIVE_TOKENS_PER_CHAR = 1.5
+
+export function createConservativeTokenEstimator(): ResolvedTokenEstimator {
+  return {
+    estimator: {
+      estimate(text: string) {
+        return text ? Math.ceil(text.length * CONSERVATIVE_TOKENS_PER_CHAR) : 0
+      },
+    },
+    source: 'conservative',
+    isFallback: false,
   }
 }
 
@@ -137,6 +160,7 @@ export function resolveTokenEstimator(context: TokenEstimatorContext = {}): Reso
       return createFallbackTokenEstimator()
     }
   }
+  if (context.tokenizerStrategy === 'conservative') return createConservativeTokenEstimator()
   if (context.protocol === 'openai-compatible') return createOpenAiCompatibleTokenEstimator()
   return createFallbackTokenEstimator()
 }

@@ -1,11 +1,8 @@
 import type { ProseStyleIssue, RewriteStrength } from '../../domain/models'
 import { normalizeBaseUrl } from '../openAiCompatible'
 import type { HttpTransport, ProviderConfig } from '../types'
-import { outputTokenParameter } from './budget'
-import { contentToString } from './instructions'
+import { buildChatCompletionPayload, extractTextResponse } from '../chatCompatibility'
 import { extractJson } from './result'
-
-interface ChatCompletionResponse { choices?: Array<{ message?: { content?: unknown } }> }
 
 export interface RewriteParagraphRequest {
   originalText: string
@@ -40,17 +37,22 @@ export async function rewriteProseParagraph(request: RewriteParagraphRequest, co
     style_constraints: request.styleConstraints,
     untrusted_style_examples: request.styleExamples?.slice(0, 3),
   }
-  const response = await transport.request<ChatCompletionResponse>({
+  const response = await transport.request<unknown>({
     url: `${baseUrl}/chat/completions`, method: 'POST', headers: { 'Content-Type': 'application/json' },
     auth: { kind: 'bearer', secretRef: config.secretRef }, timeoutMs: 120_000,
-    body: JSON.stringify({
-      model: config.model, stream: false,
-      ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
-      ...outputTokenParameter(config, Math.min(1600, config.maxOutputTokens ?? 1600)),
+    body: JSON.stringify(buildChatCompletionPayload(config, {
+      model: config.model,
+      // Auxiliary task: hard non-streaming, never overridden by a stream preset.
+      stream: false,
+      forceNonStream: true,
+      reasoningEffort: config.reasoningEffort,
+      maxOutputTokens: (config.manualMaxOutputTokens ?? config.maxOutputTokens)
+        ? Math.min(1600, config.maxOutputTokens ?? 1600)
+        : undefined,
       messages: [{ role: 'system', content: REWRITE_PROMPT }, { role: 'user', content: JSON.stringify(userPayload) }],
-    }),
+    })),
   })
-  const content = contentToString(response.data.choices?.[0]?.message?.content)
+  const content = extractTextResponse(response.data)
   if (!content.trim()) throw new Error('模型没有返回建议稿')
   return parseRewrittenParagraph(content)
 }

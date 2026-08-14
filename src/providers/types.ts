@@ -2,6 +2,42 @@ export type ProviderSlot = 'text' | 'image'
 export type SecretRef = string
 export type ReasoningEffort = 'auto' | 'low' | 'medium' | 'high'
 
+/**
+ * Provider capability model. Each field is optional: an absent field keeps
+ * the legacy "auto" behavior (infer from the request context / model id).
+ * Only the unified capability resolution in providerCapabilities.ts reads
+ * these values; request call sites must never re-implement the decision.
+ */
+export type ReasoningEffortParameter = 'auto' | 'supported' | 'unsupported'
+export type OutputTokenParameter = 'auto' | 'max_tokens' | 'max_completion_tokens' | 'none'
+export type TextTransport = 'auto' | 'stream' | 'non-stream'
+export type VisionInput = 'auto' | 'supported' | 'unsupported'
+export type ImageEdits = 'auto' | 'supported' | 'unsupported'
+export type TokenizerStrategy = 'auto' | 'o200k_base' | 'conservative'
+
+export interface ProviderCapabilities {
+  /** Whether reasoning_effort is accepted. 'unsupported' never sends it. */
+  reasoningEffortParameter?: ReasoningEffortParameter
+  /** Which output-token parameter name to send. 'auto' infers from the model id. */
+  outputTokenParameter?: OutputTokenParameter
+  /** Preferred chat transport. 'auto' lets the call site decide (Web streams, Android background does not). */
+  textTransport?: TextTransport
+  /** Whether the text model accepts image_url vision input. */
+  visionInput?: VisionInput
+  /** Whether /images/edits multipart editing is supported. */
+  imageEdits?: ImageEdits
+  /** Maximum number of reference images accepted by the image provider. */
+  maxReferenceImages?: number
+  /** Sizes the image provider accepts, e.g. ['1024x1024', '1024x1536']. */
+  imageSizes?: string[]
+  /** Preferred portrait (character) generation size. */
+  portraitSize?: string
+  /** Preferred scene (illustration) generation size. */
+  sceneSize?: string
+  /** Token estimation strategy. 'conservative' over-estimates deliberately. */
+  tokenizerStrategy?: TokenizerStrategy
+}
+
 export type RequestAuth = { kind: 'bearer'; secretRef: SecretRef }
 
 export interface ProviderConfig {
@@ -17,6 +53,8 @@ export interface ProviderConfig {
   manualMaxOutputTokens?: number
   androidStreamingEnabled?: boolean
   reasoningEffort?: ReasoningEffort
+  /** Provider capability model; absent keeps legacy auto-inference behavior. */
+  capabilities?: ProviderCapabilities
 }
 
 export interface ProviderSettings {
@@ -73,7 +111,7 @@ export interface NativeImagePersistenceTarget {
 
 export interface HttpTransport {
   request<T>(request: TransportRequest): Promise<TransportResponse<T>>
-  stream(request: TransportRequest, onDelta: (delta: string) => void): Promise<string>
+  stream(request: TransportRequest, onDelta?: (delta: string) => void): Promise<string>
   /** Resolves an image URL to a usable source without exposing credentials to callers. */
   resolveImageSource?(request: ImageDownloadRequest): Promise<string>
 }

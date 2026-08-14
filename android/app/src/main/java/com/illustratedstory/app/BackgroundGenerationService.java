@@ -224,5 +224,14 @@ public final class BackgroundGenerationService extends Service {
             return "{\"phase\":\"background-generation-persist-complete\"}";
         }
     }
-    private static String safeError(Exception error, String token) { String message = error.getMessage(); return message == null || message.trim().isEmpty() ? "后台生成失败" : sanitize(message, token); }
+    private static String safeError(Exception error, String token) {
+        String message = error.getMessage();
+        if (message == null || message.trim().isEmpty()) return "后台生成失败";
+        String sanitized = sanitize(message, token);
+        String normalized = sanitized.toLowerCase();
+        if (normalized.contains("timeout") || normalized.contains("timed out")) {
+            return "请求超时：上游服务未在限定时间内返回结果";
+        }
+        return sanitized;
+    }
 }

@@ -1,6 +1,10 @@
 import 'fake-indexeddb/auto'
 import { describe, expect, it, vi } from 'vitest'
 import { generateWritingTurn, prepareBackgroundWritingRequest, previewWritingTurnBudget } from '../writing'
+import { structureWritingInstructions } from '../writing/instructions'
+import { rewriteProseParagraph } from '../writing/rewrite'
+import { suggestStyleCorpusLabels } from '../writing/styleCorpus'
+import { analyzeReferenceImage } from '../referenceAnalysis'
 import { resolveTokenEstimator } from '../tokenEstimator'
 import type { HttpTransport, ProviderConfig, TransportRequest } from '../types'
 
@@ -65,6 +69,23 @@ function captureStreamRequest(onRequest: (request: TransportRequest) => void): H
     },
     async stream(request) {
       onRequest(request)
+      return VALID_RESULT
+    },
+  }
+}
+
+/** Records the body AND which transport method actually handled it, so tests can
+ *  assert the body stream field matches the real transport. */
+function captureTransportPair(onBody: (body: Record<string, unknown>) => void, onMethod: (method: 'stream' | 'request') => void): HttpTransport {
+  return {
+    async request<T>(request: TransportRequest) {
+      onMethod('request')
+      onBody(JSON.parse(String(request.body)) as Record<string, unknown>)
+      return { status: 200, data: { choices: [{ message: { content: VALID_RESULT } }] } as T }
+    },
+    async stream(request) {
+      onMethod('stream')
+      onBody(JSON.parse(String(request.body)) as Record<string, unknown>)
       return VALID_RESULT
     },
   }
@@ -215,5 +236,159 @@ describe('上下文预算', () => {
     await generateWritingTurn(emptyWorkspace(), '写一章', configured, captureRequestBody((value) => { body = value }))
     expect(body.max_completion_tokens).toBe(2_000)
     expect(body).not.toHaveProperty('max_tokens')
+  })
+
+  it('Android 后台写作请求保持非流式（stream:false），思考等级按用户选择透传', async () => {
+    const prepared = await prepareBackgroundWritingRequest(emptyWorkspace(), '写一章', { ...textProvider, reasoningEffort: 'high' as const })
+    const body = JSON.parse(prepared.body) as Record<string, unknown>
+    expect(body.stream).toBe(false)
+    expect(body.reasoning_effort).toBe('high')
+    expect(body.messages).toBeInstanceOf(Array)
+  })
+
+  it('严格中转预设下写作请求省略可选参数并保持非流式', async () => {
+    let body: Record<string, unknown> = {}
+    const strict = {
+      ...textProvider,
+      reasoningEffort: 'high' as const,
+      manualContextLength: 128_000,
+      manualMaxOutputTokens: 2_000,
+      capabilities: {
+        reasoningEffortParameter: 'unsupported' as const,
+        outputTokenParameter: 'none' as const,
+        textTransport: 'non-stream' as const,
+      },
+    }
+    await generateWritingTurn(emptyWorkspace(), '写一章', strict, captureRequestBody((value) => { body = value }))
+    expect(body.stream).toBe(false)
+    expect(body).not.toHaveProperty('reasoning_effort')
+    expect(body).not.toHaveProperty('max_tokens')
+    expect(body).not.toHaveProperty('max_completion_tokens')
+  })
+})
+
+describe('请求体模式与实际传输方法一致性', () => {
+  it('auto 能力 + 前台 onDelta：body stream:true 且由 stream() 传输', async () => {
+    let body: Record<string, unknown> = {}
+    const methods: string[] = []
+    await generateWritingTurn(emptyWorkspace(), '写一章', textProvider, captureTransportPair((value) => { body = value }, (method) => methods.push(method)), vi.fn())
+    expect(body.stream).toBe(true)
+    expect(methods).toEqual(['stream'])
+  })
+
+  it('auto 能力 + 前台无 onDelta：body stream:false 且由 request() 传输（不再错配）', async () => {
+    let body: Record<string, unknown> = {}
+    const methods: string[] = []
+    await generateWritingTurn(emptyWorkspace(), '写一章', textProvider, captureTransportPair((value) => { body = value }, (method) => methods.push(method)))
+    expect(body.stream).toBe(false)
+    expect(methods).toEqual(['request'])
+  })
+
+  it('严格中转（non-stream）即使前台有 onDelta 也走 request()，body stream:false', async () => {
+    let body: Record<string, unknown> = {}
+    const methods: string[] = []
+    const strict = { ...textProvider, capabilities: { textTransport: 'non-stream' as const } }
+    await generateWritingTurn(emptyWorkspace(), '写一章', strict, captureTransportPair((value) => { body = value }, (method) => methods.push(method)), vi.fn())
+    expect(body.stream).toBe(false)
+    expect(methods).toEqual(['request'])
+  })
+
+  it('OpenAI 官方（stream）即使前台无 onDelta 也走 stream()，body stream:true', async () => {
+    let capturedRequest: TransportRequest | undefined
+    const transport = {
+      async request<T>() {
+        return { status: 200, data: { choices: [{ message: { content: VALID_RESULT } }] } as T }
+      },
+      async stream(request: TransportRequest) {
+        capturedRequest = request
+        return VALID_RESULT
+      },
+    } as unknown as HttpTransport
+    const official = { ...textProvider, capabilities: { textTransport: 'stream' as const } }
+    await generateWritingTurn(emptyWorkspace(), '写一章', official, transport)
+    const body = JSON.parse(String(capturedRequest?.body)) as Record<string, unknown>
+    expect(body.stream).toBe(true)
+    expect(capturedRequest?.androidTransport).toBe('webview-stream')
+  })
+
+  it('OpenAI 官方（stream）预设下 Android 后台请求体仍强制 stream:false', async () => {
+    const official = { ...textProvider, capabilities: { textTransport: 'stream' as const } }
+    const prepared = await prepareBackgroundWritingRequest(emptyWorkspace(), '写一章', official)
+    const body = JSON.parse(prepared.body) as Record<string, unknown>
+    expect(body.stream).toBe(false)
+  })
+
+  it('自定义 stream 模式下后台请求体同样保持 stream:false', async () => {
+    const custom = { ...textProvider, capabilities: { textTransport: 'stream' as const, reasoningEffortParameter: 'supported' as const } }
+    const prepared = await prepareBackgroundWritingRequest(emptyWorkspace(), '写一章', custom)
+    const body = JSON.parse(prepared.body) as Record<string, unknown>
+    expect(body.stream).toBe(false)
+  })
+
+  it('非写作调用点（改写）在 stream 预设下仍保持非流式请求体', async () => {
+    let body: Record<string, unknown> = {}
+    const transport = {
+      async request<T>(request: TransportRequest) {
+        body = JSON.parse(String(request.body)) as Record<string, unknown>
+        return { status: 200, data: { choices: [{ message: { content: '{"rewritten_paragraph":"他推开窗，风灌了进来。"}' } }] } as T }
+      },
+      async stream() {
+        return VALID_RESULT
+      },
+    } as unknown as HttpTransport
+    const official = { ...textProvider, capabilities: { textTransport: 'stream' as const } }
+    await rewriteProseParagraph({
+      originalText: '他推开窗，风灌了进来。',
+      issues: [{ ruleId: 'rule-1', category: 'emotion-telling', severity: 'hint', explanation: '直接说出情绪', rewriteGoal: '改为动作或场景暗示' }],
+    }, official, transport)
+    expect(body.stream).toBe(false)
+  })
+
+  it('设定整理在 stream 预设下仍保持非流式请求体', async () => {
+    let body: Record<string, unknown> = {}
+    const transport = {
+      async request<T>(request: TransportRequest) {
+        body = JSON.parse(String(request.body)) as Record<string, unknown>
+        return { status: 200, data: { choices: [{ message: { content: '{"core_fragments":[],"sections":[{"title":"世界观","content":"雨城常年潮湿。","tags":["设定"],"priority":1}],"style_samples":[]}' } }] } as T }
+      },
+      async stream() {
+        return VALID_RESULT
+      },
+    } as unknown as HttpTransport
+    const official = { ...textProvider, capabilities: { textTransport: 'stream' as const } }
+    await structureWritingInstructions('雨城常年潮湿。', official, transport)
+    expect(body.stream).toBe(false)
+  })
+
+  it('语料标注在 stream 预设下仍保持非流式请求体', async () => {
+    let body: Record<string, unknown> = {}
+    const transport = {
+      async request<T>(request: TransportRequest) {
+        body = JSON.parse(String(request.body)) as Record<string, unknown>
+        return { status: 200, data: { choices: [{ message: { content: '{"fragments":[{"paragraph_ids":["p1"],"genres":["玄幻"],"scene_types":[],"pov":"","narrative_distance":"","pace":[],"techniques":[],"emotional_tone":[],"imitate":[],"avoid":[],"confidence":0.9}]}' } }] } as T }
+      },
+      async stream() {
+        return VALID_RESULT
+      },
+    } as unknown as HttpTransport
+    const official = { ...textProvider, capabilities: { textTransport: 'stream' as const } }
+    await suggestStyleCorpusLabels([{ id: 'p1', text: '雨城常年潮湿。', fingerprint: 'f1' }], official, transport)
+    expect(body.stream).toBe(false)
+  })
+
+  it('参考图识图在 stream 预设下仍保持非流式请求体', async () => {
+    let body: Record<string, unknown> = {}
+    const transport = {
+      async request<T>(request: TransportRequest) {
+        body = JSON.parse(String(request.body)) as Record<string, unknown>
+        return { status: 200, data: { choices: [{ message: { content: '{"narrative_pronoun":"she","age_and_build":"少女体型","fixed_traits":["长发"],"default_look":"","wardrobe":""}' } }] } as T }
+      },
+      async stream() {
+        return VALID_RESULT
+      },
+    } as unknown as HttpTransport
+    const official = { ...textProvider, capabilities: { textTransport: 'stream' as const, visionInput: 'supported' as const } }
+    await analyzeReferenceImage('data:image/png;base64,abc', official, transport)
+    expect(body.stream).toBe(false)
   })
 })

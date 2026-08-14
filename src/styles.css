@@ -995,6 +995,10 @@ label {
 .reasoning-effort-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .reasoning-effort-options button { min-height: 38px; border: 1px solid #3f3e38; border-radius: 7px; background: #171715; color: #aaa79e; }
 .reasoning-effort-options button[aria-checked="true"] { border-color: #8f7c4e; background: #2b271d; color: #f1e6c9; }
+.compatibility-preset-field { margin: 0 0 16px; }
+.compatibility-details { display: grid; gap: 12px; margin: 0 0 16px; padding: 12px; border: 1px solid #3f3e38; border-radius: 8px; background: #141412; }
+.compatibility-details .model-limit-fields { grid-template-columns: 1fr 1fr; }
+.compatibility-details .field { margin-bottom: 0; }
 .character-copy dt { color: #85827a; font-size: 11px; }
 .character-copy dd { margin: 0; color: #c9c6bc; font-size: 12px; line-height: 1.55; }
 .asset-error { margin: 0 0 12px; color: #e19a9d; font-size: 11px; line-height: 1.55; }
@@ -1477,6 +1481,7 @@ label {
 .app-shell[data-appearance="light"] .provider-streaming-status { color: #806b39; }
 .app-shell[data-appearance="light"] .reasoning-effort-options button { border-color: #d2d5ce; background: #f4f5f1; color: #697069; }
 .app-shell[data-appearance="light"] .reasoning-effort-options button[aria-checked="true"] { border-color: #8d7644; background: #eee5cf; color: #4a3e26; }
+.app-shell[data-appearance="light"] .compatibility-details { border-color: #d2d5ce; background: #fbfcf8; }
 .app-shell[data-appearance="light"] .model-picker { border-color: #d2d5ce; background: #ffffff; }
 .app-shell[data-appearance="light"] .model-picker > header,
 .app-shell[data-appearance="light"] .model-search { border-color: #dfe1dc; }

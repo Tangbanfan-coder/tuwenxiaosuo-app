@@ -1,5 +1,6 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core'
 import type { HttpTransport, ImageDownloadRequest, RequestAuth, TransportRequest } from './types'
+import { extractStreamingTextDelta, extractTextResponse } from './chatCompatibility'
 import { secretStore } from './secretStore'
 
 interface CapFormDataEntry {
@@ -8,10 +9,6 @@ interface CapFormDataEntry {
   type: 'base64File' | 'string'
   contentType?: string
   fileName?: string
-}
-
-interface NativeChatResponse {
-  choices?: Array<{ message?: { content?: unknown } }>
 }
 
 function errorDetail(payload: unknown): string {
@@ -185,7 +182,7 @@ export class BrowserFetchTransport implements HttpTransport {
     }
   }
 
-  async resolveImageSource({ url, auth, timeoutMs = 120_000 }: ImageDownloadRequest) {
+  async resolveImageSource({ url, auth, timeoutMs = 300_000 }: ImageDownloadRequest) {
     // Public CDN and signed URLs render directly in browsers even when CORS
     // blocks fetch. Preserve that path; native still needs data for local save.
     if (!Capacitor.isNativePlatform() && !auth) return url
@@ -228,7 +225,7 @@ export class BrowserFetchTransport implements HttpTransport {
     }
   }
 
-  async stream(request: TransportRequest, onDelta: (delta: string) => void) {
+  async stream(request: TransportRequest, onDelta?: (delta: string) => void) {
     const nativeWebViewStream = Capacitor.isNativePlatform() && request.androidTransport === 'webview-stream'
     if (Capacitor.isNativePlatform() && !nativeWebViewStream) {
       let payload: unknown
@@ -240,15 +237,15 @@ export class BrowserFetchTransport implements HttpTransport {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
         throw new TransportError('原生端无法解析流式请求内容')
       }
-      const response = await this.request<NativeChatResponse>({
+      const response = await this.request<unknown>({
         ...request,
         body: JSON.stringify({ ...payload, stream: false }),
       })
-      const content = response.data.choices?.[0]?.message?.content
-      if (typeof content !== 'string') {
+      const content = extractTextResponse(response.data)
+      if (!content) {
         throw new TransportError('接口未返回完整文本内容，请检查模型响应格式')
       }
-      onDelta(content)
+      onDelta?.(content)
       return content
     }
 
@@ -295,11 +292,11 @@ export class BrowserFetchTransport implements HttpTransport {
           const payload = trimmed.slice(5).trim()
           if (!payload || payload === '[DONE]') continue
           try {
-            const parsed = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: unknown } }> }
-            const delta = parsed.choices?.[0]?.delta?.content
-            if (typeof delta === 'string' && delta) {
+            const parsed = JSON.parse(payload) as unknown
+            const delta = extractStreamingTextDelta(parsed)
+            if (delta) {
               collected += delta
-              onDelta(delta)
+              onDelta?.(delta)
             }
           } catch {
             // Ignore malformed SSE frames; some gateways emit keep-alive lines.
@@ -309,11 +306,11 @@ export class BrowserFetchTransport implements HttpTransport {
       return collected
     } catch (error) {
       if (error instanceof TransportError) throw error
-      if (nativeWebViewStream) {
-        throw new TransportError('流式连接失败，中转站可能未允许 CORS。请在文本模型设置中关闭“流式输出”后手动重试；本次没有自动重发。')
-      }
       if (isTimeoutError(error)) {
         throw new TransportError('连接超时，请检查 API URL')
+      }
+      if (nativeWebViewStream) {
+        throw new TransportError('流式连接失败，请检查网络与 API URL；若上游不支持流式，可在文本模型设置中关闭“流式输出”后手动重试。本次没有自动重发。')
       }
       throw new TransportError('无法连接接口；Web 预览也可能受到 CORS 限制')
     } finally {
