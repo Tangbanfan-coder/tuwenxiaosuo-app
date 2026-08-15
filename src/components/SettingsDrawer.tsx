@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, BookText, Brain, Brush, Check, ChevronDown, ChevronRight, FileText, Gauge, History, Image, Moon, Palette, ScrollText, Sun, X } from 'lucide-react'
+import { ArrowLeft, BookText, Brain, Brush, Check, ChevronDown, ChevronRight, FileText, Gauge, History, Image, Moon, ScrollText, Sun, X } from 'lucide-react'
 import { contextUsageSummary, type ContextUsageState } from './ContextUsage'
 import { ILLUSTRATION_STYLE_PRESETS, getIllustrationStylePreset } from '../domain/illustrationStyles'
 import { THEME_PRESETS, getThemePreset } from '../domain/themes'
@@ -83,6 +83,7 @@ export default function SettingsDrawer({
 }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const backButtonRef = useRef<HTMLButtonElement>(null)
+  const wasOpenRef = useRef(false)
   const themeSelectRef = useRef<HTMLDivElement>(null)
   const styleSelectRef = useRef<HTMLDivElement>(null)
   const [page, setPage] = useState<SettingsPage>('home')
@@ -97,7 +98,12 @@ export default function SettingsDrawer({
   const globalWritingPreview = globalWritingInstructions?.trim().replace(/\s+/g, ' ')
 
   useEffect(() => {
-    if (!open || suspended) return
+    if (!open) {
+      wasOpenRef.current = false
+      return
+    }
+    if (suspended || wasOpenRef.current) return
+    wasOpenRef.current = true
     setPage('home')
     setOpenSelect(null)
     setCustomStyleEditorOpen(false)
@@ -186,52 +192,13 @@ export default function SettingsDrawer({
         <div className="settings-content">
           {page === 'home' && (
             <>
-              <section className="settings-section" aria-labelledby="settings-quick-section">
-                <h3 id="settings-quick-section">常用</h3>
-                <div ref={themeSelectRef} className="theme-select">
-                  <button
-                    className="theme-select-trigger"
-                    type="button"
-                    aria-haspopup="listbox"
-                    aria-expanded={themeMenuOpen}
-                    onClick={() => setOpenSelect((current) => current === 'theme' ? null : 'theme')}
-                  >
-                    <span className={`theme-select-swatch theme-${activeThemeId}`} aria-hidden="true" />
-                    <span className="theme-select-copy"><strong>{getThemePreset(activeThemeId).label}</strong><small>{getThemePreset(activeThemeId).description}</small></span>
-                    <ChevronDown size={17} aria-hidden="true" className={themeMenuOpen ? 'rotate-180' : undefined} />
-                  </button>
-                  {themeMenuOpen && (
-                    <div className="theme-select-menu" role="listbox" aria-label="选择作品氛围">
-                      {THEME_PRESETS.map((theme) => {
-                        const selected = theme.id === activeThemeId
-                        return (
-                          <button
-                            key={theme.id}
-                            className="theme-select-option"
-                            type="button"
-                            role="option"
-                            aria-selected={selected}
-                            onClick={() => {
-                              setOpenSelect(null)
-                              void onThemeChange(theme.id)
-                            }}
-                          >
-                            <span className={`theme-select-option-swatch theme-${theme.id}`} aria-hidden="true" />
-                            <span><strong>{theme.label}</strong><small>{theme.description}</small></span>
-                            {selected && <Check size={15} aria-hidden="true" />}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-                <p className="settings-help">只改变故事区域，不影响应用操作界面。</p>
-
+              <section className="settings-section" aria-labelledby="settings-app-appearance">
+                <h3 id="settings-app-appearance">界面外观</h3>
                 <div className="appearance-options" role="radiogroup" aria-label="界面外观">
                   <button type="button" role="radio" aria-checked={appearanceMode === 'dark'} onClick={() => onAppearanceChange('dark')}><Moon size={16} />深色</button>
                   <button type="button" role="radio" aria-checked={appearanceMode === 'light'} onClick={() => onAppearanceChange('light')}><Sun size={16} />浅色</button>
                 </div>
-                <p className="settings-help">只改变应用界面，作品氛围会继续保留。</p>
+                <p className="settings-help">只改变应用界面。</p>
               </section>
 
               <section className="settings-section" aria-labelledby="settings-categories">
@@ -266,7 +233,7 @@ export default function SettingsDrawer({
             <>
               <section className="settings-section" aria-labelledby="global-writing-settings">
                 <h3 id="global-writing-settings">全局创作设定</h3>
-                <div className="settings-navigation-list">
+                <div className="settings-navigation-stack">
                   <button type="button" onClick={onEditGlobalWritingInstructions} disabled={!onEditGlobalWritingInstructions}>
                     <ScrollText size={18} aria-hidden="true" />
                     <span>
@@ -275,6 +242,13 @@ export default function SettingsDrawer({
                     </span>
                     <ChevronRight size={17} aria-hidden="true" />
                   </button>
+                </div>
+                <p className="settings-help">所有作品都会携带，本作品的局部设定可以临时覆盖。</p>
+              </section>
+
+              <section className="settings-section" aria-labelledby="writing-tools-settings">
+                <h3 id="writing-tools-settings">创作辅助</h3>
+                <div className="settings-navigation-stack">
                   <button type="button" onClick={onOpenStyleCorpus} disabled={!onOpenStyleCorpus}>
                     <BookText size={18} aria-hidden="true" />
                     <span><strong>风格语料库</strong><small>{styleCorpusSummary ? `${styleCorpusSummary.sourceCount} 个来源 · ${styleCorpusSummary.fragmentCount} 个片段` : '导入并整理你认可的表达范例'}</small></span>
@@ -286,7 +260,6 @@ export default function SettingsDrawer({
                     <ChevronRight size={17} aria-hidden="true" />
                   </button>
                 </div>
-                <p className="settings-help">所有作品都会携带，本作品的局部设定可以临时覆盖。</p>
               </section>
 
               <section className="settings-section" aria-labelledby="current-project-writing-settings">
@@ -328,7 +301,7 @@ export default function SettingsDrawer({
                 ))}
               </div>
               <p className="settings-help">按已识别模型的上下文窗口自动换算（输出与安全预留后按比例使用）。越长越不易忘记旧剧情，但更费 token。</p>
-              <div className="settings-navigation-list context-usage-settings-entry">
+              <div className="settings-navigation-stack context-usage-settings-entry">
                 <button type="button" onClick={onOpenContextUsage}>
                   <Gauge size={18} aria-hidden="true" />
                   <span>
@@ -350,9 +323,52 @@ export default function SettingsDrawer({
           )}
 
           {page === 'appearance' && (
-            <section className="settings-section" aria-labelledby="illustration-style-settings">
-              <h3 id="illustration-style-settings">插画画风</h3>
-              <div ref={styleSelectRef} className="theme-select illustration-style-select">
+            <>
+              <section className="settings-section" aria-labelledby="story-theme-settings">
+                <h3 id="story-theme-settings">作品氛围</h3>
+                <div ref={themeSelectRef} className="theme-select">
+                  <button
+                    className="theme-select-trigger"
+                    type="button"
+                    aria-haspopup="listbox"
+                    aria-expanded={themeMenuOpen}
+                    onClick={() => setOpenSelect((current) => current === 'theme' ? null : 'theme')}
+                  >
+                    <span className={`theme-select-swatch theme-${activeThemeId}`} aria-hidden="true" />
+                    <span className="theme-select-copy"><strong>{getThemePreset(activeThemeId).label}</strong><small>{getThemePreset(activeThemeId).description}</small></span>
+                    <ChevronDown size={17} aria-hidden="true" className={themeMenuOpen ? 'rotate-180' : undefined} />
+                  </button>
+                  {themeMenuOpen && (
+                    <div className="theme-select-menu" role="listbox" aria-label="选择作品氛围">
+                      {THEME_PRESETS.map((theme) => {
+                        const selected = theme.id === activeThemeId
+                        return (
+                          <button
+                            key={theme.id}
+                            className="theme-select-option"
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            onClick={() => {
+                              setOpenSelect(null)
+                              void onThemeChange(theme.id)
+                            }}
+                          >
+                            <span className={`theme-select-option-swatch theme-${theme.id}`} aria-hidden="true" />
+                            <span><strong>{theme.label}</strong><small>{theme.description}</small></span>
+                            {selected && <Check size={15} aria-hidden="true" />}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+                <p className="settings-help">只改变故事区域，不影响应用操作界面。</p>
+              </section>
+
+              <section className="settings-section" aria-labelledby="illustration-style-settings">
+                <h3 id="illustration-style-settings">插画画风</h3>
+                <div ref={styleSelectRef} className="theme-select illustration-style-select">
                 <button
                   className="theme-select-trigger"
                   type="button"
@@ -417,8 +433,9 @@ export default function SettingsDrawer({
                   <div><span>{customStylePrompt.length}/500</span><button className="primary-button" type="submit" disabled={!customStylePrompt.trim()}>应用画风</button></div>
                 </form>
               )}
-              <p className="settings-help">会用于之后生成的定妆照和剧情插画。作品氛围和界面深浅色可以在设置首页直接调整。</p>
-            </section>
+                <p className="settings-help">会用于之后生成的定妆照和剧情插画。</p>
+              </section>
+            </>
           )}
 
           {page === 'providers' && (
