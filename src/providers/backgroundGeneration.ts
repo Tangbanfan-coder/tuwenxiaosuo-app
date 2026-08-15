@@ -1,5 +1,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { secretStore } from './secretStore'
+import type { IllustrationMode } from '../domain/models'
 
 export type BackgroundTaskState = 'prepared' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown'
 export type BackgroundTaskKind = 'text' | 'image'
@@ -50,7 +51,7 @@ export async function enqueueBackgroundTextTask(request: {
   endpoint: string
   body: string
   secretRef: string
-  metadata: { projectId: string; userMessageId: string; noticeId: string; autoIllustrate: boolean; forceNewChapter: boolean }
+  metadata: { projectId: string; userMessageId: string; noticeId: string; illustrationMode: IllustrationMode; forceNewChapter: boolean }
 }) {
   return enqueue('text', request.secretRef, request)
 }

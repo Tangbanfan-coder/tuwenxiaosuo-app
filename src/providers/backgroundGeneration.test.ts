@@ -28,7 +28,7 @@ beforeEach(() => {
 
 describe('background generation bridge', () => {
   it('keeps Web on the existing path without reading a secret or enqueueing', async () => {
-    await expect(enqueueBackgroundTextTask({ endpoint: 'https://api.test/chat/completions', body: '{}', secretRef: 'text', metadata: { projectId: 'p', userMessageId: 'u', noticeId: 'n', autoIllustrate: false, forceNewChapter: false } })).resolves.toBeUndefined()
+    await expect(enqueueBackgroundTextTask({ endpoint: 'https://api.test/chat/completions', body: '{}', secretRef: 'text', metadata: { projectId: 'p', userMessageId: 'u', noticeId: 'n', illustrationMode: 'manual', forceNewChapter: false } })).resolves.toBeUndefined()
     await expect(listBackgroundGenerationTasks()).resolves.toEqual([])
     expect(secrets.get).not.toHaveBeenCalled()
     expect(plugin.enqueue).not.toHaveBeenCalled()

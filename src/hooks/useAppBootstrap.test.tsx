@@ -178,7 +178,7 @@ describe('useAppBootstrap', () => {
     await waitFor(() => expect(result.current.booting).toBe(false))
 
     expect(databaseMocks.setWritingTurnBackgroundTask).toHaveBeenCalledWith(notice.id, 'task-1')
-    expect(databaseMocks.completeWritingTurn).toHaveBeenCalledWith(project.id, 'user-1', notice.id, expect.anything(), false, false, 'task-1')
+    expect(databaseMocks.completeWritingTurn).toHaveBeenCalledWith(project.id, 'user-1', notice.id, expect.anything(), 'manual', false, 'task-1')
     expect(backgroundMocks.acknowledgeBackgroundGenerationTask).toHaveBeenCalledWith('task-1')
   })
 
@@ -197,7 +197,7 @@ describe('useAppBootstrap', () => {
     await waitFor(() => expect(result.current.booting).toBe(false))
 
     expect(backgroundMocks.readBackgroundGenerationTask).toHaveBeenCalledWith('task-1')
-    expect(databaseMocks.completeWritingTurn).toHaveBeenCalledWith(project.id, 'user-1', notice.id, expect.anything(), false, false, 'task-1')
+    expect(databaseMocks.completeWritingTurn).toHaveBeenCalledWith(project.id, 'user-1', notice.id, expect.anything(), 'manual', false, 'task-1')
     expect(backgroundMocks.acknowledgeBackgroundGenerationTask).toHaveBeenCalledWith('task-1')
   })
 

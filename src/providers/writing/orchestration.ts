@@ -1,4 +1,4 @@
-import type { ProjectWorkspace } from '../../domain/models'
+import { resolveIllustrationMode, type ProjectWorkspace } from '../../domain/models'
 import {
   listProjectParagraphs,
   listRecentProjectFeedback,
@@ -27,7 +27,7 @@ import {
   buildUntrimmedProjectContextForDemand,
   resolveRecentFeedbackContextSources,
 } from './context'
-import { SYSTEM_PROMPT } from './prompt'
+import { systemPromptForIllustrationMode } from './prompt'
 import { parseWritingResult } from './result'
 import { retrieveStyleExamples } from './styleCorpus'
 
@@ -66,8 +66,9 @@ async function prepareWritingTurnContext(
   options: GenerateWritingTurnOptions,
 ): Promise<PreparedWritingTurnContext> {
   const contextBudget = workspace.project.contextBudget ?? 'standard'
+  const systemPrompt = systemPromptForIllustrationMode(resolveIllustrationMode(workspace.project))
   const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model, tokenizerStrategy: resolveCapabilities(config).tokenizerStrategy })
-  const initialPlan = contextPlanForRequest(config, contextBudget, userRequest, estimator)
+  const initialPlan = contextPlanForRequest(config, contextBudget, userRequest, estimator, systemPrompt)
 
   const [scenes, paragraphs, recentFeedback, projectParagraphs, styleExamples] = await Promise.all([
     loadProjectScenes(workspace.project.id),
@@ -117,7 +118,7 @@ async function prepareWritingTurnContext(
     contextBudget,
     outputReserveTokens: initialPlan.outputReserveTokens,
     safetyMarginTokens: initialPlan.safetyMarginTokens,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt,
     projectWorkspace: contextSections.projectWorkspace,
     coreMemory: contextSections.coreMemory,
     timelineRetrievedContext: contextSections.timelineRetrievedContext,
@@ -187,7 +188,7 @@ export async function generateWritingTurn(
     reasoningEffort: config.reasoningEffort,
     maxOutputTokens: configuredOutput ? prepared.initialPlan.outputReserveTokens : undefined,
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPromptForIllustrationMode(resolveIllustrationMode(workspace.project)) },
       { role: 'system', content: prepared.contextMessage },
       { role: 'user', content: userRequest },
     ],
@@ -245,7 +246,7 @@ export async function prepareBackgroundWritingRequest(
       reasoningEffort: config.reasoningEffort,
       maxOutputTokens: configuredOutput ? prepared.initialPlan.outputReserveTokens : undefined,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPromptForIllustrationMode(resolveIllustrationMode(workspace.project)) },
         { role: 'system', content: prepared.contextMessage },
         { role: 'user', content: userRequest },
       ],

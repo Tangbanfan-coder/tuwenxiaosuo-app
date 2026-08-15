@@ -56,7 +56,7 @@ import {
   setIllustrationGenerating,
   setIllustrationReady,
   setWritingTurnBackgroundTask,
-  updateAutoIllustrate,
+  updateIllustrationMode,
   updateCharacterProfile,
   updateCharacterReferenceStyleMode,
   updateContextBudget,
@@ -70,7 +70,7 @@ import { PROSE_STYLE_RULE_VERSION } from './domain/proseStyle'
 import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
 import { resolveIllustrationReferences } from './domain/illustrationReferences'
 import { resolvePreviousSceneIllustration } from './domain/sceneContinuity'
-import type { AppearanceMode, CharacterAsset, ContextBudget, ConversationMessage, IllustrationAsset, IllustrationStylePresetId, ProjectWorkspace, ReferenceStyleMode, RewriteStrength, StoredParagraph, ThemePresetId } from './domain/models'
+import { resolveIllustrationMode, type AppearanceMode, type CharacterAsset, type ContextBudget, type ConversationMessage, type IllustrationAsset, type IllustrationMode, type IllustrationStylePresetId, type ProjectWorkspace, type ReferenceStyleMode, type RewriteStrength, type StoredParagraph, type ThemePresetId } from './domain/models'
 import { browserTransport, TransportCancelledError } from './providers/browserTransport'
 import { loadProviderSettings, saveProviderSettings } from './providers/config'
 import { loadGlobalWritingInstructions, saveGlobalWritingInstructions } from './providers/config'
@@ -102,7 +102,7 @@ function contextUsageReminderTier(plan: ContextBudgetPlan): ContextUsageReminder
 
 interface ComposerProps {
   generationPhase: GenerationPhase
-  autoIllustrate: boolean
+  illustrationMode: IllustrationMode
   reasoningEffort: ReasoningEffort | undefined
   contextUsagePlan?: ContextBudgetPlan
   contextUsageState: ContextUsageState
@@ -112,12 +112,12 @@ interface ComposerProps {
   onOpenCharacterAssets: () => void
   onOpenReferenceImage: () => void
   onReasoningEffortChange: (reasoningEffort: ReasoningEffort) => void
-  onAutoIllustrateChange: () => void
+  onIllustrationModeChange: (mode: IllustrationMode) => void
 }
 
 function Composer({
   generationPhase,
-  autoIllustrate,
+  illustrationMode,
   reasoningEffort,
   contextUsagePlan,
   contextUsageState,
@@ -127,13 +127,35 @@ function Composer({
   onOpenCharacterAssets,
   onOpenReferenceImage,
   onReasoningEffortChange,
-  onAutoIllustrateChange,
+  onIllustrationModeChange,
 }: ComposerProps) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [illustrationModeOpen, setIllustrationModeOpen] = useState(false)
+  const illustrationModeControlRef = useRef<HTMLDivElement>(null)
+  const illustrationModeTriggerRef = useRef<HTMLButtonElement>(null)
   const generating = generationPhase === 'starting' || generationPhase === 'running'
   const saving = generationPhase === 'saving'
   const cancelling = generationPhase === 'cancelling'
+
+  useEffect(() => {
+    if (!illustrationModeOpen) return
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!illustrationModeControlRef.current?.contains(event.target as Node)) setIllustrationModeOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setIllustrationModeOpen(false)
+      illustrationModeTriggerRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePointer)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [illustrationModeOpen])
 
   const submit = async () => {
     const text = draft.trim()
@@ -179,17 +201,33 @@ function Composer({
               showDetails={false}
               onDetailsOpenChange={(open) => { if (open) onOpenContextUsage() }}
             />
-            <button
-              className="composer-tool-button auto-illustrate-button"
-              type="button"
-              aria-pressed={autoIllustrate}
-              aria-label={`自动配图：${autoIllustrate ? '自动' : '关闭'}`}
-              onClick={onAutoIllustrateChange}
-            >
-              <ImagePlus size={17} aria-hidden="true" />
-              <span>配图</span>
-              <strong>{autoIllustrate ? '自动' : '关闭'}</strong>
-            </button>
+            <div ref={illustrationModeControlRef} className="illustration-mode-control">
+              <button
+                ref={illustrationModeTriggerRef}
+                className="composer-tool-button auto-illustrate-button"
+                type="button"
+                aria-expanded={illustrationModeOpen}
+                aria-haspopup="menu"
+                aria-label={`配图模式：${illustrationMode === 'none' ? '无图' : illustrationMode === 'manual' ? '按需' : '自动'}`}
+                onClick={() => setIllustrationModeOpen((open) => !open)}
+              >
+                <ImagePlus size={17} aria-hidden="true" />
+                <span>配图</span>
+                <strong>{illustrationMode === 'none' ? '无图' : illustrationMode === 'manual' ? '按需' : '自动'}</strong>
+              </button>
+              {illustrationModeOpen && <div className="illustration-mode-menu" role="menu" aria-label="选择配图模式">
+                {([
+                  ['none', '无图', '只写正文'],
+                  ['manual', '按需', '保存建议，手动生成'],
+                  ['auto', '自动', '自动生成插画'],
+                ] as const).map(([mode, label, description]) => (
+                  <button key={mode} type="button" role="menuitemradio" aria-checked={illustrationMode === mode} onClick={() => { onIllustrationModeChange(mode); setIllustrationModeOpen(false); illustrationModeTriggerRef.current?.focus() }}>
+                    <span><strong>{label}</strong><small>{description}</small></span>
+                    {illustrationMode === mode && <Check size={15} aria-hidden="true" />}
+                  </button>
+                ))}
+              </div>}
+            </div>
           </div>
           <button
             className="send-button"
@@ -529,37 +567,14 @@ export default function App() {
     setReferenceImageOpen(true)
   }
 
-  async function handleAutoIllustrate(autoIllustrate: boolean) {
+  async function handleIllustrationMode(illustrationMode: IllustrationMode) {
     if (!workspace) return
-    const nextWorkspace: ProjectWorkspace = {
-      ...workspace,
-      project: { ...workspace.project, autoIllustrate },
-    }
     setWorkspace((current) => current ? {
       ...current,
-      project: { ...current.project, autoIllustrate },
+      project: { ...current.project, illustrationMode },
     } : current)
-    await updateAutoIllustrate(workspace.project.id, autoIllustrate)
-    if (!autoIllustrate) return
-    if (!(await providerIsReady('image'))) {
-      showToast('自动配图已开启；请先配置图片模型，待生成角色会保留在角色资产中')
-      return
-    }
-    const pendingPortraits = nextWorkspace.characters.filter((character) => (character.portraitStatus ?? 'planned') === 'planned')
-    if (!pendingPortraits.length) return
-    portraitGenerationCancelledRef.current = false
-    setPortraitGenerationActive(true)
-    void enqueueImageTask(async () => {
-      try {
-        for (const character of pendingPortraits) {
-          if (portraitGenerationCancelledRef.current) break
-          await generateCharacterPortrait(character, nextWorkspace)
-        }
-      } finally {
-        setPortraitGenerationActive(false)
-      }
-    })
-    showToast(`自动配图已开启，${pendingPortraits.length} 个角色定妆照进入队列`)
+    await updateIllustrationMode(workspace.project.id, illustrationMode)
+    showToast(illustrationMode === 'none' ? '已切换为无图，后续只生成正文' : illustrationMode === 'manual' ? '已切换为按需配图，后续视觉建议需手动生成' : '已切换为自动配图，后续写作会自动进入图片队列')
   }
 
   async function handleContextBudgetChange(contextBudget: ContextBudget) {
@@ -803,9 +818,9 @@ export default function App() {
       if (!nextWorkspace) return
       showToast(`已解锁 ${readyReferenceBlocks.length} 张等待中的插画，自动配图开启时会继续生成`)
     }
-    if (!nextWorkspace.project.autoIllustrate || !(await providerIsReady('image'))) return
+    if (resolveIllustrationMode(nextWorkspace.project) !== 'auto' || !(await providerIsReady('image'))) return
     const eligible = nextWorkspace.illustrations.filter((illustration) => {
-      if (illustration.status !== 'planned') return false
+      if (illustration.status !== 'planned' || illustration.generationMode === 'manual') return false
       const resolution = resolveIllustrationReferences(illustration, nextWorkspace.characters)
       return resolution.ready && resolution.characters.some((character) => character.id === characterId)
     })
@@ -845,7 +860,7 @@ export default function App() {
     const textProvider = providerSettings.text
     const { userMessageId, noticeId, userText } = input
     const projectId = workspace.project.id
-    const autoIllustrate = workspace.project.autoIllustrate
+    const illustrationMode = resolveIllustrationMode(workspace.project)
     const attemptId = ++generationRef.current.attemptId
     generationRef.current.cancelled = false
     generationRef.current.phase = 'running'
@@ -896,7 +911,7 @@ export default function App() {
           return enqueueBackgroundTextTask({
             ...preparedBackgroundRequest,
             secretRef: textProvider.secretRef,
-            metadata: { projectId, userMessageId, noticeId, autoIllustrate, forceNewChapter },
+            metadata: { projectId, userMessageId, noticeId, illustrationMode, forceNewChapter },
           })
         })()
         : undefined
@@ -955,7 +970,7 @@ export default function App() {
           userMessageId,
           noticeId,
           result,
-          autoIllustrate,
+          illustrationMode,
           forceNewChapter,
           expectedBackgroundTaskId,
         )
@@ -983,9 +998,9 @@ export default function App() {
         const newIllustrations = nextWorkspace.illustrations.filter((illustration) => !previousIllustrationIds.has(illustration.id))
         const imageReady = await providerIsReady('image')
         const readyIllustrations = newIllustrations.filter((illustration) => (
-          illustration.status === 'planned' && resolveIllustrationReferences(illustration, nextWorkspace.characters).ready
+          illustration.status === 'planned' && illustration.generationMode !== 'manual' && resolveIllustrationReferences(illustration, nextWorkspace.characters).ready
         ))
-        if (portraits.length && imageReady && autoIllustrate) {
+        if (illustrationMode === 'auto' && portraits.length && imageReady) {
           portraitGenerationCancelledRef.current = false
           setPortraitGenerationActive(true)
           void enqueueImageTask(async () => {
@@ -999,8 +1014,10 @@ export default function App() {
             }
           })
           showToast('正文已保存，定妆照已进入生成队列')
-        } else if (!autoIllustrate) {
-          showToast('正文和视觉计划已保存；自动配图未开启，可稍后手动生成')
+        } else if (illustrationMode === 'manual') {
+          showToast('正文和视觉计划已保存；可选择需要的插画手动生成')
+        } else if (illustrationMode === 'none') {
+          showToast('正文已保存')
         } else if (!imageReady) {
           showToast('正文和视觉计划已保存；请先配置图片模型')
         } else if (readyIllustrations.length) {
@@ -1060,7 +1077,7 @@ export default function App() {
       addedMessages = await beginWritingTurn(
         workspace.project.id,
         text,
-        workspace.project.autoIllustrate,
+        resolveIllustrationMode(workspace.project),
         workspace.project.activeChapterId,
       )
     } catch (error) {
@@ -1097,7 +1114,7 @@ export default function App() {
       setWorkspace((current) => current && current.project.id === workspace.project.id ? {
         ...current,
         project: { ...current.project, updatedAt: Date.now() },
-        messages: current.messages.map((item) => item.id === message.id ? { ...item, text: retry.autoIllustrate ? '正在重新生成正文并整理视觉计划…' : '正在重新生成正文…', status: 'pending' as const, backgroundTaskId: '' } : item),
+        messages: current.messages.map((item) => item.id === message.id ? { ...item, text: retry.illustrationMode === 'none' ? '正在重新生成正文…' : '正在重新生成正文并整理视觉计划…', status: 'pending' as const, backgroundTaskId: '' } : item),
       } : current)
       setGenerationPhase('starting')
       await runWritingAttempt({ userMessageId: message.userMessageId ?? '', noticeId: message.id, userText: retry.userText })
@@ -1302,7 +1319,7 @@ export default function App() {
 
       <Composer
         generationPhase={generationPhase}
-        autoIllustrate={workspace.project.autoIllustrate}
+        illustrationMode={resolveIllustrationMode(workspace.project)}
         reasoningEffort={providerSettings.text.reasoningEffort}
         contextUsagePlan={activeContextUsagePlan}
         contextUsageState={activeContextUsageState}
@@ -1312,7 +1329,7 @@ export default function App() {
         onOpenCharacterAssets={openCharacterAssets}
         onOpenReferenceImage={() => setReferenceImageOpen(true)}
         onReasoningEffortChange={handleReasoningEffortChange}
-        onAutoIllustrateChange={() => void handleAutoIllustrate(!workspace.project.autoIllustrate)}
+        onIllustrationModeChange={(mode) => void handleIllustrationMode(mode)}
       />
 
       <ProjectDrawer

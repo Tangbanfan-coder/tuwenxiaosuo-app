@@ -240,7 +240,7 @@ export function buildContextBudgetPlan(input: BuildContextBudgetPlanInput): Cont
   }
 }
 
-export function contextPlanForRequest(config: ProviderConfig, budget: ContextBudget, userRequest: string, estimator: ResolvedTokenEstimator) {
+export function contextPlanForRequest(config: ProviderConfig, budget: ContextBudget, userRequest: string, estimator: ResolvedTokenEstimator, systemPrompt = SYSTEM_PROMPT) {
   const windowTokens = effectiveWindowTokens(config)
   const outputReserveTokens = maxOutputForRequest(config, windowTokens)
   const safetyMarginTokens = contextSafetyMarginTokens(windowTokens)
@@ -249,7 +249,7 @@ export function contextPlanForRequest(config: ProviderConfig, budget: ContextBud
     contextBudget: budget,
     outputReserveTokens,
     safetyMarginTokens,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt,
     userMessage: userRequest,
     estimator,
   })

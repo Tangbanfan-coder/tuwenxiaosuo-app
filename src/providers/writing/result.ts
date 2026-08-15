@@ -335,7 +335,7 @@ export function parseWritingResult(content: string): WritingTurnResult {
     if (paragraphs.length) {
       return {
         kind: 'prose',
-        assistantNote: assistantNote || '正文已完成，并整理了本轮视觉计划。',
+        assistantNote: assistantNote || '正文已完成。',
         chapterAction: parsed.chapter_action === 'new' ? 'new' : 'continue',
         chapterTitle: stringValue(parsed.prose?.chapter_title) || undefined,
         paragraphs,

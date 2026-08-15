@@ -36,13 +36,14 @@ export function illustrationDirectionItems(illustration: IllustrationAsset | und
 }
 
 function illustrationStatusText(illustration: IllustrationAsset | undefined, imageProviderReady: boolean, referenceReason?: string, generationStage?: IllustrationGenerationStage) {
-  if (!illustration) return '自动插画 · 等待生成'
-  if (illustration.status === 'generating') return `自动插画 · ${illustrationGenerationStageText(generationStage)}`
-  if (illustration.status === 'ready') return '自动插画 · 已保存'
-  if (illustration.status === 'failed') return `自动插画 · ${illustration.errorMessage || '生成失败'}`
-  if (!imageProviderReady) return '自动插画 · 等待配置图片模型'
-  if (referenceReason) return `自动插画 · ${referenceReason}`
-  return '自动插画 · 等待手动生成'
+  const label = illustration?.generationMode === 'manual' ? '按需插画' : '自动插画'
+  if (!illustration) return `${label} · 等待生成`
+  if (illustration.status === 'generating') return `${label} · ${illustrationGenerationStageText(generationStage)}`
+  if (illustration.status === 'ready') return `${label} · 已保存`
+  if (illustration.status === 'failed') return `${label} · ${illustration.errorMessage || '生成失败'}`
+  if (!imageProviderReady) return `${label} · 等待配置图片模型`
+  if (referenceReason) return `${label} · ${referenceReason}`
+  return `${label} · 等待手动生成`
 }
 
 export default function TimelineMessage({
@@ -124,22 +125,14 @@ export default function TimelineMessage({
             <img className="generated-illustration" src={imageSource} alt={message.title ?? '剧情插画'} />
             <span className="illustration-zoom-hint" aria-hidden="true"><Maximize2 size={17} /></span>
           </button>
-        ) : (
+        ) : illustration?.status === 'generating' ? (
           <div className="illustration-placeholder" role="img" aria-label={`${message.title ?? '剧情'}插画生成占位图`}>
-            {illustration?.status === 'generating' ? <LoaderCircle className="spin" size={27} aria-hidden="true" /> : <ImagePlus size={27} aria-hidden="true" />}
+            <LoaderCircle className="spin" size={27} aria-hidden="true" />
             <span className="placeholder-label">
-              {illustration?.status === 'generating'
-                ? illustrationGenerationStageText(illustrationGenerationStage)
-                : !imageProviderReady
-                   ? '请先配置图片模型'
-                   : blockedCharacterReadyForConfirmation
-                     ? '定妆照已就绪，确认后自动生成'
-                     : referenceReason
-                       ? referenceReason
-                       : '点击下方按钮生成插画'}
+              {illustrationGenerationStageText(illustrationGenerationStage)}
             </span>
           </div>
-        )}
+        ) : <div className="illustration-asset-summary"><ImagePlus size={18} aria-hidden="true" /><span>{illustration?.status === 'failed' ? '插画生成失败，可检查指令后重试' : '已保存视觉建议，等待你决定是否生成'}</span></div>}
         <figcaption>
           <div><strong>{message.title}</strong><span>{illustrationStatusText(illustration, imageProviderReady, referenceReason, illustrationGenerationStage)}</span></div>
           <div className="illustration-actions">

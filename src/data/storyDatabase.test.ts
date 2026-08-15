@@ -154,6 +154,41 @@ describe('project defaults', () => {
 
     expect(style?.illustrationStyleId).toBe('unconstrained')
     expect(style?.visualPrompt).toBe('')
+    expect(created.illustrationMode).toBe('auto')
+    expect(created.autoIllustrate).toBeUndefined()
+  })
+
+  it('migrates legacy autoIllustrate values to a single illustration mode', async () => {
+    const name = `illustration-mode-migration-${crypto.randomUUID()}`
+    const legacy = new Dexie(name)
+    let upgraded: StoryDatabase | undefined
+    try {
+      legacy.version(11).stores({
+        projects: 'id, updatedAt, lastOpenedAt',
+        illustrations: 'id, projectId, [projectId+createdAt], status',
+      })
+      await legacy.open()
+      await legacy.table('projects').bulkAdd([
+        { id: 'legacy-auto', title: '自动', themeId: 'neutral', autoIllustrate: true, createdAt: 1, updatedAt: 1, lastOpenedAt: 1 },
+        { id: 'legacy-manual', title: '按需', themeId: 'neutral', autoIllustrate: false, createdAt: 1, updatedAt: 1, lastOpenedAt: 1 },
+      ])
+      await legacy.table('illustrations').bulkAdd([
+        { id: 'illustration-auto', projectId: 'legacy-auto', title: '自动', prompt: '', referenceCharacterIds: [], status: 'planned', createdAt: 1, updatedAt: 1 },
+        { id: 'illustration-manual', projectId: 'legacy-manual', title: '按需', prompt: '', referenceCharacterIds: [], status: 'planned', createdAt: 1, updatedAt: 1 },
+      ])
+      legacy.close()
+      upgraded = new StoryDatabase(name)
+      await upgraded.open()
+
+      expect(await upgraded.projects.get('legacy-auto')).toMatchObject({ illustrationMode: 'auto' })
+      expect(await upgraded.projects.get('legacy-manual')).toMatchObject({ illustrationMode: 'manual' })
+      expect((await upgraded.projects.get('legacy-auto'))?.autoIllustrate).toBeUndefined()
+      expect(await upgraded.illustrations.get('illustration-manual')).toMatchObject({ generationMode: 'manual' })
+    } finally {
+      upgraded?.close()
+      legacy.close()
+      await Dexie.delete(name)
+    }
   })
 })
 
@@ -440,7 +475,7 @@ describe('StoryDatabase v5-v6 summary version and feedback schema migrations', (
       upgraded = new StoryDatabase(name)
       await upgraded.open()
 
-      expect(upgraded.verno).toBe(11)
+      expect(upgraded.verno).toBe(12)
       expect(await upgraded.feedback.count()).toBe(0)
       const versions = await upgraded.summaryVersions.where('projectId').equals('project-v4').toArray()
       const migrated = versions.find((version) => version.chapterId === summarizedChapter.id)
@@ -594,7 +629,7 @@ describe('chapter summary versions', () => {
     expect(await storyDatabase.messages.get(userMessage.id)).toMatchObject({ chapterId: undefined })
     expect(await storyDatabase.messages.get(notice.id)).toMatchObject({
       chapterId: undefined,
-      text: '正在创作正文…',
+      text: '正在创作正文并整理视觉计划…',
       status: 'pending',
     })
   })
@@ -697,6 +732,20 @@ describe('chapter summary versions', () => {
 })
 
 describe('paragraph persistence', () => {
+  it('ignores a non-conforming visual plan in text-only mode', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '请开始写作', 'none')
+    await completeWritingTurn(project.id, userMessage.id, notice.id, {
+      ...writingResult,
+      visualPlan: {
+        title: '不应保存', prompt: '不应保存', stylePrompt: '', negativePrompt: '',
+        characters: [{ name: '林昭', role: '主角', ageAndBuild: '青年', fixedTraits: ['黑发'], defaultLook: '清瘦', wardrobe: '灰外套' }],
+      },
+    }, 'none')
+    expect(await storyDatabase.characters.where('projectId').equals(project.id).count()).toBe(0)
+    expect(await storyDatabase.illustrations.where('projectId').equals(project.id).count()).toBe(0)
+    expect((await storyDatabase.messages.where('projectId').equals(project.id).toArray()).some((message) => message.kind === 'illustration')).toBe(false)
+  })
+
   it('keeps visual plans and characters when automatic illustration is disabled', async () => {
     const [userMessage, notice] = await beginWritingTurn(project.id, '请开始写作', false)
     const result: WritingTurnResult = {
@@ -713,6 +762,7 @@ describe('paragraph persistence', () => {
     expect((await storyDatabase.illustrations.where('projectId').equals(project.id).first())).toMatchObject({
       action: '撑伞穿过积水', bodyLanguage: '压低肩膀快步前行', expression: '神情紧绷', gaze: '望向巷口灯光', camera: '中景侧拍', motion: '雨水沿伞沿坠落',
       status: 'failed', failureKind: 'reference-unavailable',
+      generationMode: 'manual',
     })
     expect(await storyDatabase.characters.where('projectId').equals(project.id).first()).toMatchObject({
       narrativePronoun: 'she',
@@ -1048,7 +1098,7 @@ describe('writing turn stop and retry', () => {
 
     const retry = await retryWritingTurn(project.id, notice.id)
     expect(retry.userText).toBe('继续写')
-    expect(retry.autoIllustrate).toBe(false)
+    expect(retry.illustrationMode).toBe('manual')
     expect((await storyDatabase.messages.toArray()).filter((message) => message.kind === 'user')).toHaveLength(userCountBefore)
     expect(await storyDatabase.messages.get(notice.id)).toMatchObject({ status: 'pending', backgroundTaskId: '' })
     expect(userMessage.id).toBeTruthy()

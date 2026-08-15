@@ -4,6 +4,13 @@ export type IllustrationStylePresetId = 'unconstrained' | 'realistic-cinematic' 
 export type ReferenceStyleMode = 'project' | 'reference'
 export type ContextBudget = 'standard' | 'long' | 'full'
 export type RewriteStrength = 'light' | 'balanced' | 'strong'
+export type IllustrationMode = 'none' | 'manual' | 'auto'
+
+/** Resolves historical projects before their v12 storage migration has run. */
+export function resolveIllustrationMode(project: Pick<StoryProject, 'illustrationMode' | 'autoIllustrate'>): IllustrationMode {
+  if (project.illustrationMode === 'none' || project.illustrationMode === 'manual' || project.illustrationMode === 'auto') return project.illustrationMode
+  return project.autoIllustrate === false ? 'manual' : 'auto'
+}
 
 export type ProseEvaluationEventType =
   | 'prose_analyzed' | 'rewrite_opened' | 'rewrite_requested' | 'rewrite_succeeded' | 'rewrite_failed'
@@ -17,7 +24,7 @@ export interface ProseEvaluationEvent {
   occurredAt: number
   schemaVersion: 1
   appVersion: '0.1.0'
-  databaseVersion: 11
+  databaseVersion: 12
   proseRuleVersion: number
   projectId?: string
   messageId?: string
@@ -131,7 +138,10 @@ export interface StoryProject {
   title: string
   themeId: ThemePresetId
   activeChapterId?: string
-  autoIllustrate: boolean
+  /** The authoritative policy for future writing turns. */
+  illustrationMode?: IllustrationMode
+  /** @deprecated Read-only compatibility for records created before database v12. */
+  autoIllustrate?: boolean
   writingInstructions?: string
   writingStructure?: string
   contextBudget?: ContextBudget
@@ -408,6 +418,8 @@ export interface IllustrationAsset {
   motion?: string
   sceneAnchor?: SceneContinuityAnchor
   referenceCharacterIds: string[]
+  /** Whether this planned asset is eligible for automatic image generation. */
+  generationMode?: Extract<IllustrationMode, 'manual' | 'auto'>
   imageUrl?: string
   localUri?: string
   status: 'planned' | 'generating' | 'ready' | 'failed'

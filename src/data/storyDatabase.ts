@@ -1,4 +1,7 @@
 import Dexie, { type Table, type Transaction } from 'dexie'
+import {
+  resolveIllustrationMode,
+} from '../domain/models'
 import type {
   Chapter,
   CharacterAsset,
@@ -11,6 +14,7 @@ import type {
   Foreshadowing,
   IllustrationStylePresetId,
   IllustrationAsset,
+  IllustrationMode,
   ProjectStyle,
   ProseEvaluationEvent,
   ProjectWorkspace,
@@ -199,6 +203,22 @@ export class StoryDatabase extends Dexie {
       styleCorpusBindings: 'id, fragmentId, scope, projectId, state, [scope+state], [projectId+state], updatedAt',
       evaluationEvents: 'id, eventType, occurredAt, projectId, [projectId+occurredAt]',
     })
+    this.version(12)
+      .stores({
+        projects: 'id, updatedAt, lastOpenedAt', messages: 'id, projectId, [projectId+order], createdAt, backgroundTaskId',
+        chapters: 'id, projectId, [projectId+order], updatedAt', characters: 'id, projectId, [projectId+createdAt], status',
+        illustrations: 'id, projectId, [projectId+createdAt], status', styles: 'id, &projectId, updatedAt',
+        scenes: 'id, projectId, [projectId+order], createdAt',
+        paragraphs: 'id, projectId, sourceType, [projectId+sourceType], [projectId+chapterId], [projectId+messageId], fingerprint, createdAt',
+        summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
+        feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
+        styleCorpusSources: 'id, &fingerprint, createdAt, updatedAt', styleCorpusFragments: 'id, sourceId, fingerprint, confirmed, usageCount, updatedAt',
+        styleCorpusBindings: 'id, fragmentId, scope, projectId, state, [scope+state], [projectId+state], updatedAt',
+        evaluationEvents: 'id, eventType, occurredAt, projectId, [projectId+occurredAt]',
+      })
+      .upgrade(async (transaction) => {
+        await upgradeIllustrationModesFromV11(transaction)
+      })
   }
 }
 
@@ -214,6 +234,26 @@ export interface StoredScene {
 
 export const storyDatabase = new StoryDatabase()
 
+async function upgradeIllustrationModesFromV11(transaction: Transaction) {
+  const projects = transaction.table('projects') as Table<StoryProject, string>
+  const illustrations = transaction.table('illustrations') as Table<IllustrationAsset, string>
+  const legacyProjects = await projects.toArray()
+  const modes = new Map(legacyProjects.map((project) => [project.id, resolveIllustrationMode(project)]))
+  await Promise.all(legacyProjects.map((project) => (
+    projects.where('id').equals(project.id).modify((record) => {
+      record.illustrationMode = modes.get(project.id) ?? 'auto'
+      delete record.autoIllustrate
+    })
+  )))
+  const legacyIllustrations = await illustrations.toArray()
+  await Promise.all(legacyIllustrations.map((illustration) => {
+    if (illustration.generationMode) return undefined
+    return illustrations.update(illustration.id, {
+      generationMode: modes.get(illustration.projectId) === 'manual' ? 'manual' : 'auto',
+    })
+  }))
+}
+
 const EVALUATION_MAX_EVENTS = 5000
 const EVALUATION_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
 
@@ -226,7 +266,7 @@ export async function recordProseEvaluationEvent(event: Omit<ProseEvaluationEven
       )).first()
       if (duplicate) return
     }
-    await storyDatabase.evaluationEvents.add({ ...event, id: createId('evaluation'), occurredAt, schemaVersion: 1, appVersion: '0.1.0', databaseVersion: 11, proseRuleVersion: event.proseRuleVersion ?? PROSE_RULE_VERSION_FALLBACK })
+    await storyDatabase.evaluationEvents.add({ ...event, id: createId('evaluation'), occurredAt, schemaVersion: 1, appVersion: '0.1.0', databaseVersion: 12, proseRuleVersion: event.proseRuleVersion ?? PROSE_RULE_VERSION_FALLBACK })
     await storyDatabase.evaluationEvents.where('occurredAt').below(occurredAt - EVALUATION_MAX_AGE_MS).delete()
     const count = await storyDatabase.evaluationEvents.count()
     if (count > EVALUATION_MAX_EVENTS) {
@@ -1272,7 +1312,7 @@ export async function createProject(title: string) {
     id: projectId,
     title: title.trim(),
     themeId: 'neutral',
-    autoIllustrate: true,
+    illustrationMode: 'auto',
     writingInstructions: '',
     createdAt: now,
     updatedAt: now,
@@ -1416,8 +1456,8 @@ export async function updateIllustrationStyle(projectId: string, styleId: Illust
   })
 }
 
-export async function updateAutoIllustrate(projectId: string, autoIllustrate: boolean) {
-  await storyDatabase.projects.update(projectId, { autoIllustrate, updatedAt: Date.now() })
+export async function updateIllustrationMode(projectId: string, illustrationMode: IllustrationMode) {
+  await storyDatabase.projects.update(projectId, { illustrationMode, updatedAt: Date.now() })
 }
 
 export async function updateWritingInstructions(projectId: string, writingInstructions: string) {
@@ -1469,7 +1509,17 @@ async function getLastMessageOrder(projectId: string) {
   return last?.order ?? 0
 }
 
-export async function beginWritingTurn(projectId: string, text: string, autoIllustrate: boolean, chapterId?: string) {
+function writingNoticeText(mode: IllustrationMode, retry = false) {
+  const prefix = retry ? '正在重新生成正文' : '正在创作正文'
+  return mode === 'none' ? `${prefix}…` : `${prefix}并整理视觉计划…`
+}
+
+function illustrationModeInput(mode: IllustrationMode | boolean): IllustrationMode {
+  return typeof mode === 'boolean' ? (mode ? 'auto' : 'manual') : mode
+}
+
+export async function beginWritingTurn(projectId: string, text: string, mode: IllustrationMode | boolean, chapterId?: string) {
+  const illustrationMode = illustrationModeInput(mode)
   const now = Date.now()
   const nextOrder = (await getLastMessageOrder(projectId)) + 1
   const userMessageId = createId('message')
@@ -1490,7 +1540,7 @@ export async function beginWritingTurn(projectId: string, text: string, autoIllu
       kind: 'notice',
       order: nextOrder + 1,
       createdAt: now + 1,
-      text: autoIllustrate ? '正在创作正文并整理视觉计划…' : '正在创作正文…',
+      text: writingNoticeText(illustrationMode),
       status: 'pending',
       userMessageId,
     },
@@ -1498,7 +1548,7 @@ export async function beginWritingTurn(projectId: string, text: string, autoIllu
 
   await storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.projects], async () => {
     await storyDatabase.messages.bulkAdd(messages)
-    await storyDatabase.projects.update(projectId, { autoIllustrate, updatedAt: now })
+    await storyDatabase.projects.update(projectId, { illustrationMode, updatedAt: now })
   })
   return messages
 }
@@ -1592,10 +1642,11 @@ export async function completeWritingTurn(
   userMessageId: string,
   noticeId: string,
   result: WritingTurnResult,
-  autoIllustrate: boolean,
+  mode: IllustrationMode | boolean,
   forceNewChapter = false,
   expectedBackgroundTaskId?: string,
 ) {
+  const illustrationMode = illustrationModeInput(mode)
   const now = Date.now()
   if (result.kind === 'assistant-only') {
     // A collaboration-only turn never creates chapters, scenes, prose,
@@ -1700,10 +1751,9 @@ export async function completeWritingTurn(
       await upsertChapterParagraphs(targetChapter)
       if (generatedSummary) await appendGeneratedChapterSummaryVersion(targetChapter, generatedSummary, now)
 
-      // Visual planning and character continuity are durable writing metadata.
-      // The auto-illustrate switch controls paid generation only, never whether
-      // characters or a recoverable illustration plan are recorded.
-      if (result.visualPlan) {
+      // Text-only mode must remain robust even if a non-conforming provider
+      // returns a visual plan despite receiving the text-only prompt.
+      if (illustrationMode !== 'none' && result.visualPlan) {
         const referenceCharacterIds: string[] = []
         for (const characterPlan of result.visualPlan.characters) {
           const existingCharacters = await storyDatabase.characters.where('projectId').equals(projectId).toArray()
@@ -1780,6 +1830,7 @@ export async function completeWritingTurn(
           motion: result.visualPlan.motion,
           sceneAnchor: result.visualPlan.sceneAnchor,
           referenceCharacterIds,
+          generationMode: illustrationMode,
           status: 'planned',
           createdAt: now,
           updatedAt: now,
@@ -1860,9 +1911,9 @@ export async function cancelWritingTurn(noticeId: string) {
 /**
  * Re-opens a failed or cancelled turn for regeneration. It reuses the original
  * user message and its existing notice, so no duplicate user bubble is created.
- * Returns the original user text and the project's current auto-illustrate flag.
+ * Returns the original user text and the project's current illustration mode.
  */
-export async function retryWritingTurn(projectId: string, noticeId: string): Promise<{ userText: string; autoIllustrate: boolean }> {
+export async function retryWritingTurn(projectId: string, noticeId: string): Promise<{ userText: string; illustrationMode: IllustrationMode }> {
   const now = Date.now()
   return storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.projects], async () => {
     const notice = await storyDatabase.messages.get(noticeId)
@@ -1875,12 +1926,12 @@ export async function retryWritingTurn(projectId: string, noticeId: string): Pro
     const project = await storyDatabase.projects.get(projectId)
     if (!project) throw new Error('当前作品不存在')
     await storyDatabase.messages.update(noticeId, {
-      text: project.autoIllustrate ? '正在重新生成正文并整理视觉计划…' : '正在重新生成正文…',
+      text: writingNoticeText(resolveIllustrationMode(project), true),
       status: 'pending',
       backgroundTaskId: '',
     })
     await storyDatabase.projects.update(projectId, { updatedAt: now })
-    return { userText, autoIllustrate: project.autoIllustrate }
+    return { userText, illustrationMode: resolveIllustrationMode(project) }
   })
 }
 

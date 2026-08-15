@@ -43,7 +43,7 @@ const databaseMocks = vi.hoisted(() => ({
   setWritingTurnBackgroundTask: vi.fn(),
   toggleFeedback: vi.fn(),
   toggleFeedbackBatch: vi.fn(),
-  updateAutoIllustrate: vi.fn(),
+  updateIllustrationMode: vi.fn(),
   updateCharacterProfile: vi.fn(),
   updateCharacterReferenceStyleMode: vi.fn(),
   updateContextBudget: vi.fn(),
@@ -614,37 +614,37 @@ describe('composer asset and illustration controls', () => {
     expect(await screen.findByRole('dialog', { name: '角色资产测试入口' })).toBeDefined()
   })
 
-  it('shows the explicit auto-illustration state and keeps its persistence flow', async () => {
+  it('selects and persists all illustration modes', async () => {
     const user = userEvent.setup()
     databaseMocks.loadProjectWorkspace.mockResolvedValue({
       ...workspace,
-      project: { ...project, autoIllustrate: true },
+      project: { ...project, illustrationMode: 'auto' },
     })
     render(<App />)
 
-    const button = await screen.findByRole('button', { name: '自动配图：自动' })
+    const button = await screen.findByRole('button', { name: '配图模式：自动' })
     expect(button.textContent).toContain('配图')
     expect(button.textContent).toContain('自动')
     await user.click(button)
-    await waitFor(() => expect(databaseMocks.updateAutoIllustrate).toHaveBeenCalledWith(project.id, false))
-    expect(screen.getByRole('button', { name: '自动配图：关闭' })).toBeDefined()
+    await user.click(screen.getByRole('menuitemradio', { name: /无图/ }))
+    await waitFor(() => expect(databaseMocks.updateIllustrationMode).toHaveBeenCalledWith(project.id, 'none'))
+    expect(screen.getByRole('button', { name: '配图模式：无图' })).toBeDefined()
+    await user.click(screen.getByRole('button', { name: '配图模式：无图' }))
+    await user.click(screen.getByRole('menuitemradio', { name: /按需/ }))
+    expect(databaseMocks.updateIllustrationMode).toHaveBeenCalledWith(project.id, 'manual')
   })
 
-  it('enables auto illustration optimistically without reloading the workspace', async () => {
-    const user = userEvent.setup()
-    providerSettings.image = { ...providerSettings.image, baseUrl: 'https://example.test', model: 'image-test' }
-    secretStoreMocks.has.mockResolvedValue(true)
+  it.each([
+    [false, '按需'],
+    [true, '自动'],
+  ] as const)('renders legacy autoIllustrate=%s as %s mode', async (autoIllustrate, label) => {
+    databaseMocks.loadProjectWorkspace.mockResolvedValue({
+      ...workspace,
+      project: { ...project, autoIllustrate },
+    })
     render(<App />)
 
-    const button = await screen.findByRole('button', { name: '自动配图：关闭' })
-    databaseMocks.loadProjectWorkspace.mockClear()
-    secretStoreMocks.has.mockClear()
-    await user.click(button)
-
-    expect(databaseMocks.updateAutoIllustrate).toHaveBeenCalledWith(project.id, true)
-    expect(screen.getByRole('button', { name: '自动配图：自动' })).toBeDefined()
-    expect(secretStoreMocks.has).toHaveBeenCalledWith('provider:image')
-    expect(databaseMocks.loadProjectWorkspace).not.toHaveBeenCalled()
+    expect(await screen.findByRole('button', { name: `配图模式：${label}` })).toBeDefined()
   })
 
   it('restores reference-blocked illustrations after confirmation even when auto illustration is off', async () => {
@@ -723,7 +723,8 @@ describe('composer asset and illustration controls', () => {
     render(<App />)
 
     expect(await screen.findByRole('button', { name: '去确认角色，解锁插画' })).toBeDefined()
-    expect(screen.getByText('定妆照已就绪，确认后自动生成')).toBeDefined()
+    expect(screen.getByText('插画生成失败，可检查指令后重试')).toBeDefined()
+    expect(screen.queryByRole('img', { name: /插画生成占位图/ })).toBeNull()
   })
 
   it('keeps the generic character asset entry while the portrait is not ready yet', async () => {
@@ -982,6 +983,26 @@ describe('生成停止与重试', () => {
     expect(databaseMocks.completeWritingTurn).not.toHaveBeenCalled()
   })
 
+  it('无图模式把 none 传给写作落库边界', async () => {
+    const user = userEvent.setup()
+    configureSendable()
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-1', projectId: project.id, kind: 'user', text: '继续写', order: 0, createdAt: 1 },
+      { id: 'notice-1', projectId: project.id, kind: 'notice', title: '生成中', order: 1, createdAt: 1 },
+    ])
+    databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
+    writingMocks.generateWritingTurn.mockResolvedValue({ kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['正文。'] })
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '配图模式：按需' }))
+    await user.click(screen.getByRole('menuitemradio', { name: /无图/ }))
+    await user.type(screen.getByLabelText('创作要求'), '继续写')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(databaseMocks.completeWritingTurn).toHaveBeenCalledWith(
+      project.id, 'user-1', 'notice-1', expect.anything(), 'none', undefined, undefined,
+    ))
+  })
+
   it('停止后迟到的模型结果不会写入正文', async () => {
     const user = userEvent.setup()
     configureSendable()
@@ -1024,7 +1045,7 @@ describe('生成停止与重试', () => {
       'user-1',
       'notice-1',
       expect.anything(),
-      false,
+      'manual',
       undefined,
       undefined,
     ))
@@ -1044,7 +1065,7 @@ describe('生成停止与重试', () => {
     const user = userEvent.setup()
     configureSendable()
     databaseMocks.loadProjectWorkspace.mockResolvedValue(failedWorkspace)
-    databaseMocks.retryWritingTurn.mockResolvedValue({ userText: '继续写', autoIllustrate: false })
+    databaseMocks.retryWritingTurn.mockResolvedValue({ userText: '继续写', illustrationMode: 'manual' })
     databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
     writingMocks.generateWritingTurn.mockResolvedValue({ kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['重试正文。'], visualPlan: undefined })
     render(<App />)
@@ -1060,7 +1081,7 @@ describe('生成停止与重试', () => {
     const user = userEvent.setup()
     configureSendable()
     databaseMocks.loadProjectWorkspace.mockResolvedValue(failedWorkspace)
-    databaseMocks.retryWritingTurn.mockResolvedValue({ userText: '继续写', autoIllustrate: false })
+    databaseMocks.retryWritingTurn.mockResolvedValue({ userText: '继续写', illustrationMode: 'manual' })
     databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
     writingMocks.generateWritingTurn.mockResolvedValue({ kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['重试正文。'], visualPlan: undefined })
     render(<App />)

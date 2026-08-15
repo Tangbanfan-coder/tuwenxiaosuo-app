@@ -3,7 +3,7 @@ import type { ProseEvaluationEvent } from '../../domain/models'
 import { anonymizeEvaluationEvents, buildEvaluationReport, evaluationReportCsv, filterEvaluationEvents } from '../evaluationExport'
 
 const event = (patch: Partial<ProseEvaluationEvent> = {}): ProseEvaluationEvent => ({
-  id: 'local-1', eventType: 'prose_analyzed', occurredAt: 1_000, schemaVersion: 1, appVersion: '0.1.0', databaseVersion: 11, proseRuleVersion: 3,
+  id: 'local-1', eventType: 'prose_analyzed', occurredAt: 1_000, schemaVersion: 1, appVersion: '0.1.0', databaseVersion: 12, proseRuleVersion: 3,
   projectId: 'real-project', messageId: 'real-message', paragraphId: 'real-paragraph', ruleIds: ['rule-a'], severities: ['warning'], ...patch,
 })
 

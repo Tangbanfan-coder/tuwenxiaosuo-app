@@ -17,7 +17,7 @@ import {
   failWritingTurn,
   cancelWritingTurn,
 } from '../data/storyDatabase'
-import type { ProjectWorkspace, StoryProject } from '../domain/models'
+import { resolveIllustrationMode, type ProjectWorkspace, type StoryProject } from '../domain/models'
 import { recoverPersistedImageAsset } from '../providers/imageAssetStore'
 import { refreshModelLimits } from '../providers/modelLimits'
 import {
@@ -72,7 +72,7 @@ async function recoverBackgroundGenerationTasks() {
   // enqueue-success/IndexedDB-link-failure window without recreating a task.
   for (const task of tasks) {
     if (task.kind !== 'text') continue
-    const metadata = task.metadata as { noticeId?: string; projectId?: string; userMessageId?: string; autoIllustrate?: boolean; forceNewChapter?: boolean } | undefined
+    const metadata = task.metadata as { noticeId?: string; projectId?: string; userMessageId?: string; illustrationMode?: 'none' | 'manual' | 'auto'; autoIllustrate?: boolean; forceNewChapter?: boolean } | undefined
     if (!metadata?.noticeId) continue
     const notice = await getWritingNotice(metadata.noticeId)
     if (!notice) continue
@@ -100,7 +100,7 @@ async function recoverBackgroundGenerationTasks() {
         continue
       }
       try {
-        await completeWritingTurn(metadata.projectId, metadata.userMessageId, notice.id, parsed, Boolean(metadata.autoIllustrate), Boolean(metadata.forceNewChapter), task.id)
+        await completeWritingTurn(metadata.projectId, metadata.userMessageId, notice.id, parsed, resolveIllustrationMode(metadata), Boolean(metadata.forceNewChapter), task.id)
         await acknowledgeBackgroundGenerationTask(task.id)
         recovered += 1
       } catch {
