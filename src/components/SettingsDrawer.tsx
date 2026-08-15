@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, BookText, Brain, Brush, Check, ChevronDown, ChevronRight, FileText, Gauge, History, Image, Moon, ScrollText, Sun, X } from 'lucide-react'
-import { contextUsageSummary, type ContextUsageState } from './ContextUsage'
+import { contextUsageSummary } from './ContextUsage'
+import type { ContextUsageState } from '../domain/contextUsage'
 import { ILLUSTRATION_STYLE_PRESETS, getIllustrationStylePreset } from '../domain/illustrationStyles'
 import { THEME_PRESETS, getThemePreset } from '../domain/themes'
 import type { AppearanceMode, ContextBudget, IllustrationStylePresetId, ThemePresetId } from '../domain/models'

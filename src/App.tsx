@@ -5,13 +5,9 @@ import {
   BookOpen,
   Check,
   ChevronDown,
-  ImagePlus,
   Menu,
   Plus,
-  Save,
-  Send,
   Settings,
-  Square,
   TriangleAlert,
   UserRound,
   X,
@@ -19,11 +15,10 @@ import {
 import ProjectDrawer from './components/ProjectDrawer'
 import CharacterAssetsDrawer from './components/CharacterAssetsDrawer'
 import ProviderSettingsDialog from './components/ProviderSettingsDialog'
-import ReferenceImageDialog, { type ReferenceImageTarget } from './components/ReferenceImageDialog'
+import ReferenceImageDialog from './components/ReferenceImageDialog'
 import SettingsDrawer from './components/SettingsDrawer'
-import ContextUsage, { contextUsageToolbarSummary, type ContextUsageState } from './components/ContextUsage'
-import ComposerAssetsMenu from './components/ComposerAssetsMenu'
-import ReasoningEffortQuickControl from './components/ReasoningEffortQuickControl'
+import ContextUsage from './components/ContextUsage'
+import Composer from './components/Composer'
 import IllustrationLightbox, { type LightboxImage } from './components/IllustrationLightbox'
 import TimelineMessage from './components/TimelineMessage'
 import WritingInstructionsDialog from './components/WritingInstructionsDialog'
@@ -31,34 +26,15 @@ import SummaryHistoryDialog from './components/SummaryHistoryDialog'
 import StyleCorpusDialog from './components/StyleCorpusDialog'
 import ProseEvaluationDialog from './components/ProseEvaluationDialog'
 import {
-  beginWritingTurn,
   applyParagraphRewrite,
-  applyReferenceAppearanceAnalysis,
-  cancelWritingTurn,
-  completeWritingTurn,
-  confirmCharacterPortrait,
-  createCharacterDraft,
   createProject,
   deleteProject,
-  failWritingTurn,
   getStyleCorpusSummary,
   recordProseEvaluationEvent,
   listChapterSummaryVersions,
   renameProject,
   restoreChapterSummaryVersion,
-  restoreIllustrationsBlockedByReference,
-  retryWritingTurn,
-  setCharacterPortraitFailed,
-  setCharacterPortraitGenerating,
-  setCharacterPortraitReady,
-  setIllustrationFailed,
-  setIllustrationBlockedByReference,
-  setIllustrationGenerating,
-  setIllustrationReady,
-  setWritingTurnBackgroundTask,
   updateIllustrationMode,
-  updateCharacterProfile,
-  updateCharacterReferenceStyleMode,
   updateContextBudget,
   updateIllustrationStyle,
   updateProjectTheme,
@@ -68,198 +44,27 @@ import {
 import { createEvaluationEvent, evaluationIssueFields, proseDurationBucket, proseLengthBucket, proseLengthChangeBucket, rewriteRequestedEvaluation, writingTurnCompletedEvaluation } from './domain/proseEvaluation'
 import { PROSE_STYLE_RULE_VERSION } from './domain/proseStyle'
 import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
-import { resolveIllustrationReferences } from './domain/illustrationReferences'
-import { resolvePreviousSceneIllustration } from './domain/sceneContinuity'
-import { resolveIllustrationMode, type AppearanceMode, type CharacterAsset, type ContextBudget, type ConversationMessage, type IllustrationAsset, type IllustrationMode, type IllustrationStylePresetId, type ProjectWorkspace, type ReferenceStyleMode, type RewriteStrength, type StoredParagraph, type ThemePresetId } from './domain/models'
-import { browserTransport, TransportCancelledError } from './providers/browserTransport'
+import { resolveIllustrationMode, type AppearanceMode, type ContextBudget, type ConversationMessage, type IllustrationMode, type IllustrationStylePresetId, type RewriteStrength, type StoredParagraph, type ThemePresetId } from './domain/models'
+import { browserTransport } from './providers/browserTransport'
 import { loadProviderSettings, saveProviderSettings } from './providers/config'
 import { loadGlobalWritingInstructions, saveGlobalWritingInstructions } from './providers/config'
-import { persistImageAsset, resolveImageSource } from './providers/imageAssetStore'
 import { logImagePipeline } from './providers/imagePipelineLog'
-import { buildIllustrationPrompt } from './providers/illustrationPrompt'
 import { useAppBootstrap } from './hooks/useAppBootstrap'
+import { useTimelineNavigation } from './hooks/useTimelineNavigation'
+import { useWritingTurnController } from './hooks/useWritingTurnController'
+import { useImageAssetWorkflow } from './hooks/useImageAssetWorkflow'
 import ConfirmDialog from './components/ConfirmDialog'
-import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage, resolveImageSize } from './providers/images'
-import { analyzeReferenceImage } from './providers/referenceAnalysis'
-import { secretStore } from './providers/secretStore'
-import { BackgroundTaskUncertainError, acknowledgeBackgroundGenerationTask, cancelBackgroundGenerationTask, enqueueBackgroundTextTask, supportsBackgroundGeneration, waitForBackgroundGenerationTask } from './providers/backgroundGeneration'
 import type { ProviderSettings, ProviderSlot, ReasoningEffort } from './providers/types'
-import { explicitlyRequestsNewChapter, generateWritingTurn, markStyleCorpusFragmentsUsed, parseBackgroundWritingResponse, prepareBackgroundWritingRequest, projectStreamingProse, retrieveStyleExamples, rewriteProseParagraph, type ContextBudgetPlan } from './providers/writing'
+import { markStyleCorpusFragmentsUsed, retrieveStyleExamples, rewriteProseParagraph } from './providers/writing'
 
 const APPEARANCE_KEY = 'illustrated-story-chat.appearance.v1'
-
-type GenerationPhase = 'idle' | 'starting' | 'running' | 'saving' | 'cancelling'
-
-type ContextUsageReminderTier = 0 | 60 | 80 | 100
-
-function contextUsageReminderTier(plan: ContextBudgetPlan): ContextUsageReminderTier {
-  const usage = plan.contextPressureRatio * 100
-  if (usage >= 100) return 100
-  if (usage >= 80) return 80
-  if (usage >= 60) return 60
-  return 0
-}
-
-interface ComposerProps {
-  generationPhase: GenerationPhase
-  illustrationMode: IllustrationMode
-  reasoningEffort: ReasoningEffort | undefined
-  contextUsagePlan?: ContextBudgetPlan
-  contextUsageState: ContextUsageState
-  onSubmit: (text: string) => Promise<boolean>
-  onStop: () => void
-  onOpenContextUsage: () => void
-  onOpenCharacterAssets: () => void
-  onOpenReferenceImage: () => void
-  onReasoningEffortChange: (reasoningEffort: ReasoningEffort) => void
-  onIllustrationModeChange: (mode: IllustrationMode) => void
-}
-
-function Composer({
-  generationPhase,
-  illustrationMode,
-  reasoningEffort,
-  contextUsagePlan,
-  contextUsageState,
-  onSubmit,
-  onStop,
-  onOpenContextUsage,
-  onOpenCharacterAssets,
-  onOpenReferenceImage,
-  onReasoningEffortChange,
-  onIllustrationModeChange,
-}: ComposerProps) {
-  const [draft, setDraft] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [illustrationModeOpen, setIllustrationModeOpen] = useState(false)
-  const illustrationModeControlRef = useRef<HTMLDivElement>(null)
-  const illustrationModeTriggerRef = useRef<HTMLButtonElement>(null)
-  const generating = generationPhase === 'starting' || generationPhase === 'running'
-  const saving = generationPhase === 'saving'
-  const cancelling = generationPhase === 'cancelling'
-
-  useEffect(() => {
-    if (!illustrationModeOpen) return
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (!illustrationModeControlRef.current?.contains(event.target as Node)) setIllustrationModeOpen(false)
-    }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      setIllustrationModeOpen(false)
-      illustrationModeTriggerRef.current?.focus()
-    }
-    document.addEventListener('pointerdown', closeOnOutsidePointer)
-    window.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePointer)
-      window.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [illustrationModeOpen])
-
-  const submit = async () => {
-    const text = draft.trim()
-    if (!text || generationPhase !== 'idle' || submitting) return
-    setSubmitting(true)
-    setDraft('')
-    try {
-      if (await onSubmit(text)) setDraft(text)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Browsers disagree on composition state during the final IME Enter.
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-      void submit()
-    }
-  }
-
-  return (
-    <footer className="composer-wrap">
-      <div className="composer">
-        <textarea
-          rows={1}
-          value={draft}
-          placeholder="继续写下去，或告诉 AI 你想看到的画面…"
-          aria-label="创作要求"
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={handleKeyDown}
-        />
-        <div className="composer-toolbar">
-          <div className="composer-tools">
-            <ComposerAssetsMenu onOpenCharacterAssets={onOpenCharacterAssets} onOpenReferenceImage={onOpenReferenceImage} />
-            <ReasoningEffortQuickControl value={reasoningEffort} onChange={onReasoningEffortChange} />
-            <ContextUsage
-              plan={contextUsagePlan}
-              state={contextUsageState}
-              compactLabel={contextUsageToolbarSummary(contextUsagePlan, contextUsageState)}
-              detailsOpen={false}
-              showDetails={false}
-              onDetailsOpenChange={(open) => { if (open) onOpenContextUsage() }}
-            />
-            <div ref={illustrationModeControlRef} className="illustration-mode-control">
-              <button
-                ref={illustrationModeTriggerRef}
-                className="composer-tool-button auto-illustrate-button"
-                type="button"
-                aria-expanded={illustrationModeOpen}
-                aria-haspopup="menu"
-                aria-label={`配图模式：${illustrationMode === 'none' ? '无图' : illustrationMode === 'manual' ? '按需' : '自动'}`}
-                onClick={() => setIllustrationModeOpen((open) => !open)}
-              >
-                <ImagePlus size={17} aria-hidden="true" />
-                <span>配图</span>
-                <strong>{illustrationMode === 'none' ? '无图' : illustrationMode === 'manual' ? '按需' : '自动'}</strong>
-              </button>
-              {illustrationModeOpen && <div className="illustration-mode-menu" role="menu" aria-label="选择配图模式">
-                {([
-                  ['none', '无图', '只写正文'],
-                  ['manual', '按需', '保存建议，手动生成'],
-                  ['auto', '自动', '自动生成插画'],
-                ] as const).map(([mode, label, description]) => (
-                  <button key={mode} type="button" role="menuitemradio" aria-checked={illustrationMode === mode} onClick={() => { onIllustrationModeChange(mode); setIllustrationModeOpen(false); illustrationModeTriggerRef.current?.focus() }}>
-                    <span><strong>{label}</strong><small>{description}</small></span>
-                    {illustrationMode === mode && <Check size={15} aria-hidden="true" />}
-                  </button>
-                ))}
-              </div>}
-            </div>
-          </div>
-          <button
-            className="send-button"
-            type="button"
-            aria-label={cancelling ? '正在停止' : saving ? '正在保存' : generating ? '停止生成' : '发送'}
-            disabled={cancelling || saving || (!generating && (!draft.trim() || submitting))}
-            onClick={() => { if (generating) void onStop(); else if (!cancelling && !saving) void submit() }}
-          >
-            <span className="send-button-surface">{saving ? <Save size={16} /> : generating || cancelling ? <Square size={16} /> : <Send size={18} />}</span>
-          </button>
-        </div>
-      </div>
-    </footer>
-  )
-}
 
 function loadAppearanceMode(): AppearanceMode {
   return localStorage.getItem(APPEARANCE_KEY) === 'light' ? 'light' : 'dark'
 }
 
 export default function App() {
-  const timelineRef = useRef<HTMLElement>(null)
-  const imageQueueRef = useRef<Promise<void>>(Promise.resolve())
-  const queuedIllustrationIdsRef = useRef(new Set<string>())
-  const contextUsageReminderTiersRef = useRef(new Map<string, ContextUsageReminderTier>())
-  const [contextUsagePlan, setContextUsagePlan] = useState<ContextBudgetPlan>()
-  const [contextUsageProjectId, setContextUsageProjectId] = useState<string>()
-  const [contextUsageState, setContextUsageState] = useState<ContextUsageState>('pending')
-  const [contextUsageError, setContextUsageError] = useState('')
   const [contextUsageDetailsOpen, setContextUsageDetailsOpen] = useState(false)
-  const [generationPhase, setGenerationPhase] = useState<GenerationPhase>('idle')
-  const generationRef = useRef<{ attemptId: number; cancelled: boolean; phase: GenerationPhase; noticeId?: string; abortController?: AbortController; backgroundTaskId?: string }>({ attemptId: 0, cancelled: false, phase: 'idle' })
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const [appSettingsOpen, setAppSettingsOpen] = useState(false)
   const [characterAssetsOpen, setCharacterAssetsOpen] = useState(false)
@@ -271,23 +76,13 @@ export default function App() {
   const [styleCorpusOpen, setStyleCorpusOpen] = useState(false)
   const [proseEvaluationOpen, setProseEvaluationOpen] = useState(false)
   const [styleCorpusSummary, setStyleCorpusSummary] = useState<{ sourceCount: number; fragmentCount: number }>()
-  const portraitGenerationCancelledRef = useRef(false)
-  const [portraitGenerationActive, setPortraitGenerationActive] = useState(false)
   const [summaryHistoryOpen, setSummaryHistoryOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSlot, setSettingsSlot] = useState<ProviderSlot>('text')
   const [toast, setToast] = useState<{ text: string; kind: 'success' | 'error' }>()
   const [providerSettings, setProviderSettings] = useState<ProviderSettings>(() => loadProviderSettings())
-  const [imageProviderReady, setImageProviderReady] = useState(false)
-  const [illustrationGenerationStages, setIllustrationGenerationStages] = useState<Record<string, 'waiting' | 'downloading' | 'saving' | 'validating'>>({})
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() => loadAppearanceMode())
-  const [visibleChapterId, setVisibleChapterId] = useState<string>()
   const [lightboxImage, setLightboxImage] = useState<LightboxImage>()
-  const [streamingText, setStreamingText] = useState('')
-  const streamingRawRef = useRef('')
-  const [showJumpToLatest, setShowJumpToLatest] = useState(false)
-  const stickToBottomRef = useRef(true)
-  const previousProjectIdRef = useRef<string | undefined>(undefined)
   const [confirmState, setConfirmState] = useState<{
     title: string
     message: string
@@ -313,6 +108,77 @@ export default function App() {
   } = useAppBootstrap({
     onEmptyLibrary: () => setProjectMenuOpen(true),
     onToast: showToast,
+  })
+
+  const {
+    cancelPortraitGeneration,
+    confirmCharacter,
+    createCharacterWithoutReference,
+    handleAnalyzeReference,
+    handleReferenceStyleModeChange,
+    handleUpdateCharacterProfile,
+    handleWritingCompleted,
+    illustrationGenerationStages,
+    imageProviderReady,
+    importCharacterReference,
+    portraitGenerationActive,
+    requestCharacterPortrait,
+    retryIllustration,
+  } = useImageAssetWorkflow({
+    workspace,
+    providerSettings,
+    refreshWorkspace,
+    showToast,
+    openProviderSettings,
+    onRequireImageProviderForCharacter: () => {
+      setCharacterAssetsOpen(false)
+      setCharacterAssetsOrigin('main')
+    },
+    onOpenCharacterAssets: openCharacterAssets,
+    onReferenceImported: () => {
+      setReferenceImageOpen(false)
+      setCharacterAssetsOrigin('reference-image')
+      setCharacterAssetsOpen(true)
+    },
+    onCharacterCreated: () => {
+      setReferenceImageOpen(false)
+      setCharacterAssetsOpen(true)
+    },
+  })
+
+  const {
+    activeContextUsagePlan,
+    activeContextUsageState,
+    contextUsageError,
+    generationPhase,
+    handleStopGeneration,
+    retryWriting,
+    sendMessage,
+    streamingText,
+  } = useWritingTurnController({
+    workspace,
+    providerSettings,
+    setWorkspace,
+    refreshWorkspace,
+    refreshProjects,
+    showToast,
+    openTextProviderSettings: () => openProviderSettings('text'),
+    onWritingCompleted: handleWritingCompleted,
+  })
+
+  const {
+    handleTimelineScroll,
+    jumpToLatest,
+    showJumpToLatest,
+    timelineRef,
+    visibleChapterId,
+  } = useTimelineNavigation({
+    booting,
+    projectId: workspace?.project.id,
+    messageCount: workspace?.messages.length ?? 0,
+    streamingText,
+    activeChapterId: workspace?.project.activeChapterId,
+    fallbackChapterId: workspace?.chapters[0]?.id,
   })
 
   useEffect(() => {
@@ -364,92 +230,10 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!workspace) return
-    if (contextUsageProjectId === workspace.project.id) return
-    setContextUsagePlan(undefined)
-    setContextUsageError('')
-    setContextUsageState('pending')
-  }, [contextUsageProjectId, workspace?.project.id])
-
-  const syncVisibleChapterFromScroll = useCallback(() => {
-    const timeline = timelineRef.current
-    if (!timeline) return
-    const anchors = Array.from(timeline.querySelectorAll<HTMLElement>('[data-chapter-id]'))
-    if (!anchors.length) return
-    const threshold = timeline.getBoundingClientRect().top + 24
-    let nextChapterId = anchors[0].dataset.chapterId
-    for (const anchor of anchors) {
-      if (anchor.getBoundingClientRect().top > threshold) break
-      nextChapterId = anchor.dataset.chapterId
-    }
-    if (nextChapterId) setVisibleChapterId((current) => current === nextChapterId ? current : nextChapterId)
-  }, [])
-
-  const scrollTimelineToBottom = useCallback((instant: boolean) => {
-    const timeline = timelineRef.current
-    if (!timeline) return
-    if (instant) {
-      // Override the CSS `scroll-behavior: smooth` so streaming increments jump
-      // without starting a fresh smooth animation on every delta.
-      timeline.style.scrollBehavior = 'auto'
-      timeline.scrollTop = timeline.scrollHeight
-      timeline.style.scrollBehavior = ''
-    } else {
-      timeline.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' })
-    }
-  }, [])
-
-  const handleTimelineScroll = useCallback(() => {
-    const timeline = timelineRef.current
-    if (!timeline) return
-    const distance = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight
-    const atBottom = distance < 48
-    stickToBottomRef.current = atBottom
-    setShowJumpToLatest(!atBottom)
-    syncVisibleChapterFromScroll()
-  }, [syncVisibleChapterFromScroll])
-
-  useEffect(() => {
-    if (booting) return
-    const projectChanged = previousProjectIdRef.current !== workspace?.project.id
-    previousProjectIdRef.current = workspace?.project.id
-    if (projectChanged) {
-      stickToBottomRef.current = true
-      setShowJumpToLatest(false)
-      const frame = window.requestAnimationFrame(() => {
-        scrollTimelineToBottom(true)
-        window.requestAnimationFrame(syncVisibleChapterFromScroll)
-      })
-      return () => window.cancelAnimationFrame(frame)
-    }
-    if (!stickToBottomRef.current) return
-    const frame = window.requestAnimationFrame(() => {
-      scrollTimelineToBottom(true)
-      window.requestAnimationFrame(syncVisibleChapterFromScroll)
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [booting, workspace?.project.id, workspace?.messages.length, streamingText, scrollTimelineToBottom, syncVisibleChapterFromScroll])
-
-  useEffect(() => {
-    const defaultChapterId = workspace?.project.activeChapterId ?? workspace?.chapters[0]?.id
-    setVisibleChapterId(defaultChapterId)
-  }, [workspace?.project.id])
-
-  useEffect(() => {
     if (!toast) return
     const timeout = window.setTimeout(() => setToast(undefined), 2600)
     return () => window.clearTimeout(timeout)
   }, [toast])
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      const provider = providerSettings.image
-      const ready = Boolean(provider.baseUrl.trim() && provider.model.trim() && await secretStore.has(provider.secretRef))
-      if (!cancelled) setImageProviderReady(ready)
-    })()
-    return () => { cancelled = true }
-  }, [providerSettings.image])
 
   async function handleCreateProject(title: string) {
     const project = await createProject(title)
@@ -586,559 +370,6 @@ export default function App() {
     await updateContextBudget(workspace.project.id, contextBudget)
   }
 
-  async function providerIsReady(slot: ProviderSlot) {
-    const provider = providerSettings[slot]
-    return Boolean(provider.baseUrl.trim() && provider.model.trim() && await secretStore.has(provider.secretRef))
-  }
-
-  function enqueueImageTask<T>(task: () => Promise<T>) {
-    const queued = imageQueueRef.current.then(task, task)
-    imageQueueRef.current = queued.then(() => undefined, () => undefined)
-    return queued
-  }
-
-  function cancelPortraitGeneration() {
-    portraitGenerationCancelledRef.current = true
-    showToast('已停止后续定妆照生成；当前请求结束后不会继续排队')
-  }
-
-  function queueIllustration(illustration: IllustrationAsset, sourceWorkspace: ProjectWorkspace) {
-    if (queuedIllustrationIdsRef.current.has(illustration.id)) return Promise.resolve()
-    queuedIllustrationIdsRef.current.add(illustration.id)
-    return enqueueImageTask(async () => {
-      try {
-        await generateIllustration(illustration, sourceWorkspace)
-      } finally {
-        queuedIllustrationIdsRef.current.delete(illustration.id)
-      }
-    })
-  }
-
-  async function generateCharacterPortrait(character: CharacterAsset, sourceWorkspace: ProjectWorkspace, feedback?: string) {
-    await setCharacterPortraitGenerating(character.id)
-    await refreshWorkspace(sourceWorkspace.project.id)
-    try {
-      const prompt = buildCharacterPortraitPrompt(character, sourceWorkspace.style, feedback)
-      const currentReference = resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri)
-      const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: character.id, target: 'portrait' as const }
-      const imageUrl = feedback && currentReference
-        ? await editOpenAiImage(providerSettings.image, prompt, [currentReference], browserTransport, resolveImageSize(providerSettings.image, 'portrait', '1024x1536'), undefined, nativeTarget)
-        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, resolveImageSize(providerSettings.image, 'portrait', '1024x1536'), undefined, nativeTarget)
-      const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, character.id)
-      await setCharacterPortraitReady(character.id, storedImage.imageUrl, storedImage.localUri)
-      await refreshWorkspace(sourceWorkspace.project.id)
-      showToast(`${character.name}的定妆照已生成；去角色资产确认后，相关插画会自动继续`)
-      return true
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '未知错误'
-      await setCharacterPortraitFailed(character.id, message)
-      await refreshWorkspace(sourceWorkspace.project.id)
-      showToast(`${character.name}的定妆照生成失败`, 'error')
-      return false
-    }
-  }
-
-  async function requestCharacterPortrait(characterId: string, feedback?: string) {
-    if (!workspace) return
-    const character = workspace.characters.find((item) => item.id === characterId)
-    if (!character) return
-    if (!(await providerIsReady('image'))) {
-      setCharacterAssetsOpen(false)
-      setCharacterAssetsOrigin('main')
-      openProviderSettings('image')
-      showToast('请先完成图片模型配置')
-      return
-    }
-    const succeeded = await enqueueImageTask(() => generateCharacterPortrait(character, workspace, feedback))
-    if (!succeeded) throw new Error('定妆照生成失败')
-  }
-
-  async function importCharacterReference(target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode, autoAnalyze: boolean) {
-    if (!workspace) return
-    try {
-      const characterId = 'characterId' in target
-        ? target.characterId
-        : (await createCharacterDraft(workspace.project.id, target.name, target.role)).id
-      const storedImage = await persistImageAsset(dataUrl, workspace.project.id, characterId, 'imported')
-      await setCharacterPortraitReady(characterId, storedImage.imageUrl, storedImage.localUri, referenceStyleMode)
-      let analysisMessage = ''
-      if (autoAnalyze) {
-        if (await providerIsReady('text')) {
-          try {
-            const analysis = await analyzeReferenceImage(dataUrl, providerSettings.text, browserTransport)
-            await applyReferenceAppearanceAnalysis(characterId, analysis)
-            analysisMessage = '，外貌档案已识别，请核对后确认'
-          } catch (analysisError) {
-            analysisMessage = '；图片已保存，但外貌识别失败，可在角色资产中手动填写或重新识别'
-            console.warn('Reference image analysis failed', analysisError instanceof Error ? analysisError.message : String(analysisError))
-          }
-        } else {
-          analysisMessage = '；图片已保存，配置可识图的文本模型后可在角色资产中识别外貌'
-        }
-      }
-      await refreshWorkspace(workspace.project.id)
-      setReferenceImageOpen(false)
-      setCharacterAssetsOrigin('reference-image')
-      setCharacterAssetsOpen(true)
-      showToast(`参考图已导入${analysisMessage || '，请补充档案后确认'}`)
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : '参考图导入失败', 'error')
-    }
-  }
-
-  async function handleReferenceStyleModeChange(characterId: string, referenceStyleMode: ReferenceStyleMode) {
-    if (!workspace) return
-    await updateCharacterReferenceStyleMode(characterId, referenceStyleMode)
-    await refreshWorkspace(workspace.project.id)
-    showToast(referenceStyleMode === 'project' ? '该角色会统一为作品画风' : '该角色会保留参考图画风')
-  }
-
-  async function handleUpdateCharacterProfile(characterId: string, profile: { narrativePronoun?: CharacterAsset['narrativePronoun']; ageAndBuild: string; fixedTraits: string[]; defaultLook: string; wardrobe: string }) {
-    if (!workspace) return
-    try {
-      await updateCharacterProfile(characterId, profile)
-      await refreshWorkspace(workspace.project.id)
-      showToast('角色档案已更新')
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : '角色档案保存失败', 'error')
-    }
-  }
-
-  async function handleAnalyzeReference(characterId: string) {
-    if (!workspace) return
-    const character = workspace.characters.find((item) => item.id === characterId)
-    const referenceSource = character
-      ? resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri)
-      : undefined
-    if (!referenceSource) throw new Error('这张参考图无法作为识别输入，请重新导入原图后重试')
-    if (!(await providerIsReady('text'))) {
-      openProviderSettings('text')
-      throw new Error('请先配置可识图的文本模型')
-    }
-    try {
-      const analysis = await analyzeReferenceImage(referenceSource, providerSettings.text, browserTransport)
-      await applyReferenceAppearanceAnalysis(characterId, analysis)
-      await refreshWorkspace(workspace.project.id)
-      showToast('外貌档案已重新识别，请核对并再次确认')
-    } catch (error) {
-      throw new Error(error instanceof Error ? error.message : '外貌识别失败，请手动补充档案')
-    }
-  }
-
-  async function generateIllustration(illustration: IllustrationAsset, sourceWorkspace: ProjectWorkspace) {
-    const referenceResolution = resolveIllustrationReferences(illustration, sourceWorkspace.characters)
-    if (!referenceResolution.ready) {
-      await setIllustrationBlockedByReference(illustration.id, referenceResolution.reason)
-      await refreshWorkspace(sourceWorkspace.project.id)
-      showToast(referenceResolution.reason, 'error')
-      return
-    }
-    await setIllustrationGenerating(illustration.id)
-    setIllustrationGenerationStages((current) => ({ ...current, [illustration.id]: 'waiting' }))
-    await refreshWorkspace(sourceWorkspace.project.id)
-    const pipelineStartedAt = Date.now()
-    try {
-      const referenceCharacters = referenceResolution.characters
-      const characterReferenceSources = referenceCharacters
-        .map((character) => resolveImageSource(character.continuity.referenceImageUrl, character.continuity.localUri) as string)
-      const previousSceneIllustration = resolvePreviousSceneIllustration(illustration, sourceWorkspace.illustrations)
-      const sceneReferenceSource = previousSceneIllustration
-        ? resolveImageSource(previousSceneIllustration.imageUrl, previousSceneIllustration.localUri)
-        : undefined
-      const referenceSources = sceneReferenceSource
-        ? [...characterReferenceSources, sceneReferenceSource]
-        : characterReferenceSources
-      const prompt = buildIllustrationPrompt(illustration, sourceWorkspace.style, referenceCharacters, Boolean(sceneReferenceSource))
-      const nativeTarget = { projectId: sourceWorkspace.project.id, assetId: illustration.id, target: 'illustration' as const }
-      const setStage = (stage: 'waiting' | 'downloading' | 'saving' | 'validating') => {
-        setIllustrationGenerationStages((current) => ({ ...current, [illustration.id]: stage }))
-      }
-      const imageUrl = referenceSources.length
-        ? await editOpenAiImage(providerSettings.image, prompt, referenceSources, browserTransport, resolveImageSize(providerSettings.image, 'landscape', '1536x1024'), setStage, nativeTarget)
-        : await generateOpenAiImage(providerSettings.image, prompt, browserTransport, resolveImageSize(providerSettings.image, 'landscape', '1536x1024'), setStage, nativeTarget)
-      const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, illustration.id, 'generated', setStage)
-      await setIllustrationReady(illustration.id, storedImage.imageUrl, storedImage.localUri)
-      await refreshWorkspace(sourceWorkspace.project.id)
-      logImagePipeline('info', {
-        phase: 'illustration-complete',
-        illustrationId: illustration.id,
-        usesReferences: referenceResolution.usesReferences,
-        durationMs: Date.now() - pipelineStartedAt,
-      })
-      showToast('剧情插画已生成')
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '未知错误'
-      logImagePipeline('warn', {
-        phase: 'illustration-failed',
-        illustrationId: illustration.id,
-        usesReferences: referenceResolution.usesReferences,
-        durationMs: Date.now() - pipelineStartedAt,
-        message,
-      })
-      await setIllustrationFailed(illustration.id, message)
-      await refreshWorkspace(sourceWorkspace.project.id)
-      showToast('剧情插画生成失败，没有自动重试', 'error')
-    } finally {
-      setIllustrationGenerationStages((current) => {
-        const { [illustration.id]: _finished, ...remaining } = current
-        return remaining
-      })
-    }
-  }
-
-  async function confirmCharacter(characterId: string) {
-    if (!workspace) return
-    const legacyReferenceBlocks = workspace.illustrations.flatMap((illustration) => {
-      if (illustration.status !== 'failed' || illustration.failureKind || !illustration.errorMessage) return []
-      const resolution = resolveIllustrationReferences(illustration, workspace.characters)
-      return !resolution.ready && illustration.errorMessage === resolution.reason
-        ? [{ illustrationId: illustration.id, reason: resolution.reason }]
-        : []
-    })
-    try {
-      await confirmCharacterPortrait(characterId)
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : '确认角色失败', 'error')
-      return
-    }
-    await Promise.all(legacyReferenceBlocks.map(({ illustrationId, reason }) => (
-      setIllustrationBlockedByReference(illustrationId, reason)
-    )))
-    let nextWorkspace = await refreshWorkspace(workspace.project.id)
-    if (!nextWorkspace) return
-    const confirmedWorkspace = nextWorkspace
-    const readyReferenceBlocks = confirmedWorkspace.illustrations.filter((illustration) => {
-      if (illustration.failureKind !== 'reference-unavailable') return false
-      const resolution = resolveIllustrationReferences(illustration, confirmedWorkspace.characters)
-      return resolution.ready && resolution.characters.some((character) => character.id === characterId)
-    })
-    if (readyReferenceBlocks.length) {
-      await restoreIllustrationsBlockedByReference(confirmedWorkspace.project.id, readyReferenceBlocks.map((illustration) => illustration.id))
-      nextWorkspace = await refreshWorkspace(workspace.project.id)
-      if (!nextWorkspace) return
-      showToast(`已解锁 ${readyReferenceBlocks.length} 张等待中的插画，自动配图开启时会继续生成`)
-    }
-    if (resolveIllustrationMode(nextWorkspace.project) !== 'auto' || !(await providerIsReady('image'))) return
-    const eligible = nextWorkspace.illustrations.filter((illustration) => {
-      if (illustration.status !== 'planned' || illustration.generationMode === 'manual') return false
-      const resolution = resolveIllustrationReferences(illustration, nextWorkspace.characters)
-      return resolution.ready && resolution.characters.some((character) => character.id === characterId)
-    })
-    for (const illustration of eligible) {
-      void queueIllustration(illustration, nextWorkspace)
-    }
-  }
-
-  async function createCharacterWithoutReference(target: { name: string; role: string }) {
-    if (!workspace) return
-    await createCharacterDraft(workspace.project.id, target.name, target.role)
-    await refreshWorkspace(workspace.project.id)
-    setReferenceImageOpen(false)
-    setCharacterAssetsOpen(true)
-    showToast('角色已创建，可在角色资产中生成定妆照')
-  }
-
-  async function retryIllustration(illustrationId: string) {
-    if (!workspace || !(await providerIsReady('image'))) {
-      openProviderSettings('image')
-      showToast('请先完成图片模型配置')
-      return
-    }
-    const illustration = workspace.illustrations.find((item) => item.id === illustrationId)
-    if (!illustration) return
-    if (illustration.status === 'generating') {
-      openCharacterAssets()
-      return
-    }
-    await queueIllustration(illustration, workspace)
-  }
-
-  type WritingAttemptOutcome = 'completed' | 'failed' | 'cancelled' | 'uncertain' | 'superseded'
-
-  async function runWritingAttempt(input: { userMessageId: string; noticeId: string; userText: string }): Promise<WritingAttemptOutcome> {
-    if (!workspace) return 'superseded'
-    const textProvider = providerSettings.text
-    const { userMessageId, noticeId, userText } = input
-    const projectId = workspace.project.id
-    const illustrationMode = resolveIllustrationMode(workspace.project)
-    const attemptId = ++generationRef.current.attemptId
-    generationRef.current.cancelled = false
-    generationRef.current.phase = 'running'
-    generationRef.current.noticeId = noticeId
-    generationRef.current.backgroundTaskId = undefined
-    generationRef.current.abortController = undefined
-
-    setGenerationPhase('running')
-    streamingRawRef.current = ''
-    setStreamingText('')
-
-    let backgroundOutcome: 'none' | 'issued' | 'failed' | 'uncertain' | 'completed' = 'none'
-    let expectedBackgroundTaskId: string | undefined
-    let selectedStyleFragmentIds: string[] = []
-    let contextReminder: { text: string; kind: 'success' | 'error' } | undefined
-
-    const isCurrent = () => generationRef.current.attemptId === attemptId
-    const isCancelled = () => generationRef.current.cancelled
-
-    try {
-      const previousIllustrationIds = new Set(workspace.illustrations.map((illustration) => illustration.id))
-      const writingOptions = {
-        excludeUserMessageId: userMessageId,
-        onStyleFragmentsSelected: (fragmentIds: string[]) => { selectedStyleFragmentIds = fragmentIds },
-        onContextPlan: (plan: ContextBudgetPlan) => {
-          setContextUsagePlan(plan)
-          setContextUsageProjectId(projectId)
-          setContextUsageError('')
-          setContextUsageState(plan.isOverLimit ? 'over-limit' : plan.estimator.isFallback ? 'fallback' : 'ready')
-          const previousTier = contextUsageReminderTiersRef.current.get(projectId) ?? 0
-          const nextTier = contextUsageReminderTier(plan)
-          contextUsageReminderTiersRef.current.set(projectId, nextTier)
-          if (nextTier > previousTier) {
-            const reminder = nextTier === 60
-              ? '上下文达到 60%，将开始整理近期内容'
-              : nextTier === 80
-                ? '上下文达到 80%，将明显压缩历史内容'
-                : '上下文达到 100%，将优先保留核心规则与章节状态'
-            contextReminder = { text: reminder, kind: nextTier === 100 ? 'error' : 'success' }
-          }
-        },
-      }
-      const forceNewChapter = explicitlyRequestsNewChapter(userText)
-
-      const backgroundTask = supportsBackgroundGeneration()
-        ? await (async () => {
-          const preparedBackgroundRequest = await prepareBackgroundWritingRequest(workspace, userText, textProvider, writingOptions)
-          return enqueueBackgroundTextTask({
-            ...preparedBackgroundRequest,
-            secretRef: textProvider.secretRef,
-            metadata: { projectId, userMessageId, noticeId, illustrationMode, forceNewChapter },
-          })
-        })()
-        : undefined
-
-      if (!isCurrent()) return 'superseded'
-
-      let result
-      if (backgroundTask) {
-        backgroundOutcome = 'issued'
-        generationRef.current.backgroundTaskId = backgroundTask.id
-        if (isCancelled()) {
-          await cancelBackgroundGenerationTask(backgroundTask.id).catch(() => undefined)
-          throw new TransportCancelledError('生成已取消')
-        }
-        const linked = await setWritingTurnBackgroundTask(noticeId, backgroundTask.id)
-        if (!linked) {
-          backgroundOutcome = 'uncertain'
-          throw new BackgroundTaskUncertainError('请求已发出，正在等待补收结果')
-        }
-        expectedBackgroundTaskId = backgroundTask.id
-        let completed
-        try { completed = await waitForBackgroundGenerationTask(backgroundTask.id) }
-        catch { backgroundOutcome = 'uncertain'; throw new BackgroundTaskUncertainError() }
-        if (!isCurrent()) return 'superseded'
-        if (completed.state === 'unknown') { backgroundOutcome = 'uncertain'; throw new BackgroundTaskUncertainError() }
-        if (completed.state === 'cancelled') { backgroundOutcome = 'failed'; throw new TransportCancelledError('生成已取消') }
-        if (completed.state !== 'completed' || !completed.rawResponse) { backgroundOutcome = 'failed'; throw new Error(completed.error || '后台写作未完成') }
-        try {
-          result = parseBackgroundWritingResponse(completed.rawResponse)
-        } catch (error) {
-          backgroundOutcome = 'failed'
-          throw error
-        }
-        backgroundOutcome = 'completed'
-      } else {
-        const abortController = new AbortController()
-        generationRef.current.abortController = abortController
-        if (isCancelled()) abortController.abort()
-        result = await generateWritingTurn(workspace, userText, textProvider, browserTransport, (delta) => {
-          if (!isCurrent()) return
-          streamingRawRef.current += delta
-          setStreamingText(projectStreamingProse(streamingRawRef.current))
-        }, { ...writingOptions, signal: abortController.signal })
-      }
-
-      if (!isCurrent()) return 'superseded'
-      if (isCancelled()) throw new TransportCancelledError('生成已取消')
-      // Saving starts before the async database call. This synchronous control
-      // barrier closes the same-event-loop window where a stale stop callback
-      // could otherwise queue a cancellation behind the completion transaction.
-      generationRef.current.phase = 'saving'
-      setGenerationPhase('saving')
-      try {
-        await completeWritingTurn(
-          projectId,
-          userMessageId,
-          noticeId,
-          result,
-          illustrationMode,
-          forceNewChapter,
-          expectedBackgroundTaskId,
-        )
-      } catch (error) {
-        if (expectedBackgroundTaskId) {
-          backgroundOutcome = 'uncertain'
-          throw new BackgroundTaskUncertainError('结果已保存，正在等待下次补收')
-        }
-        throw error
-      }
-      await markStyleCorpusFragmentsUsed(selectedStyleFragmentIds).catch(() => undefined)
-      void recordProseEvaluationEvent(writingTurnCompletedEvaluation({ projectId, corpusFragmentCount: selectedStyleFragmentIds.length, contextBudget: workspace.project.contextBudget ?? 'standard' })).catch(() => undefined)
-      if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId)
-      // The final prose is about to be loaded from storage; do not render the
-      // same turn twice while the workspace refresh is in flight.
-      streamingRawRef.current = ''
-      setStreamingText('')
-      const nextWorkspace = await refreshWorkspace(projectId)
-      await refreshProjects()
-      if (result.kind === 'prose' && result.visualPlan && nextWorkspace) {
-        const newCharacterNames = new Set(result.visualPlan.characters.map((character) => character.name.toLocaleLowerCase()))
-        const portraits = nextWorkspace.characters.filter((character) =>
-          newCharacterNames.has(character.name.toLocaleLowerCase()) && (character.portraitStatus ?? 'planned') === 'planned',
-        )
-        const newIllustrations = nextWorkspace.illustrations.filter((illustration) => !previousIllustrationIds.has(illustration.id))
-        const imageReady = await providerIsReady('image')
-        const readyIllustrations = newIllustrations.filter((illustration) => (
-          illustration.status === 'planned' && illustration.generationMode !== 'manual' && resolveIllustrationReferences(illustration, nextWorkspace.characters).ready
-        ))
-        if (illustrationMode === 'auto' && portraits.length && imageReady) {
-          portraitGenerationCancelledRef.current = false
-          setPortraitGenerationActive(true)
-          void enqueueImageTask(async () => {
-            try {
-              for (const character of portraits) {
-                if (portraitGenerationCancelledRef.current) break
-                await generateCharacterPortrait(character, nextWorkspace)
-              }
-            } finally {
-              setPortraitGenerationActive(false)
-            }
-          })
-          showToast('正文已保存，定妆照已进入生成队列')
-        } else if (illustrationMode === 'manual') {
-          showToast('正文和视觉计划已保存；可选择需要的插画手动生成')
-        } else if (illustrationMode === 'none') {
-          showToast('正文已保存')
-        } else if (!imageReady) {
-          showToast('正文和视觉计划已保存；请先配置图片模型')
-        } else if (readyIllustrations.length) {
-          for (const illustration of readyIllustrations) void queueIllustration(illustration, nextWorkspace)
-          showToast('正文已保存，插画已进入生成队列')
-        } else {
-          showToast(newIllustrations.length ? '正文和视觉计划已保存；请先确认角色定妆照' : '正文和视觉计划已保存')
-        }
-      } else if (result.kind === 'prose') {
-        showToast('正文已保存')
-      }
-      if (contextReminder) showToast(contextReminder.text, contextReminder.kind)
-      return 'completed'
-    } catch (error) {
-      if (!isCurrent()) return 'superseded'
-      if (isCancelled() || error instanceof TransportCancelledError) {
-        await cancelWritingTurn(noticeId)
-        if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId).catch(() => undefined)
-        await refreshWorkspace(projectId).catch(() => undefined)
-        return 'cancelled'
-      }
-      const message = error instanceof Error ? error.message : '未知错误'
-      if (backgroundOutcome !== 'issued' && backgroundOutcome !== 'uncertain') {
-        const partialProse = projectStreamingProse(streamingRawRef.current)
-        await failWritingTurn(noticeId, message, partialProse)
-        if (expectedBackgroundTaskId) await acknowledgeBackgroundGenerationTask(expectedBackgroundTaskId)
-        await refreshWorkspace(projectId)
-      }
-      if (backgroundOutcome === 'issued' || backgroundOutcome === 'uncertain' || error instanceof BackgroundTaskUncertainError) {
-        showToast(error instanceof Error ? error.message : '请求已发出，等待补收结果', 'error')
-        return 'uncertain'
-      }
-      showToast('本轮写作未完成', 'error')
-      return 'failed'
-    } finally {
-      if (isCurrent()) {
-        generationRef.current.phase = 'idle'
-        setGenerationPhase('idle')
-        streamingRawRef.current = ''
-        setStreamingText('')
-      }
-    }
-  }
-
-  async function sendMessage(text: string) {
-    if (!workspace || generationPhase !== 'idle') return true
-
-    const textProvider = providerSettings.text
-    if (!textProvider.baseUrl.trim() || !textProvider.model.trim() || !(await secretStore.has(textProvider.secretRef))) {
-      showToast('请先完成文本模型配置')
-      openProviderSettings('text')
-      return true
-    }
-
-    let addedMessages: ConversationMessage[]
-    try {
-      addedMessages = await beginWritingTurn(
-        workspace.project.id,
-        text,
-        resolveIllustrationMode(workspace.project),
-        workspace.project.activeChapterId,
-      )
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : '无法创建写作任务', 'error')
-      return true
-    }
-    const userMessageId = addedMessages[0].id
-    const noticeId = addedMessages[1].id
-    setWorkspace((current) => current && current.project.id === workspace.project.id ? {
-      ...current,
-      project: { ...current.project, updatedAt: Date.now() },
-      messages: [...current.messages, ...addedMessages],
-    } : current)
-    try {
-      await refreshProjects()
-    } catch {
-      // The messages are already persisted; resolve the notice so it never
-      // stays pending forever without a request ever starting.
-      await failWritingTurn(noticeId, '作品列表刷新失败，本轮写作未启动').catch(() => undefined)
-      await refreshWorkspace(workspace.project.id).catch(() => undefined)
-      showToast('本轮写作未能启动，请重试', 'error')
-      return true
-    }
-
-    setGenerationPhase('starting')
-    const outcome = await runWritingAttempt({ userMessageId, noticeId, userText: text })
-    return outcome === 'failed'
-  }
-
-  async function retryWriting(message: ConversationMessage) {
-    if (!workspace || generationPhase !== 'idle' || message.kind !== 'notice') return
-    try {
-      const retry = await retryWritingTurn(message.projectId, message.id)
-      setWorkspace((current) => current && current.project.id === workspace.project.id ? {
-        ...current,
-        project: { ...current.project, updatedAt: Date.now() },
-        messages: current.messages.map((item) => item.id === message.id ? { ...item, text: retry.illustrationMode === 'none' ? '正在重新生成正文…' : '正在重新生成正文并整理视觉计划…', status: 'pending' as const, backgroundTaskId: '' } : item),
-      } : current)
-      setGenerationPhase('starting')
-      await runWritingAttempt({ userMessageId: message.userMessageId ?? '', noticeId: message.id, userText: retry.userText })
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : '重新生成失败', 'error')
-    }
-  }
-
-  async function handleStopGeneration() {
-    const controlPhase = generationRef.current.phase
-    if (controlPhase !== 'starting' && controlPhase !== 'running') return
-    generationRef.current.phase = 'cancelling'
-    setGenerationPhase('cancelling')
-    generationRef.current.cancelled = true
-    generationRef.current.abortController?.abort()
-    const { noticeId, backgroundTaskId } = generationRef.current
-    // Persist the cancellation immediately so any in-flight completeWritingTurn
-    // transaction observes a 'cancelled' notice and rejects instead of
-    // committing the fully received response as a successful turn.
-    if (noticeId) await cancelWritingTurn(noticeId).catch(() => undefined)
-    if (backgroundTaskId) await cancelBackgroundGenerationTask(backgroundTaskId).catch(() => undefined)
-    showToast('已停止本地接收；上游若已开始计费可能无法撤销。')
-  }
-
   if (bootError) {
     return (
       <main className="app-shell loading-shell">
@@ -1207,8 +438,6 @@ export default function App() {
   const visibleChapter = workspace.chapters.find((chapter) => chapter.id === visibleChapterId) ?? activeChapter
   const illustrationStyle = resolveProjectIllustrationStyle(workspace.style)
   const fallbackChapterId = workspace.chapters[0]?.id
-  const activeContextUsagePlan = contextUsageProjectId === workspace.project.id ? contextUsagePlan : undefined
-  const activeContextUsageState = contextUsageProjectId === workspace.project.id ? contextUsageState : 'pending'
   let previousMessageChapterId: string | undefined
 
   return (
@@ -1306,11 +535,7 @@ export default function App() {
             className="jump-to-latest"
             type="button"
             aria-label="回到最新内容"
-            onClick={() => {
-              stickToBottomRef.current = true
-              setShowJumpToLatest(false)
-              scrollTimelineToBottom(false)
-            }}
+            onClick={jumpToLatest}
           >
             <ArrowDown size={18} />
           </button>
