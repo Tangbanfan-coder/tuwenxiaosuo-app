@@ -1,15 +1,22 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import {
+  adoptWritingCandidate,
   beginWritingTurn,
   cancelWritingTurn,
   completeWritingTurn,
+  discardWritingCandidate,
   failWritingTurn,
+  getLatestRegenerableWritingTurn,
+  getLatestRetryableWritingUserMessage,
+  getWritingCandidate,
   recordProseEvaluationEvent,
   retryWritingTurn,
+  saveWritingCandidate,
   setWritingTurnBackgroundTask,
+  updateLatestRetryableWritingUserMessage,
 } from '../data/storyDatabase'
 import type { ContextUsageState } from '../domain/contextUsage'
-import { resolveIllustrationMode, type ConversationMessage, type IllustrationMode, type ProjectWorkspace, type WritingTurnResult } from '../domain/models'
+import { resolveIllustrationMode, type ConversationMessage, type IllustrationMode, type ProjectWorkspace, type WritingCandidate, type WritingTurnResult } from '../domain/models'
 import { writingTurnCompletedEvaluation } from '../domain/proseEvaluation'
 import { browserTransport, TransportCancelledError } from '../providers/browserTransport'
 import {
@@ -88,6 +95,10 @@ export function useWritingTurnController({
   const [contextUsageProjectId, setContextUsageProjectId] = useState<string>()
   const [contextUsageState, setContextUsageState] = useState<ContextUsageState>('pending')
   const [contextUsageError, setContextUsageError] = useState('')
+  const [latestRegenerableMessageId, setLatestRegenerableMessageId] = useState<string>()
+  const [latestRetryableUserMessageId, setLatestRetryableUserMessageId] = useState<string>()
+  const [regeneratingProseMessageId, setRegeneratingProseMessageId] = useState<string>()
+  const [writingCandidate, setWritingCandidate] = useState<WritingCandidate>()
   const generationRef = useRef<GenerationControl>({ attemptId: 0, cancelled: false, phase: 'idle' })
   const streamingRawRef = useRef('')
   const contextUsageReminderTiersRef = useRef(new Map<string, ContextUsageReminderTier>())
@@ -98,6 +109,34 @@ export function useWritingTurnController({
     setContextUsageError('')
     setContextUsageState('pending')
   }, [contextUsageProjectId, workspace?.project.id])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!workspace) {
+      setLatestRegenerableMessageId(undefined)
+      setLatestRetryableUserMessageId(undefined)
+      setWritingCandidate(undefined)
+      return
+    }
+    void (async () => {
+      try {
+        const target = await getLatestRegenerableWritingTurn(workspace.project.id)
+        if (cancelled) return
+        setLatestRegenerableMessageId(target?.prose.id)
+        const editableUser = await getLatestRetryableWritingUserMessage(workspace.project.id)
+        if (cancelled) return
+        setLatestRetryableUserMessageId(editableUser?.id)
+        setWritingCandidate(target?.prose.turnId ? await getWritingCandidate(workspace.project.id, target.prose.turnId) : undefined)
+      } catch {
+        if (!cancelled) {
+          setLatestRegenerableMessageId(undefined)
+          setLatestRetryableUserMessageId(undefined)
+          setWritingCandidate(undefined)
+        }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [workspace?.project.id, workspace?.messages])
 
   async function runWritingAttempt(input: { userMessageId: string; noticeId: string; userText: string }): Promise<WritingAttemptOutcome> {
     if (!workspace) return 'superseded'
@@ -310,6 +349,143 @@ export function useWritingTurnController({
     }
   }
 
+  async function editLatestRetryableUserMessage(message: ConversationMessage, text: string) {
+    if (!workspace || generationPhase !== 'idle' || message.kind !== 'user') return false
+    try {
+      const userText = await updateLatestRetryableWritingUserMessage(message.projectId, message.id, text)
+      const updatedAt = Date.now()
+      setWorkspace((current) => current?.project.id === message.projectId ? {
+        ...current,
+        project: { ...current.project, updatedAt },
+        messages: current.messages.map((item) => item.id === message.id ? { ...item, text: userText } : item),
+      } : current)
+      setLatestRetryableUserMessageId(message.id)
+      showToast('已更新发送内容，可重新生成')
+      void refreshProjects().catch(() => undefined)
+      return true
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '保存发送内容失败', 'error')
+      return false
+    }
+  }
+
+  async function regenerateLatestProse(message: ConversationMessage) {
+    if (!workspace || generationPhase !== 'idle' || message.kind !== 'prose') return
+    const textProvider = providerSettings.text
+    if (!textProvider.baseUrl.trim() || !textProvider.model.trim() || !(await secretStore.has(textProvider.secretRef))) {
+      showToast('请先完成文本模型配置')
+      openTextProviderSettings()
+      return
+    }
+
+    const target = await getLatestRegenerableWritingTurn(workspace.project.id)
+    if (!target || target.prose.id !== message.id || !target.prose.turnId) {
+      showToast('只能重新生成最近一轮成功正文', 'error')
+      return
+    }
+
+    const attemptId = ++generationRef.current.attemptId
+    const abortController = new AbortController()
+    generationRef.current = { attemptId, cancelled: false, phase: 'running', abortController }
+    setRegeneratingProseMessageId(message.id)
+    setGenerationPhase('running')
+    setStreamingText('')
+    let selectedStyleFragmentIds: string[] = []
+    try {
+      const regenerationWorkspace: ProjectWorkspace = {
+        ...workspace,
+        project: { ...workspace.project, activeChapterId: target.chapter.id },
+        messages: workspace.messages.filter((item) => item.turnId !== target.prose.turnId),
+        chapters: workspace.chapters.map((chapter) => chapter.id === target.chapter.id
+          ? { ...chapter, content: target.baseChapterContent, summary: target.baseChapterSummary }
+          : chapter),
+        characters: workspace.characters.filter((character) => character.turnId !== target.prose.turnId),
+        illustrations: workspace.illustrations.filter((illustration) => illustration.turnId !== target.prose.turnId),
+      }
+      const request = `${target.user.text}\n\n【重新生成要求】重新完成最近一轮正文，保持原始要求和已经存在的前史；不要引用、评价、概括或复述旧版本，只给出可供比较的新版本。`
+      const result = await generateWritingTurn(regenerationWorkspace, request, textProvider, browserTransport, undefined, {
+        signal: abortController.signal,
+        excludeUserMessageId: target.user.id,
+        onStyleFragmentsSelected: (fragmentIds) => { selectedStyleFragmentIds = fragmentIds },
+        onContextPlan: (plan) => {
+          setContextUsagePlan(plan)
+          setContextUsageProjectId(workspace.project.id)
+          setContextUsageError('')
+          setContextUsageState(plan.isOverLimit ? 'over-limit' : plan.estimator.isFallback ? 'fallback' : 'ready')
+        },
+        regeneration: {
+          turnId: target.prose.turnId,
+          proseMessageId: target.prose.id,
+          chapterId: target.chapter.id,
+          baseParagraphCount: target.baseParagraphCount,
+        },
+      })
+      if (generationRef.current.attemptId !== attemptId) return
+      if (result.kind !== 'prose') throw new Error('重新生成没有返回正文候选稿')
+      generationRef.current.phase = 'saving'
+      setGenerationPhase('saving')
+      const candidate = await saveWritingCandidate({
+        projectId: workspace.project.id,
+        turnId: target.prose.turnId,
+        proseMessageId: target.prose.id,
+        chapterId: target.chapter.id,
+        baseChapterHash: target.baseChapterHash,
+        baseChapterContent: target.baseChapterContent,
+        result,
+      })
+      await markStyleCorpusFragmentsUsed(selectedStyleFragmentIds).catch(() => undefined)
+      setWritingCandidate(candidate)
+      setLatestRegenerableMessageId(target.prose.id)
+      showToast('候选正文已生成，请比较后选择')
+    } catch (error) {
+      if (generationRef.current.attemptId !== attemptId) return
+      if (generationRef.current.cancelled || error instanceof TransportCancelledError) showToast('已停止候选正文生成')
+      else showToast(error instanceof Error ? error.message : '候选正文生成失败', 'error')
+    } finally {
+      if (generationRef.current.attemptId === attemptId) {
+        generationRef.current.phase = 'idle'
+        generationRef.current.abortController = undefined
+        setRegeneratingProseMessageId(undefined)
+        setGenerationPhase('idle')
+      }
+    }
+  }
+
+  async function keepOriginalProse(message: ConversationMessage) {
+    if (!workspace || message.kind !== 'prose' || !message.turnId || writingCandidate?.proseMessageId !== message.id) return
+    await discardWritingCandidate(workspace.project.id, message.turnId)
+    setWritingCandidate(undefined)
+    showToast('已保留原版正文')
+  }
+
+  async function adoptCandidateProse(message: ConversationMessage) {
+    if (!workspace || generationPhase !== 'idle' || message.kind !== 'prose' || !message.turnId || writingCandidate?.proseMessageId !== message.id) return
+    const attemptId = ++generationRef.current.attemptId
+    generationRef.current = { attemptId, cancelled: false, phase: 'saving' }
+    setGenerationPhase('saving')
+    const previousIllustrationIds = new Set(workspace.illustrations.map((illustration) => illustration.id))
+    try {
+      const adopted = await adoptWritingCandidate(workspace.project.id, message.turnId)
+      setWritingCandidate(undefined)
+      const nextWorkspace = await refreshWorkspace(workspace.project.id)
+      await refreshProjects()
+      if (nextWorkspace) await onWritingCompleted({
+        result: adopted.result,
+        nextWorkspace,
+        previousIllustrationIds,
+        illustrationMode: resolveIllustrationMode(nextWorkspace.project),
+      })
+      showToast('已采用新版正文')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '新版正文采用失败', 'error')
+    } finally {
+      if (generationRef.current.attemptId === attemptId) {
+        generationRef.current.phase = 'idle'
+        setGenerationPhase('idle')
+      }
+    }
+  }
+
   async function handleStopGeneration() {
     const controlPhase = generationRef.current.phase
     if (controlPhase !== 'starting' && controlPhase !== 'running') return
@@ -333,9 +509,17 @@ export function useWritingTurnController({
     contextUsagePlan,
     contextUsageState,
     generationPhase,
+    editLatestRetryableUserMessage,
     handleStopGeneration,
+    adoptCandidateProse,
+    keepOriginalProse,
+    latestRegenerableMessageId,
+    latestRetryableUserMessageId,
+    regenerateLatestProse,
+    regeneratingProseMessageId,
     retryWriting,
     sendMessage,
     streamingText,
+    writingCandidate,
   }
 }

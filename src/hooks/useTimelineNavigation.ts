@@ -7,15 +7,21 @@ interface TimelineNavigationOptions {
   streamingText: string
   activeChapterId: string | undefined
   fallbackChapterId: string | undefined
+  generationActive?: boolean
+  completedProseMessageId?: string
 }
 
-export function useTimelineNavigation({ booting, projectId, messageCount, streamingText, activeChapterId, fallbackChapterId }: TimelineNavigationOptions) {
+export function useTimelineNavigation({ booting, projectId, messageCount, streamingText, activeChapterId, fallbackChapterId, generationActive = false, completedProseMessageId }: TimelineNavigationOptions) {
   const timelineRef = useRef<HTMLElement>(null)
   const [visibleChapterId, setVisibleChapterId] = useState<string>()
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const stickToBottomRef = useRef(true)
   const previousProjectIdRef = useRef<string | undefined>(undefined)
   const defaultChapterIdRef = useRef<string | undefined>(undefined)
+  const userScrolledDuringGenerationRef = useRef(false)
+  const streamedDuringGenerationRef = useRef(false)
+  const previousGenerationActiveRef = useRef(generationActive)
+  const generationStartProseRef = useRef<string | undefined>(completedProseMessageId)
   defaultChapterIdRef.current = activeChapterId ?? fallbackChapterId
 
   const syncVisibleChapterFromScroll = useCallback(() => {
@@ -52,7 +58,11 @@ export function useTimelineNavigation({ booting, projectId, messageCount, stream
     stickToBottomRef.current = atBottom
     setShowJumpToLatest(!atBottom)
     syncVisibleChapterFromScroll()
-  }, [syncVisibleChapterFromScroll])
+  }, [generationActive, syncVisibleChapterFromScroll])
+
+  const handleTimelineUserIntent = useCallback(() => {
+    if (generationActive) userScrolledDuringGenerationRef.current = true
+  }, [generationActive])
 
   useEffect(() => {
     if (booting) return
@@ -60,6 +70,7 @@ export function useTimelineNavigation({ booting, projectId, messageCount, stream
     previousProjectIdRef.current = projectId
     if (projectChanged) {
       stickToBottomRef.current = true
+      generationStartProseRef.current = completedProseMessageId
       setShowJumpToLatest(false)
       const frame = window.requestAnimationFrame(() => {
         scrollTimelineToBottom(true)
@@ -67,13 +78,39 @@ export function useTimelineNavigation({ booting, projectId, messageCount, stream
       })
       return () => window.cancelAnimationFrame(frame)
     }
-    if (!stickToBottomRef.current) return
+    if (generationActive && streamingText) streamedDuringGenerationRef.current = true
+    const startedTurn = !previousGenerationActiveRef.current && generationActive
+    const completedTurn = previousGenerationActiveRef.current && !generationActive
+    if (startedTurn) generationStartProseRef.current = completedProseMessageId
+    const completedNonStreamingTurn = completedTurn && !streamedDuringGenerationRef.current
+      && completedProseMessageId && completedProseMessageId !== generationStartProseRef.current
+    previousGenerationActiveRef.current = generationActive
+    if (completedNonStreamingTurn && !streamingText) {
+      if (!userScrolledDuringGenerationRef.current) {
+        const frame = window.requestAnimationFrame(() => {
+          timelineRef.current?.querySelector<HTMLElement>(`[data-message-id="${completedProseMessageId}"]`)?.scrollIntoView({ block: 'start', behavior: 'auto' })
+          window.requestAnimationFrame(syncVisibleChapterFromScroll)
+        })
+        userScrolledDuringGenerationRef.current = false
+        streamedDuringGenerationRef.current = false
+        return () => window.cancelAnimationFrame(frame)
+      }
+      userScrolledDuringGenerationRef.current = false
+      streamedDuringGenerationRef.current = false
+      return
+    }
+    if (completedTurn) {
+      streamedDuringGenerationRef.current = false
+      userScrolledDuringGenerationRef.current = false
+      generationStartProseRef.current = completedProseMessageId
+    }
+    if (!streamingText || !stickToBottomRef.current) return
     const frame = window.requestAnimationFrame(() => {
       scrollTimelineToBottom(true)
       window.requestAnimationFrame(syncVisibleChapterFromScroll)
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [booting, projectId, messageCount, streamingText, scrollTimelineToBottom, syncVisibleChapterFromScroll])
+  }, [booting, projectId, messageCount, streamingText, generationActive, completedProseMessageId, scrollTimelineToBottom, syncVisibleChapterFromScroll])
 
   useEffect(() => {
     setVisibleChapterId(defaultChapterIdRef.current)
@@ -85,5 +122,5 @@ export function useTimelineNavigation({ booting, projectId, messageCount, stream
     scrollTimelineToBottom(false)
   }, [scrollTimelineToBottom])
 
-  return { handleTimelineScroll, jumpToLatest, showJumpToLatest, timelineRef, visibleChapterId }
+  return { handleTimelineScroll, handleTimelineUserIntent, jumpToLatest, showJumpToLatest, timelineRef, visibleChapterId }
 }

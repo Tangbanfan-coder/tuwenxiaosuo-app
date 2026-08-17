@@ -5,6 +5,12 @@
   color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  --motion-feedback: 220ms;
+  --motion-panel: 300ms;
+  --motion-drawer: 360ms;
+  --motion-exit: 220ms;
+  --motion-enter-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-exit-ease: cubic-bezier(0.4, 0, 1, 1);
 }
 
 * { box-sizing: border-box; }
@@ -257,7 +263,7 @@ label {
   overscroll-behavior: contain;
 }
 
-.timeline-entry { width: 100%; animation: message-in 300ms cubic-bezier(0.16, 1, 0.3, 1); }
+.timeline-entry { width: 100%; animation: message-in var(--motion-panel) var(--motion-enter-ease); }
 
 .message-row { display: flex; }
 .user-row { justify-content: flex-end; }
@@ -342,7 +348,7 @@ label {
 
 .story-prose p { margin: 0 0 13px; }
 
-.message-feedback-actions { display: flex; gap: 8px; margin-top: 4px; }
+.message-feedback-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .feedback-trigger, .feedback-verdicts button, .feedback-scope label, .feedback-paragraphs button, .feedback-reasons button, .feedback-panel-actions button {
   border: 1px solid var(--story-border);
   border-radius: 8px;
@@ -351,6 +357,7 @@ label {
   font: inherit;
 }
 .feedback-trigger { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; font-size: 12px; cursor: pointer; }
+.feedback-trigger:disabled { opacity: .58; cursor: wait; }
 .feedback-trigger:hover, .feedback-trigger.is-active, .feedback-verdicts button.selected, .feedback-paragraphs button.selected, .feedback-reasons button.selected { border-color: var(--story-accent); color: var(--story-accent); background: color-mix(in srgb, var(--story-accent) 12%, var(--story-surface)); }
 .feedback-panel { margin-top: 10px; padding: 13px; width: min(100%, 420px); max-height: min(80vh, 620px); overflow-y: auto; border: 1px solid var(--story-border); border-radius: 12px; background: var(--story-surface); box-shadow: 0 12px 26px rgba(0,0,0,.2); font-family: system-ui, sans-serif; font-size: 13px; color: var(--story-text); }
 .feedback-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -372,6 +379,28 @@ label {
 .feedback-panel-actions button:disabled { opacity: .6; cursor: wait; }
 .feedback-hint { margin: 8px 0 0; color: var(--story-muted); font-size: 12px; }
 .feedback-error { margin: 8px 0 0; color: #d77f84; font-size: 12px; }
+.writing-candidate-panel { margin: 14px 0 18px; padding: 14px; border: 1px solid var(--story-border); border-radius: 8px; background: color-mix(in srgb, var(--story-surface) 94%, transparent); color: var(--story-text); font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.65; }
+.writing-candidate-panel > header, .writing-candidate-panel > footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.writing-candidate-panel > header { padding-bottom: 10px; border-bottom: 1px solid var(--story-border); }
+.writing-candidate-panel > header span { color: var(--story-muted); font-size: 12px; text-align: right; }
+.writing-candidate-comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0; margin: 12px 0; }
+.writing-candidate-comparison section { min-width: 0; padding: 0 12px; overflow-wrap: anywhere; }
+.writing-candidate-comparison section:first-child { padding-left: 0; border-right: 1px solid var(--story-border); }
+.writing-candidate-comparison section:last-child { padding-right: 0; }
+.writing-candidate-comparison h4 { margin: 0 0 8px; color: var(--story-muted); font-size: 12px; }
+.writing-candidate-comparison p { margin: 0 0 10px; }
+.writing-candidate-panel > footer { justify-content: flex-end; padding-top: 10px; border-top: 1px solid var(--story-border); }
+.writing-candidate-panel > footer button { min-height: 42px; padding: 0 13px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--story-border); border-radius: 8px; background: var(--story-bg); color: var(--story-muted); font: inherit; cursor: pointer; }
+.writing-candidate-panel > footer button.primary { border-color: var(--story-accent); background: var(--story-accent); color: var(--story-bg); }
+.writing-candidate-panel > footer button:disabled { opacity: .58; cursor: wait; }
+
+@media (max-width: 620px) {
+  .writing-candidate-panel > header { align-items: flex-start; flex-direction: column; }
+  .writing-candidate-panel > header span { text-align: left; }
+  .writing-candidate-comparison { grid-template-columns: 1fr; }
+  .writing-candidate-comparison section { padding: 10px 0; }
+  .writing-candidate-comparison section:first-child { border-right: 0; border-bottom: 1px solid var(--story-border); }
+}
 
 .illustration-row {
   width: 100%;
@@ -1712,3 +1741,30 @@ label {
 .app-shell[data-appearance="light"] .evaluation-danger .danger-button { border-color: #c9848a; color: #a8444b; }
 .app-shell[data-appearance="light"] .evaluation-danger .danger-button:hover { background: #fae9eb; color: #9e424b; }
 @media (max-width: 640px) { .rewrite-comparison { grid-template-columns: 1fr; } .style-corpus-dialog, .prose-evaluation-dialog { width: 100%; } .style-corpus-toolbar { align-items: stretch; flex-direction: column; } .evaluation-date-inputs { grid-template-columns: 1fr; } }
+
+/* Chat motion uses a small, consistent Android-like cadence. */
+@keyframes inline-panel-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.user-bubble { position: relative; display: flex; align-items: flex-start; gap: 8px; white-space: pre-wrap; }
+.user-bubble > span { min-width: 0; overflow-wrap: anywhere; }
+.user-bubble.is-editing { width: min(100%, 520px); max-width: 100%; padding: 10px; }
+.user-message-edit-trigger, .user-message-editor-actions button { width: 48px; min-width: 48px; height: 48px; flex: none; display: inline-grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: inherit; }
+.user-message-edit-trigger { margin: -9px -10px -9px 0; opacity: .76; }
+.user-message-edit-trigger:hover, .user-message-editor-actions button:hover { background: color-mix(in srgb, currentColor 12%, transparent); opacity: 1; }
+.user-message-editor { width: 100%; display: grid; gap: 8px; animation: inline-panel-in var(--motion-panel) var(--motion-enter-ease); }
+.user-message-editor textarea { width: 100%; min-height: 84px; resize: vertical; border: 1px solid color-mix(in srgb, var(--story-user-text) 38%, transparent); border-radius: 8px; background: color-mix(in srgb, #fff 78%, var(--story-user)); color: var(--story-user-text); padding: 9px; font: inherit; line-height: 1.55; }
+.user-message-editor-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.user-message-editor-actions button:last-child { background: color-mix(in srgb, var(--story-user-text) 16%, transparent); }
+.user-message-edit-error { font-size: 12px; color: #8b3038; }
+.feedback-panel, .rewrite-panel, .writing-candidate-panel, .visual-prompt { animation: inline-panel-in var(--motion-panel) var(--motion-enter-ease); }
+.illustration-mode-menu, .reasoning-effort-quick-menu { animation: theme-menu-in var(--motion-panel) var(--motion-enter-ease); }
+.style-corpus-dialog, .prose-evaluation-dialog { animation: asset-in var(--motion-drawer) var(--motion-enter-ease); }
+.style-corpus-backdrop.closing .style-corpus-dialog, .prose-evaluation-backdrop.closing .prose-evaluation-dialog { animation: asset-out var(--motion-exit) var(--motion-exit-ease) forwards; }
+.feedback-trigger, .notice-retry, .user-message-edit-trigger, .user-message-editor-actions button { transition: background-color var(--motion-feedback) ease-out, border-color var(--motion-feedback) ease-out, color var(--motion-feedback) ease-out, opacity var(--motion-feedback) ease-out; }
+.image-lightbox-backdrop, .context-usage-surface--sheet, .composer-assets-menu-surface, .dialog-backdrop, .confirm-backdrop { animation-duration: var(--motion-panel); animation-timing-function: var(--motion-enter-ease); }
+.image-lightbox-backdrop.closing, .dialog-backdrop.closing, .confirm-backdrop.closing { animation-duration: var(--motion-exit); animation-timing-function: var(--motion-exit-ease); }
+.context-usage-dialog { animation-duration: var(--motion-panel); animation-timing-function: var(--motion-enter-ease); }
+.context-usage-surface--sheet .context-usage-dialog, .composer-assets-menu-dialog { animation-duration: var(--motion-drawer); animation-timing-function: var(--motion-enter-ease); }
+.drawer-backdrop .project-drawer, .asset-backdrop .asset-drawer, .settings-backdrop .settings-drawer { animation-duration: var(--motion-drawer); animation-timing-function: var(--motion-enter-ease); }
+.drawer-backdrop.closing .project-drawer, .asset-backdrop.closing .asset-drawer, .settings-backdrop.closing .settings-drawer { animation-duration: var(--motion-exit); animation-timing-function: var(--motion-exit-ease); }
+.dialog-backdrop .provider-dialog, .dialog-backdrop .reference-dialog, .dialog-backdrop .writing-instructions-dialog { animation-duration: var(--motion-drawer); animation-timing-function: var(--motion-enter-ease); }
+.dialog-backdrop.closing .provider-dialog, .dialog-backdrop.closing .reference-dialog, .dialog-backdrop.closing .writing-instructions-dialog { animation-duration: var(--motion-exit); animation-timing-function: var(--motion-exit-ease); }

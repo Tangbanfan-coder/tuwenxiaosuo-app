@@ -24,7 +24,7 @@ export interface ProseEvaluationEvent {
   occurredAt: number
   schemaVersion: 1
   appVersion: '0.1.0'
-  databaseVersion: 12
+  databaseVersion: 14
   proseRuleVersion: number
   projectId?: string
   messageId?: string
@@ -54,6 +54,8 @@ export type ProseStyleRuleCategory =
   | 'repetition'
   | 'mechanical-list'
   | 'elevated-ending'
+  | 'conditional-dialogue'
+  | 'concept-label'
 
 export type ProseStyleSeverity = 'hint' | 'warning' | 'strong'
 
@@ -168,6 +170,8 @@ export interface ConversationMessage {
   backgroundTaskId?: string
   /** For notices, links back to the user message that started this turn. */
   userMessageId?: string
+  /** Stable ownership for all records emitted by one writing request. */
+  turnId?: string
 }
 
 export type ParagraphSourceType = 'message' | 'chapter'
@@ -212,6 +216,36 @@ export interface Feedback {
   verdict: FeedbackVerdict
   reason?: string
   customNote?: string
+  createdAt: number
+  updatedAt: number
+}
+
+export type PreferenceDimension = 'plot' | 'character' | 'dialogue' | 'pace' | 'description' | 'rhetoric' | 'emotion' | 'ending'
+
+/** A text-free, reusable preference. Source feedback remains an UI record. */
+export interface PreferenceSignal {
+  id: string
+  projectId: string
+  feedbackId: string
+  verdict: FeedbackVerdict
+  dimension: PreferenceDimension
+  instruction: string
+  source: 'user' | 'ai'
+  fingerprint: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface WritingCandidate {
+  id: string
+  projectId: string
+  turnId: string
+  proseMessageId: string
+  chapterId: string
+  baseChapterHash: string
+  baseChapterContent: string
+  result: WritingProseResult
+  status: 'ready' | 'adopted' | 'discarded'
   createdAt: number
   updatedAt: number
 }
@@ -312,6 +346,8 @@ export interface WritingSceneNotes extends SceneNoteFacts {
   resolvedForeshadowingIds: string[]
   /** Compatibility input from the obsolete text-only `clues_resolved` response field. */
   legacyResolvedForeshadowingTexts?: string[]
+  /** Stable scene ids supporting explicit references to earlier events. */
+  priorSceneEvidenceIds?: string[]
 }
 
 /**
@@ -369,6 +405,7 @@ export interface SummaryVersion {
   reason: SummaryVersionReason
   restoredFromId?: string
   createdAt: number
+  turnId?: string
 }
 
 export interface CharacterAsset {
@@ -397,6 +434,7 @@ export interface CharacterAsset {
   status: 'draft' | 'confirmed'
   createdAt: number
   updatedAt: number
+  turnId?: string
 }
 
 export type NarrativePronoun = 'she' | 'he' | 'ta' | 'name'
@@ -428,6 +466,9 @@ export interface IllustrationAsset {
   failureKind?: 'reference-unavailable'
   createdAt: number
   updatedAt: number
+  turnId?: string
+  /** Preserves generated or in-flight paid assets after their prose turn is replaced. */
+  archivedAt?: number
 }
 
 export interface ProjectStyle {

@@ -8,6 +8,7 @@ import { PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
 import {
   StoryDatabase,
   applyParagraphRewrite,
+  adoptWritingCandidate,
   beginWritingTurn,
   cancelWritingTurn,
   confirmCharacterPortrait,
@@ -17,6 +18,9 @@ import {
   deleteProject,
   deleteStyleCorpusSource,
   failWritingTurn,
+  getLatestRegenerableWritingTurn,
+  getLatestRetryableWritingUserMessage,
+  getWritingCandidate,
   hashText,
   initializeStoryDatabase,
   listChapterSummaryVersions,
@@ -25,12 +29,15 @@ import {
   listMessageParagraphsWithCurrentStyleIssues,
   listProjectParagraphs,
   listRecentProjectFeedback,
+  listRecentPreferenceSignals,
   loadProjectScenes,
   removeFeedback,
   restoreChapterSummaryVersion,
   restoreIllustrationsBlockedByReference,
   retryWritingTurn,
+  updateLatestRetryableWritingUserMessage,
   saveStyleCorpusImport,
+  saveWritingCandidate,
   splitStyleCorpusText,
   setIllustrationBlockedByReference,
   setWritingTurnBackgroundTask,
@@ -40,6 +47,7 @@ import {
   upsertFeedback,
   upsertChapterParagraphs,
   updateCharacterProfile,
+  upsertPreferenceSignal,
 } from './storyDatabase'
 
 const project: StoryProject = {
@@ -108,6 +116,8 @@ async function completeScene(
 async function clearStoryDatabase() {
   await Promise.all([
     storyDatabase.feedback.clear(),
+    storyDatabase.preferenceSignals.clear(),
+    storyDatabase.writingCandidates.clear(),
     storyDatabase.paragraphs.clear(),
     storyDatabase.summaryVersions.clear(),
     storyDatabase.projects.clear(),
@@ -475,7 +485,7 @@ describe('StoryDatabase v5-v6 summary version and feedback schema migrations', (
       upgraded = new StoryDatabase(name)
       await upgraded.open()
 
-      expect(upgraded.verno).toBe(12)
+      expect(upgraded.verno).toBe(14)
       expect(await upgraded.feedback.count()).toBe(0)
       const versions = await upgraded.summaryVersions.where('projectId').equals('project-v4').toArray()
       const migrated = versions.find((version) => version.chapterId === summarizedChapter.id)
@@ -1013,6 +1023,22 @@ describe('style corpus persistence', () => {
     expect(await storyDatabase.styleCorpusFragments.count()).toBe(1)
   })
 
+  it('cascades project-owned preference signals and regeneration candidates', async () => {
+    await storyDatabase.preferenceSignals.add({
+      id: 'preference-delete', projectId: project.id, feedbackId: 'feedback-delete', verdict: 'down', dimension: 'rhetoric',
+      instruction: '避免生硬解释', source: 'user', fingerprint: 'fingerprint-delete', createdAt: 1, updatedAt: 1,
+    })
+    await storyDatabase.writingCandidates.add({
+      id: 'candidate-delete', projectId: project.id, turnId: 'turn-delete', proseMessageId: 'prose-delete', chapterId: 'chapter-delete',
+      baseChapterHash: 'hash', baseChapterContent: '', result: { ...writingResult }, status: 'ready', createdAt: 1, updatedAt: 1,
+    })
+
+    await deleteProject(project.id)
+
+    expect(await storyDatabase.preferenceSignals.where('projectId').equals(project.id).count()).toBe(0)
+    expect(await storyDatabase.writingCandidates.where('projectId').equals(project.id).count()).toBe(0)
+  })
+
   it('rebuilds combined fragment text from ids across different blank-line whitespace', async () => {
     const rawText = '第一段原文。\n \t\n第二段原文。\n\n\n第三段原文。'
     const paragraphs = splitStyleCorpusText(rawText)
@@ -1104,10 +1130,134 @@ describe('writing turn stop and retry', () => {
     expect(userMessage.id).toBeTruthy()
   })
 
+  it('edits the latest cancelled request transactionally and retry reads the new text', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '还没写完', false)
+    await cancelWritingTurn(notice.id)
+
+    await expect(updateLatestRetryableWritingUserMessage(project.id, userMessage.id, '  继续写雨夜重逢  ')).resolves.toBe('继续写雨夜重逢')
+    await expect(retryWritingTurn(project.id, notice.id)).resolves.toMatchObject({ userText: '继续写雨夜重逢' })
+  })
+
+  it('allows a legacy cancelled turn without a turn id even when an older ready prose also lacks one', async () => {
+    const userMessage: ConversationMessage = { id: 'legacy-user', projectId: project.id, kind: 'user', order: 2, createdAt: 2, text: '原要求' }
+    await storyDatabase.messages.bulkAdd([
+      { id: 'legacy-prose', projectId: project.id, kind: 'prose', order: 1, createdAt: 1, paragraphs: ['旧正文'], status: 'ready' },
+      userMessage,
+      { id: 'legacy-notice', projectId: project.id, kind: 'notice', order: 3, createdAt: 3, text: '已停止生成', status: 'cancelled', userMessageId: userMessage.id },
+    ])
+
+    await expect(getLatestRetryableWritingUserMessage(project.id)).resolves.toMatchObject({ id: userMessage.id })
+    await expect(updateLatestRetryableWritingUserMessage(project.id, userMessage.id, '更新后的要求')).resolves.toBe('更新后的要求')
+  })
+
+  it('rejects empty, superseded, and completed writing-turn user message edits', async () => {
+    const [firstUser, firstNotice] = await beginWritingTurn(project.id, '第一轮', false)
+    await failWritingTurn(firstNotice.id, '网络失败')
+    const [latestUser] = await beginWritingTurn(project.id, '第二轮', false)
+
+    await expect(updateLatestRetryableWritingUserMessage(project.id, firstUser.id, '')).rejects.toThrow('不能为空')
+    await expect(updateLatestRetryableWritingUserMessage(project.id, firstUser.id, '修改第一轮')).rejects.toThrow('最新一轮')
+    await expect(updateLatestRetryableWritingUserMessage(project.id, latestUser.id, '修改第二轮')).rejects.toThrow('失败或已停止')
+
+    const completedProject = await createProject('完成回合')
+    const [completedUser, completedNotice] = await beginWritingTurn(completedProject.id, '已经完成', false)
+    await completeWritingTurn(completedProject.id, completedUser.id, completedNotice.id, writingResult, false)
+    await expect(updateLatestRetryableWritingUserMessage(completedProject.id, completedUser.id, '不应修改')).rejects.toThrow('失败或已停止')
+  })
+
   it('rejects a result whose background task no longer matches the linked task', async () => {
     const [userMessage, notice] = await beginWritingTurn(project.id, '继续写', false)
     await setWritingTurnBackgroundTask(notice.id, 'task-old')
     await expect(completeWritingTurn(project.id, userMessage.id, notice.id, writingResult, false, false, 'task-new')).rejects.toThrow('后台写作结果不属于当前任务')
+  })
+})
+
+describe('latest prose regeneration candidates', () => {
+  async function seedLatestTurnWithIllustration() {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写雨夜重逢', 'manual')
+    await completeWritingTurn(project.id, userMessage.id, notice.id, {
+      ...writingResult,
+      paragraphs: ['旧版第一段。', '旧版第二段。'],
+      sceneNotes: sceneNotes({ events: ['两人在雨夜重逢'] }),
+      visualPlan: {
+        title: '雨夜重逢', prompt: '两人在雨夜街口重逢', stylePrompt: '', negativePrompt: '',
+        characters: [{ name: '林昭', role: '主角', ageAndBuild: '青年', fixedTraits: ['黑发'], defaultLook: '清瘦', wardrobe: '灰外套' }],
+      },
+    }, 'manual')
+    const target = await getLatestRegenerableWritingTurn(project.id)
+    if (!target?.prose.turnId) throw new Error('预期最近正文可重新生成')
+    return target
+  }
+
+  it('allows a same-turn illustration after prose and adopts a guarded candidate atomically', async () => {
+    const target = await seedLatestTurnWithIllustration()
+    const originalScene = (await storyDatabase.scenes.where('projectId').equals(project.id).toArray())[0]
+    const oldIllustration = (await storyDatabase.illustrations.where('projectId').equals(project.id).toArray())[0]
+    await storyDatabase.illustrations.update(oldIllustration.id, { status: 'ready', imageUrl: 'data:image/png;base64,dGVzdA==' })
+    const feedback = await upsertFeedback({ projectId: project.id, messageId: target.prose.id, chapterId: target.chapter.id, scope: 'message', verdict: 'down' })
+    await upsertPreferenceSignal({ feedbackId: feedback.id, projectId: project.id, verdict: 'down', dimension: 'rhetoric', instruction: '避免使用生硬的解释句式', source: 'user' })
+
+    const candidateResult: WritingProseResult = {
+      ...writingResult,
+      chapterAction: 'continue',
+      paragraphs: ['新版第一段。', '新版第二段。'],
+      chapterSummary: '两人在雨夜重新建立联系。',
+      sceneNotes: sceneNotes({ events: ['两人在雨夜重新建立联系'] }),
+    }
+    await saveWritingCandidate({
+      projectId: project.id,
+      turnId: target.prose.turnId!,
+      proseMessageId: target.prose.id,
+      chapterId: target.chapter.id,
+      baseChapterHash: target.baseChapterHash,
+      baseChapterContent: target.baseChapterContent,
+      result: candidateResult,
+    })
+
+    await adoptWritingCandidate(project.id, target.prose.turnId!)
+
+    expect((await storyDatabase.messages.get(target.prose.id))?.paragraphs).toEqual(candidateResult.paragraphs)
+    expect((await storyDatabase.chapters.get(target.chapter.id))?.content).toBe('新版第一段。\n\n新版第二段。')
+    expect((await storyDatabase.scenes.where('projectId').equals(project.id).first())?.id).toBe(originalScene.id)
+    const archived = await storyDatabase.illustrations.get(oldIllustration.id)
+    expect(archived).toMatchObject({ status: 'ready' })
+    expect(archived?.archivedAt).toBeTypeOf('number')
+    expect(archived?.messageId).toBeUndefined()
+    expect((await storyDatabase.messages.where('projectId').equals(project.id).toArray()).some((message) => message.illustrationId === oldIllustration.id)).toBe(false)
+    expect(await storyDatabase.feedback.where('messageId').equals(target.prose.id).count()).toBe(0)
+    expect(await storyDatabase.preferenceSignals.where('feedbackId').equals(feedback.id).count()).toBe(0)
+    expect((await getWritingCandidate(project.id, target.prose.turnId!))).toBeUndefined()
+  })
+
+  it('rejects a stale candidate without overwriting manual chapter changes', async () => {
+    const target = await seedLatestTurnWithIllustration()
+    await saveWritingCandidate({
+      projectId: project.id,
+      turnId: target.prose.turnId!,
+      proseMessageId: target.prose.id,
+      chapterId: target.chapter.id,
+      baseChapterHash: target.baseChapterHash,
+      baseChapterContent: target.baseChapterContent,
+      result: { ...writingResult, chapterAction: 'continue', paragraphs: ['不应采用。'] },
+    })
+    const manualContent = `手动补充。\n\n${target.chapter.content}`
+    await storyDatabase.chapters.update(target.chapter.id, { content: manualContent })
+
+    await expect(adoptWritingCandidate(project.id, target.prose.turnId!)).rejects.toThrow('章节正文已经变化')
+    expect((await storyDatabase.chapters.get(target.chapter.id))?.content).toBe(manualContent)
+    expect((await storyDatabase.messages.get(target.prose.id))?.paragraphs).toEqual(target.prose.paragraphs)
+  })
+
+  it('keeps identical abstract preferences owned by their source feedback and deduplicates only when listing context', async () => {
+    const target = await seedLatestTurnWithIllustration()
+    const first = await upsertFeedback({ projectId: project.id, messageId: target.prose.id, chapterId: target.chapter.id, scope: 'message', verdict: 'up' })
+    const paragraph = await storyDatabase.paragraphs.where('[projectId+messageId]').equals([project.id, target.prose.id]).first()
+    const second = await upsertFeedback({ projectId: project.id, messageId: target.prose.id, chapterId: target.chapter.id, scope: 'paragraph', paragraphId: paragraph!.id, paragraphIndex: paragraph!.index, paragraphFingerprint: paragraph!.fingerprint, verdict: 'up' })
+    await upsertPreferenceSignal({ feedbackId: first.id, projectId: project.id, verdict: 'up', dimension: 'dialogue', instruction: '后续对白更直接简短', source: 'ai' })
+    await upsertPreferenceSignal({ feedbackId: second.id, projectId: project.id, verdict: 'up', dimension: 'dialogue', instruction: '后续对白更直接简短', source: 'ai' })
+
+    expect(await storyDatabase.preferenceSignals.where('projectId').equals(project.id).count()).toBe(2)
+    expect(await listRecentPreferenceSignals(project.id)).toHaveLength(1)
   })
 })
 

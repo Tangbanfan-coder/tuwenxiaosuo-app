@@ -25,6 +25,7 @@ interface RawWritingResult {
     clues_planted?: unknown
     clues_resolved?: unknown
     unresolved_threads?: unknown
+    prior_scene_evidence_ids?: unknown
   } | null
   visual_plan?: {
     title?: unknown
@@ -317,6 +318,7 @@ function normalizeSceneNotes(value: RawWritingResult['scene_notes']): WritingSce
     unresolvedThreads: Array.isArray(notes.unresolved_threads)
       ? notes.unresolved_threads.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean)
       : [],
+    priorSceneEvidenceIds: stringArray(notes.prior_scene_evidence_ids),
   }
 }
 

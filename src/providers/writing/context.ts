@@ -1,4 +1,4 @@
-import type { Feedback, ProjectWorkspace, StoredParagraph, StyleCorpusFragment } from '../../domain/models'
+import type { Feedback, PreferenceSignal, ProjectWorkspace, StoredParagraph, StyleCorpusFragment } from '../../domain/models'
 import { collectOpenForeshadowings } from '../../domain/foreshadowing'
 import { resolveProjectIllustrationStyle } from '../../domain/illustrationStyles'
 import { hashText, type StoredScene } from '../../data/storyDatabase'
@@ -138,6 +138,7 @@ interface InternalProjectContextOptions extends BuildProjectContextOptions {
   /** Demand measurement uses the normal material before any token-budget trimming. */
   untrimmed?: boolean
   feedbackSources?: readonly FeedbackContextSource[]
+  preferenceSignals?: readonly PreferenceSignal[]
   styleCorpusFragments?: readonly StyleCorpusFragment[]
   /** The user message that started the current turn; excluded from the recent-message section so a retry never injects the same requirement twice. */
   excludeUserMessageId?: string
@@ -233,6 +234,15 @@ function formatFeedbackContextEntries(
       reason ? `原因：${reason}` : '',
     ].filter(Boolean).join('\n')
   })
+}
+
+/** Only abstract signals may enter a future writing prompt. */
+export function formatPreferenceSignalContextEntries(signals: readonly PreferenceSignal[], profile: ContextCompressionProfile) {
+  return signals
+    .slice()
+    .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
+    .slice(0, profile.feedbackEntryLimit)
+    .map((signal) => `${signal.verdict === 'down' ? '避免' : '保持'}（${signal.dimension}）：${signal.instruction}`)
 }
 
 function retainPriorityContextRecords(parts: readonly string[], budgetUnits: number, measure: ContextTextMeasure) {
@@ -400,7 +410,9 @@ function buildProjectContextWithBudget(
     })
   }
 
-  const feedbackEntries = formatFeedbackContextEntries(options.feedbackSources ?? [], profile)
+  const feedbackEntries = options.preferenceSignals
+    ? formatPreferenceSignalContextEntries(options.preferenceSignals, profile)
+    : formatFeedbackContextEntries(options.feedbackSources ?? [], profile)
   if (feedbackEntries.length) {
     sections.push({
       label: '近期偏好反馈',
@@ -663,7 +675,7 @@ function buildTimeline(scenes: StoredScene[], entryLimit = 30) {
     .map((scene) => {
       const notes = scene.notes
       if (!notes.time && !notes.location && !notes.events.length) return undefined
-      return `${notes.time || '某时'}@${notes.location || '某地'}：${notes.events.join('；')}`
+      return `[${scene.id}] ${notes.time || '某时'}@${notes.location || '某地'}：${notes.events.join('；')}`
     })
     .filter((line): line is string => Boolean(line))
   return entryLimit > 0 ? timeline.slice(-entryLimit).join('\n') : ''

@@ -8,6 +8,9 @@ import type {
   ContextBudget,
   ConversationMessage,
   Feedback,
+  PreferenceSignal,
+  WritingCandidate,
+  PreferenceDimension,
   FeedbackBatchInput,
   FeedbackScope,
   FeedbackTargetInput,
@@ -29,6 +32,8 @@ import type {
   SummaryVersion,
   ThemePresetId,
   UpsertFeedbackInput,
+  VisualPlan,
+  WritingProseResult,
   WritingTurnResult,
 } from '../domain/models'
 import { DEFAULT_ILLUSTRATION_STYLE_ID, getIllustrationStylePreset } from '../domain/illustrationStyles'
@@ -53,6 +58,8 @@ export class StoryDatabase extends Dexie {
   paragraphs!: Table<StoredParagraph, string>
   summaryVersions!: Table<SummaryVersion, string>
   feedback!: Table<Feedback, string>
+  preferenceSignals!: Table<PreferenceSignal, string>
+  writingCandidates!: Table<WritingCandidate, string>
   styleCorpusSources!: Table<StyleCorpusSource, string>
   styleCorpusFragments!: Table<StyleCorpusFragment, string>
   styleCorpusBindings!: Table<StyleCorpusBinding, string>
@@ -219,6 +226,26 @@ export class StoryDatabase extends Dexie {
       .upgrade(async (transaction) => {
         await upgradeIllustrationModesFromV11(transaction)
       })
+    // Optional fields on legacy records deliberately remain absent. New
+    // preference signals are separate from feedback so old targets are never
+    // mistaken for writing instructions.
+    this.version(13).stores({
+      projects: 'id, updatedAt, lastOpenedAt', messages: 'id, projectId, [projectId+order], createdAt, backgroundTaskId, turnId',
+      chapters: 'id, projectId, [projectId+order], updatedAt', characters: 'id, projectId, [projectId+createdAt], status',
+      illustrations: 'id, projectId, [projectId+createdAt], status, turnId', styles: 'id, &projectId, updatedAt',
+      scenes: 'id, projectId, [projectId+order], createdAt, turnId',
+      paragraphs: 'id, projectId, sourceType, [projectId+sourceType], [projectId+chapterId], [projectId+messageId], fingerprint, createdAt',
+      summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt',
+      feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt',
+      preferenceSignals: 'id, projectId, feedbackId, fingerprint, [projectId+updatedAt], updatedAt',
+      styleCorpusSources: 'id, &fingerprint, createdAt, updatedAt', styleCorpusFragments: 'id, sourceId, fingerprint, confirmed, usageCount, updatedAt',
+      styleCorpusBindings: 'id, fragmentId, scope, projectId, state, [scope+state], [projectId+state], updatedAt',
+      evaluationEvents: 'id, eventType, occurredAt, projectId, [projectId+occurredAt]',
+    })
+    this.version(14).stores({
+      projects: 'id, updatedAt, lastOpenedAt', messages: 'id, projectId, [projectId+order], createdAt, backgroundTaskId, turnId',
+      chapters: 'id, projectId, [projectId+order], updatedAt', characters: 'id, projectId, [projectId+createdAt], status', illustrations: 'id, projectId, [projectId+createdAt], status, turnId', styles: 'id, &projectId, updatedAt', scenes: 'id, projectId, [projectId+order], createdAt, turnId', paragraphs: 'id, projectId, sourceType, [projectId+sourceType], [projectId+chapterId], [projectId+messageId], fingerprint, createdAt', summaryVersions: 'id, projectId, chapterId, [projectId+chapterId], &[projectId+chapterId+version], createdAt', feedback: 'id, projectId, messageId, [projectId+messageId], &targetKey, [projectId+updatedAt], updatedAt', preferenceSignals: 'id, projectId, feedbackId, fingerprint, [projectId+updatedAt], updatedAt', writingCandidates: 'id, projectId, turnId, proseMessageId, [projectId+turnId], [projectId+updatedAt], updatedAt', styleCorpusSources: 'id, &fingerprint, createdAt, updatedAt', styleCorpusFragments: 'id, sourceId, fingerprint, confirmed, usageCount, updatedAt', styleCorpusBindings: 'id, fragmentId, scope, projectId, state, [scope+state], [projectId+state], updatedAt', evaluationEvents: 'id, eventType, occurredAt, projectId, [projectId+occurredAt]',
+    })
   }
 }
 
@@ -230,6 +257,7 @@ export interface StoredScene {
   createdAt: number
   notes: SceneNotes
   excerpt: string
+  turnId?: string
 }
 
 export const storyDatabase = new StoryDatabase()
@@ -266,7 +294,7 @@ export async function recordProseEvaluationEvent(event: Omit<ProseEvaluationEven
       )).first()
       if (duplicate) return
     }
-    await storyDatabase.evaluationEvents.add({ ...event, id: createId('evaluation'), occurredAt, schemaVersion: 1, appVersion: '0.1.0', databaseVersion: 12, proseRuleVersion: event.proseRuleVersion ?? PROSE_RULE_VERSION_FALLBACK })
+    await storyDatabase.evaluationEvents.add({ ...event, id: createId('evaluation'), occurredAt, schemaVersion: 1, appVersion: '0.1.0', databaseVersion: 14, proseRuleVersion: event.proseRuleVersion ?? PROSE_RULE_VERSION_FALLBACK })
     await storyDatabase.evaluationEvents.where('occurredAt').below(occurredAt - EVALUATION_MAX_AGE_MS).delete()
     const count = await storyDatabase.evaluationEvents.count()
     if (count > EVALUATION_MAX_EVENTS) {
@@ -823,7 +851,7 @@ function nextSummaryVersionNumber(versions: readonly SummaryVersion[]) {
   ), 0) + 1
 }
 
-async function appendGeneratedChapterSummaryVersion(chapter: Chapter, summary: string, createdAt: number) {
+async function appendGeneratedChapterSummaryVersion(chapter: Chapter, summary: string, createdAt: number, turnId?: string) {
   const sourceContentHash = hashTextImpl(chapter.content)
   const versions = await readChapterSummaryVersions(chapter.projectId, chapter.id)
   const latest = versions.at(-1)
@@ -839,6 +867,7 @@ async function appendGeneratedChapterSummaryVersion(chapter: Chapter, summary: s
     sourceParagraphIds: await listVerifiedCurrentChapterParagraphIds(chapter),
     reason: 'generation',
     createdAt,
+    turnId,
   }
   await storyDatabase.summaryVersions.add(version)
   return version
@@ -1066,7 +1095,7 @@ export async function upsertFeedback(input: UpsertFeedbackInput) {
   const now = Date.now()
   return storyDatabase.transaction(
     'rw',
-    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs, storyDatabase.feedback],
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs, storyDatabase.feedback, storyDatabase.preferenceSignals],
     async () => {
       const target = await resolveFeedbackTarget(input)
       const existing = await findFeedbackForTarget(target)
@@ -1078,6 +1107,7 @@ export async function upsertFeedback(input: UpsertFeedbackInput) {
 
       const updated = updateFeedbackRecord(existing, payload, now)
       await storyDatabase.feedback.put(updated)
+      await storyDatabase.preferenceSignals.where('feedbackId').equals(existing.id).delete()
       return updated
     },
   )
@@ -1092,7 +1122,7 @@ export async function toggleFeedback(input: UpsertFeedbackInput): Promise<Feedba
   const now = Date.now()
   return storyDatabase.transaction(
     'rw',
-    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs, storyDatabase.feedback],
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs, storyDatabase.feedback, storyDatabase.preferenceSignals],
     async () => {
       const target = await resolveFeedbackTarget(input)
       const existing = await findFeedbackForTarget(target)
@@ -1103,11 +1133,13 @@ export async function toggleFeedback(input: UpsertFeedbackInput): Promise<Feedba
       }
       if (existing.verdict === payload.verdict) {
         await storyDatabase.feedback.delete(existing.id)
+        await storyDatabase.preferenceSignals.where('feedbackId').equals(existing.id).delete()
         return null
       }
 
       const updated = updateFeedbackRecord(existing, payload, now)
       await storyDatabase.feedback.put(updated)
+      await storyDatabase.preferenceSignals.where('feedbackId').equals(existing.id).delete()
       return updated
     },
   )
@@ -1120,7 +1152,7 @@ export async function toggleFeedbackBatch(input: FeedbackBatchInput): Promise<Fe
   const now = Date.now()
   return storyDatabase.transaction(
     'rw',
-    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs, storyDatabase.feedback],
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs, storyDatabase.feedback, storyDatabase.preferenceSignals],
     async () => {
       const changed: Feedback[] = []
       for (const targetInput of input.targets) {
@@ -1128,11 +1160,13 @@ export async function toggleFeedbackBatch(input: FeedbackBatchInput): Promise<Fe
         const existing = await findFeedbackForTarget(target)
         if (existing?.verdict === payload.verdict) {
           await storyDatabase.feedback.delete(existing.id)
+          await storyDatabase.preferenceSignals.where('feedbackId').equals(existing.id).delete()
           continue
         }
         if (existing) {
           const updated = updateFeedbackRecord(existing, payload, now)
           await storyDatabase.feedback.put(updated)
+          await storyDatabase.preferenceSignals.where('feedbackId').equals(existing.id).delete()
           changed.push(updated)
         } else {
           const feedback = createFeedbackRecord(target, payload, now)
@@ -1149,12 +1183,13 @@ export async function toggleFeedbackBatch(input: FeedbackBatchInput): Promise<Fe
 export async function removeFeedback(input: FeedbackTargetInput) {
   return storyDatabase.transaction(
     'rw',
-    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs, storyDatabase.feedback],
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.paragraphs, storyDatabase.feedback, storyDatabase.preferenceSignals],
     async () => {
       const target = await resolveFeedbackTarget(input)
       const existing = await findFeedbackForTarget(target)
       if (!existing) return false
       await storyDatabase.feedback.delete(existing.id)
+      await storyDatabase.preferenceSignals.where('feedbackId').equals(existing.id).delete()
       return true
     },
   )
@@ -1195,6 +1230,95 @@ export async function listRecentProjectFeedback(projectIdValue: string, limit = 
     .between([projectId, Dexie.minKey], [projectId, Dexie.maxKey])
     .toArray()
   return feedback.sort(compareRecentFeedback).slice(0, limit)
+}
+
+export async function listRecentPreferenceSignals(projectIdValue: string, limit = 8) {
+  const projectId = requiredFeedbackString(projectIdValue, '作品 ID')
+  const ordered = (await storyDatabase.preferenceSignals.where('projectId').equals(projectId).toArray())
+    .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
+  const fingerprints = new Set<string>()
+  return ordered.filter((signal) => {
+    if (fingerprints.has(signal.fingerprint)) return false
+    fingerprints.add(signal.fingerprint)
+    return true
+  }).slice(0, limit)
+}
+
+export async function getLatestRegenerableWritingTurn(projectId: string) {
+  const prose = await storyDatabase.messages.where('projectId').equals(projectId).filter((item) => item.kind === 'prose' && Boolean(item.turnId) && Boolean(item.chapterId) && Boolean(item.paragraphs?.length)).sortBy('order')
+  const target = prose.at(-1)
+  if (!target?.turnId || !target.chapterId) return undefined
+  const all = await storyDatabase.messages.where('projectId').equals(projectId).sortBy('order')
+  const laterMessages = all.filter((item) => item.order > target.order)
+  if (laterMessages.some((item) => item.turnId !== target.turnId || item.kind !== 'illustration')) return undefined
+  const chapter = await storyDatabase.chapters.get(target.chapterId)
+  const user = all.find((item) => item.turnId === target.turnId && item.kind === 'user')
+  const notice = all.find((item) => item.turnId === target.turnId && item.kind === 'notice' && item.status === 'ready')
+  const proseText = (target.paragraphs ?? []).join('\n\n')
+  if (!chapter || !user?.text || !notice || !chapter.content.endsWith(proseText)) return undefined
+  const baseChapterContent = chapter.content.slice(0, chapter.content.length - proseText.length).trimEnd()
+  const baseChapterSummary = (await readChapterSummaryVersions(projectId, chapter.id))
+    .filter((version) => version.turnId !== target.turnId)
+    .at(-1)?.summary
+  return {
+    prose: target,
+    chapter,
+    user,
+    notice,
+    baseChapterHash: hashTextImpl(chapter.content),
+    baseChapterContent,
+    baseChapterSummary,
+    baseParagraphCount: splitChapterContent(baseChapterContent).length,
+  }
+}
+
+export async function saveWritingCandidate(input: Omit<WritingCandidate, 'id' | 'status' | 'createdAt' | 'updatedAt'>) {
+  const now = Date.now()
+  const candidate: WritingCandidate = { ...input, id: createId('candidate'), status: 'ready', createdAt: now, updatedAt: now }
+  await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([input.projectId, input.turnId]).delete()
+  await storyDatabase.writingCandidates.add(candidate)
+  return candidate
+}
+
+export async function getWritingCandidate(projectId: string, turnId: string) {
+  return storyDatabase.writingCandidates.where('[projectId+turnId]').equals([projectId, turnId]).filter((item) => item.status === 'ready').first()
+}
+
+export async function discardWritingCandidate(projectId: string, turnId: string) {
+  await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([projectId, turnId]).delete()
+}
+
+/**
+ * Stores a future-facing preference separately from its reviewed prose. This
+ * deliberately never accepts source prose, paragraph ids, or names: those
+ * belong to the feedback target and must not leak into the next prompt.
+ */
+export async function upsertPreferenceSignal(input: {
+  feedbackId: string
+  projectId: string
+  verdict: Feedback['verdict']
+  dimension: PreferenceDimension
+  instruction: string
+  source: PreferenceSignal['source']
+}) {
+  const instruction = input.instruction.trim().replace(/\s+/g, ' ').slice(0, 180)
+  if (!instruction) throw new Error('偏好说明不能为空')
+  if (!/^(?:后续|继续|避免|少用|多用|保持|让)/.test(instruction)) throw new Error('偏好说明需要描述后续写作方式')
+  const now = Date.now()
+  return storyDatabase.transaction('rw', [storyDatabase.feedback, storyDatabase.preferenceSignals], async () => {
+    const feedback = await storyDatabase.feedback.get(input.feedbackId)
+    if (!feedback || feedback.projectId !== input.projectId || feedback.verdict !== input.verdict) throw new Error('反馈已变化，请重新提交')
+    const fingerprint = hashTextImpl(`${input.verdict}:${input.dimension}:${instruction}`)
+    const existing = await storyDatabase.preferenceSignals.where('feedbackId').equals(input.feedbackId)
+      .filter((signal) => signal.fingerprint === fingerprint).first()
+    const signal: PreferenceSignal = {
+      id: existing?.id ?? createId('preference'), projectId: input.projectId, feedbackId: feedback.id,
+      verdict: input.verdict, dimension: input.dimension, instruction, source: input.source,
+      fingerprint, createdAt: existing?.createdAt ?? now, updatedAt: now,
+    }
+    await storyDatabase.preferenceSignals.put(signal)
+    return signal
+  })
 }
 
 function hasValidParagraphFingerprint(paragraph: StoredParagraph) {
@@ -1387,7 +1511,7 @@ export async function createCharacterDraft(projectId: string, name: string, role
 export async function deleteProject(projectId: string) {
   await storyDatabase.transaction(
     'rw',
-    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.characters, storyDatabase.illustrations, storyDatabase.styles, storyDatabase.scenes, storyDatabase.paragraphs, storyDatabase.summaryVersions, storyDatabase.feedback, storyDatabase.styleCorpusBindings],
+    [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.characters, storyDatabase.illustrations, storyDatabase.styles, storyDatabase.scenes, storyDatabase.paragraphs, storyDatabase.summaryVersions, storyDatabase.feedback, storyDatabase.preferenceSignals, storyDatabase.writingCandidates, storyDatabase.styleCorpusBindings],
     async () => {
       await Promise.all([
         storyDatabase.messages.where('projectId').equals(projectId).delete(),
@@ -1399,6 +1523,8 @@ export async function deleteProject(projectId: string) {
         storyDatabase.paragraphs.where('projectId').equals(projectId).delete(),
         storyDatabase.summaryVersions.where('projectId').equals(projectId).delete(),
         storyDatabase.feedback.where('projectId').equals(projectId).delete(),
+        storyDatabase.preferenceSignals.where('projectId').equals(projectId).delete(),
+        storyDatabase.writingCandidates.where('projectId').equals(projectId).delete(),
         storyDatabase.styleCorpusBindings.where('projectId').equals(projectId).delete(),
       ])
       await storyDatabase.projects.delete(projectId)
@@ -1523,6 +1649,7 @@ export async function beginWritingTurn(projectId: string, text: string, mode: Il
   const now = Date.now()
   const nextOrder = (await getLastMessageOrder(projectId)) + 1
   const userMessageId = createId('message')
+  const turnId = createId('turn')
   const messages: ConversationMessage[] = [
     {
       id: userMessageId,
@@ -1532,6 +1659,7 @@ export async function beginWritingTurn(projectId: string, text: string, mode: Il
       order: nextOrder,
       createdAt: now,
       text,
+      turnId,
     },
     {
       id: createId('message'),
@@ -1543,6 +1671,7 @@ export async function beginWritingTurn(projectId: string, text: string, mode: Il
       text: writingNoticeText(illustrationMode),
       status: 'pending',
       userMessageId,
+      turnId,
     },
   ]
 
@@ -1637,6 +1766,131 @@ export async function getWritingNotice(noticeId: string) {
   return notice?.kind === 'notice' ? notice : undefined
 }
 
+function materializeSceneNotesForResult(result: WritingProseResult, priorScenes: readonly StoredScene[]) {
+  const sceneNotes = result.sceneNotes
+    ? materializeWritingSceneNotes(result.sceneNotes, priorScenes.map((scene) => scene.notes))
+    : emptySceneNotes()
+  const validPriorSceneIds = new Set(priorScenes.map((scene) => scene.id))
+  const evidenceIds = result.sceneNotes?.priorSceneEvidenceIds ?? []
+  if (evidenceIds.some((id) => !validPriorSceneIds.has(id))) throw new Error('前史引用证据不属于当前作品，未保存本轮正文')
+  const hasPriorHistoryMarker = /(?:上次|以前|又一次|再次|还记得|像从前|当年|那一次|那回|曾经)/.test(result.paragraphs.join('\n\n'))
+  if (hasPriorHistoryMarker && evidenceIds.length === 0) {
+    sceneNotes.unresolvedThreads = [...sceneNotes.unresolvedThreads, '需核对：本轮出现了未提供场景证据的既往事件引用。']
+  }
+  return sceneNotes
+}
+
+async function materializeVisualPlanForTurn(input: {
+  projectId: string
+  targetChapter: Chapter
+  visualPlan: VisualPlan | undefined
+  illustrationMode: IllustrationMode
+  turnId: string | undefined
+  messageOrder: number
+  now: number
+}) {
+  const { projectId, targetChapter, visualPlan, illustrationMode, turnId, messageOrder, now } = input
+  if (illustrationMode === 'none' || !visualPlan) return undefined
+
+  const referenceCharacterIds: string[] = []
+  for (const characterPlan of visualPlan.characters) {
+    const existingCharacters = await storyDatabase.characters.where('projectId').equals(projectId).toArray()
+    const existing = existingCharacters.find((character) => character.name.toLocaleLowerCase() === characterPlan.name.toLocaleLowerCase())
+    if (existing) {
+      referenceCharacterIds.push(existing.id)
+      if (existing.status === 'draft') {
+        const nextRole = existing.role || characterPlan.role
+        const nextNarrativePronoun = existing.narrativePronoun ?? characterPlan.narrativePronoun
+        const nextAgeAndBuild = existing.identity.ageAndBuild || characterPlan.ageAndBuild
+        const nextFixedTraits = existing.identity.fixedTraits.length ? existing.identity.fixedTraits : characterPlan.fixedTraits
+        const nextDefaultLook = existing.appearance.defaultLook || characterPlan.defaultLook
+        const nextWardrobe = existing.appearance.wardrobe || characterPlan.wardrobe
+        if (
+          nextRole !== existing.role
+          || nextNarrativePronoun !== existing.narrativePronoun
+          || nextAgeAndBuild !== existing.identity.ageAndBuild
+          || nextFixedTraits !== existing.identity.fixedTraits
+          || nextDefaultLook !== existing.appearance.defaultLook
+          || nextWardrobe !== existing.appearance.wardrobe
+        ) {
+          await storyDatabase.characters.update(existing.id, {
+            role: nextRole,
+            narrativePronoun: nextNarrativePronoun,
+            identity: { ageAndBuild: nextAgeAndBuild, fixedTraits: nextFixedTraits },
+            appearance: { defaultLook: nextDefaultLook, wardrobe: nextWardrobe },
+            updatedAt: now,
+          })
+        }
+      }
+      continue
+    }
+    const characterId = createId('character')
+    await storyDatabase.characters.add({
+      id: characterId,
+      projectId,
+      name: characterPlan.name,
+      role: characterPlan.role,
+      narrativePronoun: characterPlan.narrativePronoun,
+      identity: { ageAndBuild: characterPlan.ageAndBuild, fixedTraits: characterPlan.fixedTraits },
+      appearance: { defaultLook: characterPlan.defaultLook, wardrobe: characterPlan.wardrobe },
+      continuity: { revision: 0, referenceStyleMode: 'project' },
+      portraitStatus: 'planned',
+      status: 'draft',
+      createdAt: now,
+      updatedAt: now,
+      turnId,
+    })
+    referenceCharacterIds.push(characterId)
+  }
+
+  const illustrationId = createId('illustration')
+  const illustrationMessageId = createId('message')
+  const illustration: IllustrationAsset = {
+    id: illustrationId,
+    projectId,
+    chapterId: targetChapter.id,
+    messageId: illustrationMessageId,
+    title: visualPlan.title,
+    prompt: visualPlan.prompt,
+    sceneStylePrompt: visualPlan.stylePrompt,
+    sceneNegativePrompt: visualPlan.negativePrompt,
+    action: visualPlan.action,
+    bodyLanguage: visualPlan.bodyLanguage,
+    expression: visualPlan.expression,
+    gaze: visualPlan.gaze,
+    camera: visualPlan.camera,
+    motion: visualPlan.motion,
+    sceneAnchor: visualPlan.sceneAnchor,
+    referenceCharacterIds,
+    generationMode: illustrationMode,
+    status: 'planned',
+    createdAt: now,
+    updatedAt: now,
+    turnId,
+  }
+  const allProjectCharacters = await storyDatabase.characters.where('projectId').equals(projectId).toArray()
+  const referenceResolution = resolveIllustrationReferences(illustration, allProjectCharacters)
+  if (!referenceResolution.ready) {
+    illustration.status = 'failed'
+    illustration.errorMessage = referenceResolution.reason
+    illustration.failureKind = 'reference-unavailable'
+  }
+  await storyDatabase.illustrations.add(illustration)
+  await storyDatabase.messages.add({
+    id: illustrationMessageId,
+    projectId,
+    chapterId: targetChapter.id,
+    kind: 'illustration',
+    order: messageOrder,
+    createdAt: now + 1,
+    title: illustration.title,
+    illustrationId,
+    status: 'ready',
+    turnId,
+  })
+  return illustration
+}
+
 export async function completeWritingTurn(
   projectId: string,
   userMessageId: string,
@@ -1662,7 +1916,7 @@ export async function completeWritingTurn(
     })
     return
   }
-  const generatedSummary = result.chapterSummary?.trim() || undefined
+      const generatedSummary = result.chapterSummary?.trim() || undefined
   await storyDatabase.transaction(
     'rw',
     [storyDatabase.projects, storyDatabase.messages, storyDatabase.chapters, storyDatabase.characters, storyDatabase.illustrations, storyDatabase.scenes, storyDatabase.paragraphs, storyDatabase.summaryVersions],
@@ -1684,6 +1938,18 @@ export async function completeWritingTurn(
         ? chapters.find((chapter) => chapter.id === project.activeChapterId)
         : chapters[chapters.length - 1]
       let targetChapter: Chapter
+
+      // A continuation should advance the story, not append a regenerated
+      // copy of its tail. Exact paragraph and long normalized suffix matches
+      // are rejected before any side effect in this transaction.
+      if (!forceNewChapter && result.chapterAction === 'continue' && activeChapter?.content) {
+        const existing = normalizeParagraphText(activeChapter.content)
+        const generated = normalizeParagraphText(result.paragraphs.join('\n\n'))
+        const tail = existing.slice(-Math.min(existing.length, 1_200))
+        if (generated.length >= 80 && (existing.includes(generated) || tail.length >= 80 && generated.includes(tail))) {
+          throw new Error('生成内容与已有正文高度重合，未追加。请调整要求后重试。')
+        }
+      }
 
       if (!activeChapter || forceNewChapter || result.chapterAction === 'new') {
         const chapterId = createId('chapter')
@@ -1716,9 +1982,7 @@ export async function completeWritingTurn(
 
       const priorScenes = await storyDatabase.scenes.where('projectId').equals(projectId).sortBy('order')
       const nextSceneOrder = priorScenes.reduce((highest, scene) => Math.max(highest, scene.order), 0) + 1
-      const sceneNotes = result.sceneNotes
-        ? materializeWritingSceneNotes(result.sceneNotes, priorScenes.map((scene) => scene.notes))
-        : emptySceneNotes()
+      const sceneNotes = materializeSceneNotesForResult(result, priorScenes)
       await storyDatabase.scenes.add({
         id: createId('scene'),
         projectId,
@@ -1727,6 +1991,7 @@ export async function completeWritingTurn(
         createdAt: now,
         notes: sceneNotes,
         excerpt: result.paragraphs.join('\n\n').slice(-6_000),
+        turnId: notice.turnId,
       })
 
       await storyDatabase.messages.update(userMessageId, { chapterId: targetChapter.id })
@@ -1734,6 +1999,7 @@ export async function completeWritingTurn(
         chapterId: targetChapter.id,
         text: result.assistantNote,
         status: 'ready',
+        turnId: notice.turnId,
       })
 
       const proseMessage: ConversationMessage = {
@@ -1745,121 +2011,173 @@ export async function completeWritingTurn(
         createdAt: now,
         paragraphs: result.paragraphs,
         status: 'ready',
+        turnId: notice.turnId,
       }
       await storyDatabase.messages.add(proseMessage)
       await upsertMessageParagraphs(proseMessage)
       await upsertChapterParagraphs(targetChapter)
-      if (generatedSummary) await appendGeneratedChapterSummaryVersion(targetChapter, generatedSummary, now)
+      if (generatedSummary) await appendGeneratedChapterSummaryVersion(targetChapter, generatedSummary, now, notice.turnId)
 
       // Text-only mode must remain robust even if a non-conforming provider
       // returns a visual plan despite receiving the text-only prompt.
-      if (illustrationMode !== 'none' && result.visualPlan) {
-        const referenceCharacterIds: string[] = []
-        for (const characterPlan of result.visualPlan.characters) {
-          const existingCharacters = await storyDatabase.characters.where('projectId').equals(projectId).toArray()
-          const existing = existingCharacters.find((character) => character.name.toLocaleLowerCase() === characterPlan.name.toLocaleLowerCase())
-          if (existing) {
-            referenceCharacterIds.push(existing.id)
-            if (existing.status === 'draft') {
-              const nextRole = existing.role || characterPlan.role
-              const nextNarrativePronoun = existing.narrativePronoun ?? characterPlan.narrativePronoun
-              const nextAgeAndBuild = existing.identity.ageAndBuild || characterPlan.ageAndBuild
-              const nextFixedTraits = existing.identity.fixedTraits.length ? existing.identity.fixedTraits : characterPlan.fixedTraits
-              const nextDefaultLook = existing.appearance.defaultLook || characterPlan.defaultLook
-              const nextWardrobe = existing.appearance.wardrobe || characterPlan.wardrobe
-              if (
-                nextRole !== existing.role
-                || nextNarrativePronoun !== existing.narrativePronoun
-                || nextAgeAndBuild !== existing.identity.ageAndBuild
-                || nextFixedTraits !== existing.identity.fixedTraits
-                || nextDefaultLook !== existing.appearance.defaultLook
-                || nextWardrobe !== existing.appearance.wardrobe
-              ) {
-                await storyDatabase.characters.update(existing.id, {
-                  role: nextRole,
-                  narrativePronoun: nextNarrativePronoun,
-                  identity: { ageAndBuild: nextAgeAndBuild, fixedTraits: nextFixedTraits },
-                  appearance: { defaultLook: nextDefaultLook, wardrobe: nextWardrobe },
-                  updatedAt: now,
-                })
-              }
-            }
-            continue
-          }
-          const characterId = createId('character')
-          const character: CharacterAsset = {
-            id: characterId,
-            projectId,
-            name: characterPlan.name,
-            role: characterPlan.role,
-            narrativePronoun: characterPlan.narrativePronoun,
-            identity: {
-              ageAndBuild: characterPlan.ageAndBuild,
-              fixedTraits: characterPlan.fixedTraits,
-            },
-            appearance: {
-              defaultLook: characterPlan.defaultLook,
-              wardrobe: characterPlan.wardrobe,
-            },
-            continuity: { revision: 0, referenceStyleMode: 'project' },
-            portraitStatus: 'planned',
-            status: 'draft',
-            createdAt: now,
-            updatedAt: now,
-          }
-          await storyDatabase.characters.add(character)
-          referenceCharacterIds.push(characterId)
-        }
-
-        const illustrationId = createId('illustration')
-        const illustrationMessageId = createId('message')
-        const illustration: IllustrationAsset = {
-          id: illustrationId,
-          projectId,
-          chapterId: targetChapter.id,
-          messageId: illustrationMessageId,
-          title: result.visualPlan.title,
-          prompt: result.visualPlan.prompt,
-          sceneStylePrompt: result.visualPlan.stylePrompt,
-          sceneNegativePrompt: result.visualPlan.negativePrompt,
-          action: result.visualPlan.action,
-          bodyLanguage: result.visualPlan.bodyLanguage,
-          expression: result.visualPlan.expression,
-          gaze: result.visualPlan.gaze,
-          camera: result.visualPlan.camera,
-          motion: result.visualPlan.motion,
-          sceneAnchor: result.visualPlan.sceneAnchor,
-          referenceCharacterIds,
-          generationMode: illustrationMode,
-          status: 'planned',
-          createdAt: now,
-          updatedAt: now,
-        }
-        const allProjectCharacters = await storyDatabase.characters.where('projectId').equals(projectId).toArray()
-        const referenceResolution = resolveIllustrationReferences(illustration, allProjectCharacters)
-        if (!referenceResolution.ready) {
-          illustration.status = 'failed'
-          illustration.errorMessage = referenceResolution.reason
-          illustration.failureKind = 'reference-unavailable'
-        }
-        await storyDatabase.illustrations.add(illustration)
-        await storyDatabase.messages.add({
-          id: illustrationMessageId,
-          projectId,
-          chapterId: targetChapter.id,
-          kind: 'illustration',
-          order: nextOrder,
-          createdAt: now + 1,
-          title: illustration.title,
-          illustrationId,
-          status: 'ready',
-        })
-      }
+      await materializeVisualPlanForTurn({
+        projectId,
+        targetChapter,
+        visualPlan: result.visualPlan,
+        illustrationMode,
+        turnId: notice.turnId,
+        messageOrder: nextOrder,
+        now,
+      })
 
       await storyDatabase.projects.update(projectId, {
         activeChapterId: project.activeChapterId,
         updatedAt: now,
       })
+    },
+  )
+}
+
+/**
+ * Replaces only the latest successful prose turn. The candidate is guarded by
+ * the exact chapter hash captured before generation, so edits made while the
+ * comparison is open can never be overwritten.
+ */
+export async function adoptWritingCandidate(projectId: string, turnId: string) {
+  const now = Date.now()
+  return storyDatabase.transaction(
+    'rw',
+    [
+      storyDatabase.projects,
+      storyDatabase.messages,
+      storyDatabase.chapters,
+      storyDatabase.characters,
+      storyDatabase.illustrations,
+      storyDatabase.scenes,
+      storyDatabase.paragraphs,
+      storyDatabase.summaryVersions,
+      storyDatabase.feedback,
+      storyDatabase.preferenceSignals,
+      storyDatabase.writingCandidates,
+    ],
+    async () => {
+      const candidate = await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([projectId, turnId])
+        .filter((item) => item.status === 'ready').first()
+      if (!candidate) throw new Error('候选正文不存在或已经处理')
+
+      const target = await getLatestRegenerableWritingTurn(projectId)
+      if (!target || target.prose.id !== candidate.proseMessageId || target.prose.turnId !== turnId || target.chapter.id !== candidate.chapterId) {
+        throw new Error('最近一轮正文已经变化，不能采用这份候选稿')
+      }
+      if (target.baseChapterHash !== candidate.baseChapterHash || target.baseChapterContent !== candidate.baseChapterContent) {
+        throw new Error('章节正文已经变化，请保留当前版本并重新生成候选稿')
+      }
+
+      const project = await storyDatabase.projects.get(projectId)
+      if (!project) throw new Error('当前作品不存在')
+      const result = candidate.result
+      const generatedSummary = result.chapterSummary?.trim() || undefined
+      const chapterTitle = result.chapterTitle || target.chapter.title
+      const chapterContent = [candidate.baseChapterContent.trim(), result.paragraphs.join('\n\n')].filter(Boolean).join('\n\n')
+
+      const oldScenes = (await storyDatabase.scenes.where('projectId').equals(projectId).toArray()).filter((scene) => scene.turnId === turnId)
+      const priorScenes = (await storyDatabase.scenes.where('projectId').equals(projectId).sortBy('order')).filter((scene) => scene.turnId !== turnId)
+      const sceneNotes = materializeSceneNotesForResult(result, priorScenes)
+      const stableScene = oldScenes.sort((left, right) => left.order - right.order || left.createdAt - right.createdAt)[0]
+      const sceneOrder = stableScene?.order ?? priorScenes.reduce((highest, scene) => Math.max(highest, scene.order), 0) + 1
+
+      const priorSummaryVersions = (await readChapterSummaryVersions(projectId, target.chapter.id)).filter((version) => version.turnId !== turnId)
+      const fallbackSummary = priorSummaryVersions.at(-1)?.summary
+      const nextChapter: Chapter = {
+        ...target.chapter,
+        title: chapterTitle,
+        content: chapterContent,
+        summary: generatedSummary ?? fallbackSummary,
+        updatedAt: now,
+      }
+      await storyDatabase.chapters.put(nextChapter)
+      await storyDatabase.messages.update(target.user.id, { chapterId: nextChapter.id })
+      await storyDatabase.messages.update(target.notice.id, {
+        chapterId: nextChapter.id,
+        text: result.assistantNote,
+        status: 'ready',
+        turnId,
+      })
+      const nextProseMessage: ConversationMessage = {
+        ...target.prose,
+        chapterId: nextChapter.id,
+        paragraphs: result.paragraphs,
+        status: 'ready',
+        turnId,
+      }
+      await storyDatabase.messages.put(nextProseMessage)
+      await storyDatabase.paragraphs.where('[projectId+messageId]').equals([projectId, target.prose.id]).delete()
+      await upsertMessageParagraphs(nextProseMessage)
+      await upsertChapterParagraphs(nextChapter)
+
+      if (oldScenes.length) await storyDatabase.scenes.bulkDelete(oldScenes.map((scene) => scene.id))
+      await storyDatabase.scenes.put({
+        id: stableScene?.id ?? createId('scene'),
+        projectId,
+        chapterId: nextChapter.id,
+        order: sceneOrder,
+        createdAt: stableScene?.createdAt ?? now,
+        notes: sceneNotes,
+        excerpt: result.paragraphs.join('\n\n').slice(-6_000),
+        turnId,
+      })
+
+      const turnSummaryVersions = (await storyDatabase.summaryVersions.where('[projectId+chapterId]').equals([projectId, nextChapter.id]).toArray())
+        .filter((version) => version.turnId === turnId)
+      if (turnSummaryVersions.length) await storyDatabase.summaryVersions.bulkDelete(turnSummaryVersions.map((version) => version.id))
+      if (generatedSummary) await appendGeneratedChapterSummaryVersion(nextChapter, generatedSummary, now, turnId)
+
+      const turnIllustrations = (await storyDatabase.illustrations.where('projectId').equals(projectId).toArray())
+        .filter((illustration) => illustration.turnId === turnId)
+      const disposableIllustrationIds = turnIllustrations
+        .filter((illustration) => illustration.status === 'planned' || illustration.status === 'failed')
+        .map((illustration) => illustration.id)
+      const preservedIllustrations = turnIllustrations.filter((illustration) => illustration.status === 'ready' || illustration.status === 'generating')
+      if (disposableIllustrationIds.length) await storyDatabase.illustrations.bulkDelete(disposableIllustrationIds)
+      for (const illustration of preservedIllustrations) {
+        await storyDatabase.illustrations.update(illustration.id, { messageId: undefined, turnId: undefined, archivedAt: now, updatedAt: now })
+      }
+      const oldIllustrationMessages = (await storyDatabase.messages.where('projectId').equals(projectId).toArray())
+        .filter((message) => message.turnId === turnId && message.kind === 'illustration')
+      if (oldIllustrationMessages.length) await storyDatabase.messages.bulkDelete(oldIllustrationMessages.map((message) => message.id))
+
+      const remainingIllustrations = await storyDatabase.illustrations.where('projectId').equals(projectId).toArray()
+      const referencedCharacterIds = new Set(remainingIllustrations.flatMap((illustration) => illustration.referenceCharacterIds))
+      const disposableCharacters = (await storyDatabase.characters.where('projectId').equals(projectId).toArray()).filter((character) => (
+        character.turnId === turnId
+        && character.status === 'draft'
+        && character.portraitStatus === 'planned'
+        && character.createdAt === character.updatedAt
+        && !character.continuity.referenceImageUrl
+        && !character.continuity.localUri
+        && !referencedCharacterIds.has(character.id)
+      ))
+      if (disposableCharacters.length) await storyDatabase.characters.bulkDelete(disposableCharacters.map((character) => character.id))
+
+      const oldFeedback = await storyDatabase.feedback.where('[projectId+messageId]').equals([projectId, target.prose.id]).toArray()
+      if (oldFeedback.length) {
+        const feedbackIds = oldFeedback.map((feedback) => feedback.id)
+        await storyDatabase.preferenceSignals.where('feedbackId').anyOf(feedbackIds).delete()
+        await storyDatabase.feedback.bulkDelete(feedbackIds)
+      }
+
+      await materializeVisualPlanForTurn({
+        projectId,
+        targetChapter: nextChapter,
+        visualPlan: result.visualPlan,
+        illustrationMode: resolveIllustrationMode(project),
+        turnId,
+        messageOrder: target.prose.order + 1,
+        now,
+      })
+      await storyDatabase.projects.update(projectId, { activeChapterId: nextChapter.id, updatedAt: now })
+      await storyDatabase.writingCandidates.update(candidate.id, { status: 'adopted', updatedAt: now })
+      return { chapter: nextChapter, prose: nextProseMessage, result }
     },
   )
 }
@@ -1906,6 +2224,48 @@ export async function cancelWritingTurn(noticeId: string) {
       status: 'cancelled',
     })
   })
+}
+
+/**
+ * Updates the newest retryable user request. The database, not the UI, owns
+ * the guard so a stale screen cannot edit a completed or superseded turn.
+ */
+export async function updateLatestRetryableWritingUserMessage(projectId: string, userMessageId: string, text: string) {
+  const userText = text.trim()
+  if (!userText) throw new Error('已发送内容不能为空')
+  const now = Date.now()
+  return storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.projects], async () => {
+    const messages = await storyDatabase.messages.where('projectId').equals(projectId).sortBy('order')
+    const userMessage = messages.find((message) => message.id === userMessageId)
+    if (!userMessage || userMessage.kind !== 'user') throw new Error('用户消息不存在或不属于当前作品')
+    if (messages.filter((message) => message.kind === 'user').at(-1)?.id !== userMessageId) {
+      throw new Error('只能编辑最新一轮已发送内容')
+    }
+    const notice = messages.find((message) => message.kind === 'notice' && message.userMessageId === userMessageId)
+    if (!notice || (notice.status !== 'failed' && notice.status !== 'cancelled')) {
+      throw new Error('只有失败或已停止的最新回合才能编辑')
+    }
+    const hasSuccessfulProse = Boolean(notice.turnId) && messages.some((message) => (
+      message.kind === 'prose'
+      && message.turnId === notice.turnId
+      && message.status !== 'failed'
+    ))
+    if (hasSuccessfulProse) throw new Error('已完成正文的回合不能再编辑')
+    await storyDatabase.messages.update(userMessageId, { text: userText })
+    await storyDatabase.projects.update(projectId, { updatedAt: now })
+    return userText
+  })
+}
+
+/** Returns the one user message currently eligible for retry-before-editing. */
+export async function getLatestRetryableWritingUserMessage(projectId: string) {
+  const messages = await storyDatabase.messages.where('projectId').equals(projectId).sortBy('order')
+  const user = messages.filter((message) => message.kind === 'user').at(-1)
+  if (!user) return undefined
+  const notice = messages.find((message) => message.kind === 'notice' && message.userMessageId === user.id)
+  if (!notice || (notice.status !== 'failed' && notice.status !== 'cancelled')) return undefined
+  const hasSuccessfulProse = Boolean(notice.turnId) && messages.some((message) => message.kind === 'prose' && message.turnId === notice.turnId && message.status !== 'failed')
+  return hasSuccessfulProse ? undefined : user
 }
 
 /**

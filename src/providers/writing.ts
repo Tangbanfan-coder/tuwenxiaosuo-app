@@ -26,6 +26,7 @@ export {
   type GenerateWritingTurnOptions,
 } from './writing/orchestration'
 export { parseWritingResult, projectStreamingProse } from './writing/result'
+export { analyzeFeedbackPreference, type AnalyzedPreference, type FeedbackPreferenceInput } from './writing/feedbackPreference'
 export { detectProseStyleIssues, PROSE_STYLE_RULES } from '../domain/proseStyle'
 export { parseRewrittenParagraph, rewriteProseParagraph, type RewriteParagraphRequest } from './writing/rewrite'
 export {

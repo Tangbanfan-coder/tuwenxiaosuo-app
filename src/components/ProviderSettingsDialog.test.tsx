@@ -113,6 +113,7 @@ describe('ProviderSettingsDialog layering', () => {
   it('hands the first frame from settings to the nested provider page without exposing the app below', () => {
     const { container } = render(<SettingsProviderHandoff />)
 
+    fireEvent.click(screen.getByRole('button', { name: /模型服务/ }))
     fireEvent.click(screen.getByRole('button', { name: /文本模型/ }))
 
     const settingsDrawer = container.querySelector('.settings-drawer')

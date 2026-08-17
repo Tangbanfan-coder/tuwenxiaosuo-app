@@ -30,6 +30,7 @@ import {
   createProject,
   deleteProject,
   getStyleCorpusSummary,
+  upsertPreferenceSignal,
   recordProseEvaluationEvent,
   listChapterSummaryVersions,
   renameProject,
@@ -44,18 +45,19 @@ import {
 import { createEvaluationEvent, evaluationIssueFields, proseDurationBucket, proseLengthBucket, proseLengthChangeBucket, rewriteRequestedEvaluation, writingTurnCompletedEvaluation } from './domain/proseEvaluation'
 import { PROSE_STYLE_RULE_VERSION } from './domain/proseStyle'
 import { resolveProjectIllustrationStyle } from './domain/illustrationStyles'
-import { resolveIllustrationMode, type AppearanceMode, type ContextBudget, type ConversationMessage, type IllustrationMode, type IllustrationStylePresetId, type RewriteStrength, type StoredParagraph, type ThemePresetId } from './domain/models'
+import { resolveIllustrationMode, type AppearanceMode, type ContextBudget, type ConversationMessage, type Feedback, type FeedbackVerdict, type IllustrationMode, type IllustrationStylePresetId, type RewriteStrength, type StoredParagraph, type ThemePresetId } from './domain/models'
 import { browserTransport } from './providers/browserTransport'
 import { loadProviderSettings, saveProviderSettings } from './providers/config'
 import { loadGlobalWritingInstructions, saveGlobalWritingInstructions } from './providers/config'
 import { logImagePipeline } from './providers/imagePipelineLog'
+import { secretStore } from './providers/secretStore'
 import { useAppBootstrap } from './hooks/useAppBootstrap'
 import { useTimelineNavigation } from './hooks/useTimelineNavigation'
 import { useWritingTurnController } from './hooks/useWritingTurnController'
 import { useImageAssetWorkflow } from './hooks/useImageAssetWorkflow'
 import ConfirmDialog from './components/ConfirmDialog'
 import type { ProviderSettings, ProviderSlot, ReasoningEffort } from './providers/types'
-import { markStyleCorpusFragmentsUsed, retrieveStyleExamples, rewriteProseParagraph } from './providers/writing'
+import { analyzeFeedbackPreference, markStyleCorpusFragmentsUsed, retrieveStyleExamples, rewriteProseParagraph } from './providers/writing'
 
 const APPEARANCE_KEY = 'illustrated-story-chat.appearance.v1'
 
@@ -150,11 +152,19 @@ export default function App() {
     activeContextUsagePlan,
     activeContextUsageState,
     contextUsageError,
+    editLatestRetryableUserMessage,
     generationPhase,
     handleStopGeneration,
+    adoptCandidateProse,
+    keepOriginalProse,
+    latestRegenerableMessageId,
+    latestRetryableUserMessageId,
+    regenerateLatestProse,
+    regeneratingProseMessageId,
     retryWriting,
     sendMessage,
     streamingText,
+    writingCandidate,
   } = useWritingTurnController({
     workspace,
     providerSettings,
@@ -168,6 +178,7 @@ export default function App() {
 
   const {
     handleTimelineScroll,
+    handleTimelineUserIntent,
     jumpToLatest,
     showJumpToLatest,
     timelineRef,
@@ -179,6 +190,8 @@ export default function App() {
     streamingText,
     activeChapterId: workspace?.project.activeChapterId,
     fallbackChapterId: workspace?.chapters[0]?.id,
+    generationActive: generationPhase !== 'idle',
+    completedProseMessageId: [...(workspace?.messages ?? [])].reverse().find((message) => message.kind === 'prose')?.id,
   })
 
   useEffect(() => {
@@ -227,6 +240,31 @@ export default function App() {
     await refreshWorkspace(message.projectId)
     showToast('已采用建议稿')
     } catch (error) { void recordProseEvaluationEvent(createEvaluationEvent('rewrite_apply_failed', { projectId: message.projectId, messageId: message.id, paragraphId: paragraph.id, proseRuleVersion: PROSE_STYLE_RULE_VERSION, failureKind: 'storage', factProtection: 'not_checked' })).catch(() => undefined); throw error }
+  }
+
+  async function handleAnalyzeFeedbackPreference(input: {
+    feedback: Feedback[]
+    verdict: FeedbackVerdict
+    reason?: string
+    targetTexts: string[]
+  }) {
+    const textProvider = providerSettings.text
+    if (!textProvider.baseUrl.trim() || !textProvider.model.trim() || !(await secretStore.has(textProvider.secretRef))) {
+      throw new Error('请先完成文本模型配置；反馈已经保存，但没有注入写作偏好')
+    }
+    const preferences = await analyzeFeedbackPreference({
+      verdict: input.verdict,
+      reason: input.reason,
+      targetTexts: input.targetTexts,
+    }, textProvider, browserTransport)
+    await Promise.all(input.feedback.flatMap((feedback) => preferences.map((preference) => upsertPreferenceSignal({
+      feedbackId: feedback.id,
+      projectId: feedback.projectId,
+      verdict: feedback.verdict,
+      dimension: preference.dimension,
+      instruction: preference.instruction,
+      source: 'ai',
+    }))))
   }
 
   useEffect(() => {
@@ -476,7 +514,7 @@ export default function App() {
           </button>
         </section>
 
-        <section ref={timelineRef} className="timeline" aria-label="创作对话" aria-live="polite" onScroll={handleTimelineScroll}>
+        <section ref={timelineRef} className="timeline" aria-label="创作对话" aria-live="polite" onScroll={handleTimelineScroll} onWheel={handleTimelineUserIntent} onTouchStart={handleTimelineUserIntent} onPointerDown={handleTimelineUserIntent} onKeyDown={handleTimelineUserIntent}>
           {workspace.messages.length === 0 ? (
             <div className="empty-story">
               <BookOpen size={28} />
@@ -492,13 +530,23 @@ export default function App() {
               const startsChapter = Boolean(messageChapterId && messageChapterId !== previousMessageChapterId)
               if (messageChapterId) previousMessageChapterId = messageChapterId
               return (
-                <div className="timeline-entry" data-chapter-id={startsChapter ? messageChapterId : undefined} key={message.id}>
+                <div className="timeline-entry" data-message-id={message.id} data-chapter-id={startsChapter ? messageChapterId : undefined} key={message.id}>
                   <TimelineMessage
                     message={message}
                     illustration={illustration}
                     illustrationGenerationStage={illustration ? illustrationGenerationStages[illustration.id] : undefined}
                     onRetryIllustration={retryIllustration}
                     onRetryWriting={retryWriting}
+                    canEditUserMessage={message.id === latestRetryableUserMessageId && generationPhase === 'idle'}
+                    onEditUserMessage={editLatestRetryableUserMessage}
+                    canRegenerate={message.id === latestRegenerableMessageId}
+                    writingCandidate={writingCandidate?.proseMessageId === message.id ? writingCandidate : undefined}
+                    regenerationBusy={regeneratingProseMessageId === message.id}
+                    writingBusy={generationPhase !== 'idle'}
+                    onRegenerateProse={regenerateLatestProse}
+                    onKeepOriginalProse={keepOriginalProse}
+                    onAdoptCandidateProse={adoptCandidateProse}
+                    onAnalyzeFeedbackPreference={handleAnalyzeFeedbackPreference}
                     imageProviderReady={imageProviderReady}
                     onOpenImageSettings={() => openProviderSettings('image')}
                     characters={workspace.characters}

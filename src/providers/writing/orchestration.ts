@@ -1,7 +1,6 @@
 import { resolveIllustrationMode, type ProjectWorkspace } from '../../domain/models'
 import {
-  listProjectParagraphs,
-  listRecentProjectFeedback,
+  listRecentPreferenceSignals,
   listRetrievableProjectParagraphs,
   loadProjectScenes,
 } from '../../data/storyDatabase'
@@ -25,7 +24,6 @@ import {
   CONTEXT_COMPRESSION_PROFILES,
   buildProjectContextForTokenBudget,
   buildUntrimmedProjectContextForDemand,
-  resolveRecentFeedbackContextSources,
 } from './context'
 import { systemPromptForIllustrationMode } from './prompt'
 import { parseWritingResult } from './result'
@@ -44,6 +42,13 @@ export interface GenerateWritingTurnOptions {
   signal?: AbortSignal
   /** The user message that started this turn; excluded from recent-message context so a retry does not inject the requirement twice. */
   excludeUserMessageId?: string
+  /** Excludes the replaced turn from both timeline facts and paragraph retrieval. */
+  regeneration?: {
+    turnId: string
+    proseMessageId: string
+    chapterId: string
+    baseParagraphCount: number
+  }
 }
 
 interface PreparedWritingTurnContext {
@@ -70,17 +75,27 @@ async function prepareWritingTurnContext(
   const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model, tokenizerStrategy: resolveCapabilities(config).tokenizerStrategy })
   const initialPlan = contextPlanForRequest(config, contextBudget, userRequest, estimator, systemPrompt)
 
-  const [scenes, paragraphs, recentFeedback, projectParagraphs, styleExamples] = await Promise.all([
+  const [storedScenes, storedParagraphs, preferenceSignals, styleExamples] = await Promise.all([
     loadProjectScenes(workspace.project.id),
     listRetrievableProjectParagraphs(workspace.project.id),
-    // Feedback is supplementary preference context. A workspace can briefly
-    // outlive a deleted project during UI refresh, so preserve the writing
-    // path with an empty feedback section rather than failing the whole turn.
-    listRecentProjectFeedback(workspace.project.id, 8).catch(() => []),
-    listProjectParagraphs(workspace.project.id),
+    // Only abstracted signals may reach the writing request. Feedback targets
+    // themselves remain local UI/statistics records and never leak old prose.
+    listRecentPreferenceSignals(workspace.project.id, 8).catch(() => []),
     retrieveStyleExamples(workspace, userRequest).catch(() => []),
   ])
-  const feedbackSources = resolveRecentFeedbackContextSources(recentFeedback, workspace, projectParagraphs)
+  const scenes = options.regeneration
+    ? storedScenes.filter((scene) => scene.turnId !== options.regeneration?.turnId)
+    : storedScenes
+  const paragraphs = options.regeneration
+    ? storedParagraphs.filter((paragraph) => (
+      paragraph.messageId !== options.regeneration?.proseMessageId
+      && !(
+        paragraph.sourceType === 'chapter'
+        && paragraph.chapterId === options.regeneration?.chapterId
+        && paragraph.index >= options.regeneration.baseParagraphCount
+      )
+    ))
+    : storedParagraphs
   const retrievedParagraphs = await (options.retriever ?? defaultParagraphRetriever).retrieve({
     query: buildParagraphRetrievalQuery(workspace, scenes, userRequest),
     paragraphs,
@@ -95,9 +110,9 @@ async function prepareWritingTurnContext(
     userRequest,
     estimator,
     retrievedParagraphs,
-    feedbackSources,
+    [],
     styleExamples.map((item) => item.fragment),
-    { excludeUserMessageId: options.excludeUserMessageId },
+    { excludeUserMessageId: options.excludeUserMessageId, preferenceSignals },
   )
   const contextDemandTokens = estimatedTokenCount(estimator, `当前作品资料：${rawContext.context}`)
   const compressionStage = contextCompressionStageForPressure(
@@ -110,7 +125,7 @@ async function prepareWritingTurnContext(
     userRequest,
     estimator,
     retrievedParagraphs,
-    { compressionStage, feedbackSources, styleCorpusFragments: styleExamples.map((item) => item.fragment), excludeUserMessageId: options.excludeUserMessageId },
+    { compressionStage, preferenceSignals, styleCorpusFragments: styleExamples.map((item) => item.fragment), excludeUserMessageId: options.excludeUserMessageId },
   )
   const contextMessage = `当前作品资料：${context}`
   const finalPlan = buildContextBudgetPlan({

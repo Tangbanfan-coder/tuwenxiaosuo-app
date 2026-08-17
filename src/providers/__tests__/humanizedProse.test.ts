@@ -21,6 +21,7 @@ describe('humanized prose providers', () => {
   it('keeps the default prose guidance short and overrideable', () => {
     expect(SYSTEM_PROMPT).toContain('默认文风原则')
     expect(SYSTEM_PROMPT).toContain('本轮用户明确指定的文体可以覆盖')
+    expect(SYSTEM_PROMPT).toContain('这叫 / 这就叫 / 这才叫')
     expect(SYSTEM_PROMPT).not.toContain('平静得像在讨论今天吃什么')
   })
 
