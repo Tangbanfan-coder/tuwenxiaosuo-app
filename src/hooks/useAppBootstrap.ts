@@ -15,13 +15,15 @@ import {
   setWritingTurnBackgroundTask,
   completeWritingTurn,
   failWritingTurn,
+  cancelWritingTurn,
 } from '../data/storyDatabase'
-import type { ProjectWorkspace, StoryProject } from '../domain/models'
+import { resolveIllustrationMode, type ProjectWorkspace, type StoryProject } from '../domain/models'
 import { recoverPersistedImageAsset } from '../providers/imageAssetStore'
 import { refreshModelLimits } from '../providers/modelLimits'
 import {
   acknowledgeBackgroundGenerationTask,
   listBackgroundGenerationTasks,
+  readBackgroundGenerationTask,
 } from '../providers/backgroundGeneration'
 import { parseBackgroundWritingResponse } from '../providers/writing'
 
@@ -70,30 +72,35 @@ async function recoverBackgroundGenerationTasks() {
   // enqueue-success/IndexedDB-link-failure window without recreating a task.
   for (const task of tasks) {
     if (task.kind !== 'text') continue
-    const metadata = task.metadata as { noticeId?: string; projectId?: string; userMessageId?: string; autoIllustrate?: boolean; forceNewChapter?: boolean } | undefined
+    const metadata = task.metadata as { noticeId?: string; projectId?: string; userMessageId?: string; illustrationMode?: 'none' | 'manual' | 'auto'; autoIllustrate?: boolean; forceNewChapter?: boolean } | undefined
     if (!metadata?.noticeId) continue
     const notice = await getWritingNotice(metadata.noticeId)
     if (!notice) continue
     // A committed database result is already exactly-once consumed, even if
-    // the acknowledgement after it was interrupted.
-    if (notice.status === 'ready' || notice.status === 'failed') {
+    // the acknowledgement after it was interrupted. A cancelled notice is also
+    // terminal: its native task was stopped locally and only needs cleanup.
+    if (notice.status === 'ready' || notice.status === 'failed' || notice.status === 'cancelled') {
       await acknowledgeBackgroundGenerationTask(task.id)
       continue
     }
     if (notice.status !== 'pending') continue
     if (!notice.backgroundTaskId) await setWritingTurnBackgroundTask(notice.id, task.id)
-    if (task.state === 'completed' && task.rawResponse) {
+    if (task.state === 'completed') {
+      // The native list() payload deliberately omits rawResponse; the detail
+      // call below is the only source for the committed response body.
+      const completedTask = task.rawResponse ? task : await readBackgroundGenerationTask(task.id)
+      if (!completedTask?.rawResponse) continue
       let parsed
       try {
         if (!metadata?.projectId || !metadata.userMessageId) throw new Error('后台任务缺少写作关联信息')
-        parsed = parseBackgroundWritingResponse(task.rawResponse)
+        parsed = parseBackgroundWritingResponse(completedTask.rawResponse)
       } catch (error) {
         await failWritingTurn(notice.id, error instanceof Error ? error.message : '后台写作结果无法解析')
         await acknowledgeBackgroundGenerationTask(task.id)
         continue
       }
       try {
-        await completeWritingTurn(metadata.projectId, metadata.userMessageId, notice.id, parsed, Boolean(metadata.autoIllustrate), Boolean(metadata.forceNewChapter), task.id)
+        await completeWritingTurn(metadata.projectId, metadata.userMessageId, notice.id, parsed, resolveIllustrationMode(metadata), Boolean(metadata.forceNewChapter), task.id)
         await acknowledgeBackgroundGenerationTask(task.id)
         recovered += 1
       } catch {
@@ -102,6 +109,9 @@ async function recoverBackgroundGenerationTasks() {
       }
     } else if (task.state === 'failed') {
       await failWritingTurn(notice.id, task.error || '后台写作失败')
+      await acknowledgeBackgroundGenerationTask(task.id)
+    } else if (task.state === 'cancelled') {
+      await cancelWritingTurn(notice.id)
       await acknowledgeBackgroundGenerationTask(task.id)
     } else if (task.state === 'unknown') {
       unknown += 1

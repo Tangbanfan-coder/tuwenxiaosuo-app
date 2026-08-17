@@ -29,7 +29,12 @@ export const DEFAULT_PROVIDER_SETTINGS: ProviderSettings = {
 }
 
 function cloneProvider(provider: ProviderConfig): ProviderConfig {
-  return { ...provider }
+  // Deep-copy capabilities so an in-draft edit of one provider can never
+  // mutate another provider that shared the same object.
+  return {
+    ...provider,
+    ...(provider.capabilities ? { capabilities: { ...provider.capabilities } } : {}),
+  }
 }
 
 function isProviderConfig(value: unknown): value is ProviderConfig {

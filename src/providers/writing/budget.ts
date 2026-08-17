@@ -1,5 +1,5 @@
 import type { ContextBudget } from '../../domain/models'
-import { heuristicModelContextTokens, lookupModelLimit } from '../modelLimits'
+import { lookupModelLimit, resolveModelWindow } from '../modelLimits'
 import { tokenEstimatorMetadata, type ResolvedTokenEstimator } from '../tokenEstimator'
 import type { ProviderConfig } from '../types'
 import { SYSTEM_PROMPT } from './prompt'
@@ -125,10 +125,7 @@ export interface ContextBudgetPlan {
 }
 
 export function effectiveWindowTokens(config: ProviderConfig) {
-  return config.manualContextLength
-    ?? config.contextLength
-    ?? lookupModelLimit(config.model)?.context
-    ?? heuristicModelContextTokens(config.model)
+  return resolveModelWindow(config).tokens
 }
 
 export function maxOutputForRequest(config: ProviderConfig, windowTokens: number) {
@@ -137,16 +134,6 @@ export function maxOutputForRequest(config: ProviderConfig, windowTokens: number
     ?? lookupModelLimit(config.model)?.output
     ?? DEFAULT_OUTPUT_RESERVE_TOKENS
   return Math.min(configured, Math.floor(windowTokens * 0.5))
-}
-
-export function outputTokenParameter(config: ProviderConfig, maxOutput: number) {
-  const configured = config.manualMaxOutputTokens ?? config.maxOutputTokens
-  if (!configured) return {}
-  const modelId = config.model.toLocaleLowerCase().split('/').pop() ?? ''
-  const usesCompletionTokens = /^(?:o[134](?:-|$)|gpt-5(?:[.-]|$))/.test(modelId)
-  return usesCompletionTokens
-    ? { max_completion_tokens: maxOutput }
-    : { max_tokens: maxOutput }
 }
 
 export function contextSafetyMarginTokens(windowTokens: number) {
@@ -253,7 +240,7 @@ export function buildContextBudgetPlan(input: BuildContextBudgetPlanInput): Cont
   }
 }
 
-export function contextPlanForRequest(config: ProviderConfig, budget: ContextBudget, userRequest: string, estimator: ResolvedTokenEstimator) {
+export function contextPlanForRequest(config: ProviderConfig, budget: ContextBudget, userRequest: string, estimator: ResolvedTokenEstimator, systemPrompt = SYSTEM_PROMPT) {
   const windowTokens = effectiveWindowTokens(config)
   const outputReserveTokens = maxOutputForRequest(config, windowTokens)
   const safetyMarginTokens = contextSafetyMarginTokens(windowTokens)
@@ -262,7 +249,7 @@ export function contextPlanForRequest(config: ProviderConfig, budget: ContextBud
     contextBudget: budget,
     outputReserveTokens,
     safetyMarginTokens,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt,
     userMessage: userRequest,
     estimator,
   })

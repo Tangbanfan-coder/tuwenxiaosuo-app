@@ -98,6 +98,35 @@ export function isModelKnown(modelId: string) {
   return Boolean(lookupModelLimit(modelId) || heuristicModelContextTokens(modelId) !== UNKNOWN_MODEL_CONTEXT_TOKENS)
 }
 
+export type ModelWindowSource = 'manual' | 'provider-metadata' | 'model-table' | 'heuristic' | 'unknown-default'
+
+export interface ResolvedModelWindow {
+  tokens: number
+  source: ModelWindowSource
+}
+
+/**
+ * Single resolution order for a model's context window, with an explicit
+ * source for each outcome so the UI and errors can tell manual settings apart
+ * from table/heuristic values:
+ *   manual (user override) > provider-metadata (from the /models list) >
+ *   model-table (embedded/remote table) > heuristic (name matching) >
+ *   unknown-default (32k fallback).
+ */
+export function resolveModelWindow(config: { manualContextLength?: number; contextLength?: number; model: string }): ResolvedModelWindow {
+  if (config.manualContextLength && config.manualContextLength > 0) {
+    return { tokens: config.manualContextLength, source: 'manual' }
+  }
+  if (config.contextLength && config.contextLength > 0) {
+    return { tokens: config.contextLength, source: 'provider-metadata' }
+  }
+  const fromTable = lookupModelLimit(config.model)
+  if (fromTable) return { tokens: fromTable.context, source: 'model-table' }
+  const heuristic = heuristicModelContextTokens(config.model)
+  if (heuristic !== UNKNOWN_MODEL_CONTEXT_TOKENS) return { tokens: heuristic, source: 'heuristic' }
+  return { tokens: heuristic, source: 'unknown-default' }
+}
+
 export function withModelMetadata<T extends { model: string }>(current: T, model: { id: string; contextLength?: number; maxOutputTokens?: number }): T {
   return {
     ...current,

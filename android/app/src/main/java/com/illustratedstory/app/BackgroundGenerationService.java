@@ -26,6 +26,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -45,6 +46,14 @@ public final class BackgroundGenerationService extends Service {
     };
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private BackgroundTaskStore tasks;
+
+    /** Live taskId -> connection map so a plugin cancel can interrupt an in-flight request. */
+    private static final ConcurrentHashMap<String, HttpURLConnection> CONNECTIONS = new ConcurrentHashMap<>();
+
+    static void cancelConnection(String taskId) {
+        HttpURLConnection connection = CONNECTIONS.remove(taskId);
+        if (connection != null) connection.disconnect();
+    }
 
     @Override public void onCreate() {
         super.onCreate();
@@ -79,15 +88,18 @@ public final class BackgroundGenerationService extends Service {
 
     private void execute(String taskId, String token) {
         try {
+            // Guarded PREPARED→RUNNING so a cancel persisted between enqueue and
+            // this worker starting can never be overwritten back to running.
+            if (!tasks.startRunning(taskId)) return;
             JSONObject task = tasks.read(taskId);
-            if (!BackgroundTaskStore.PREPARED.equals(task.optString("state"))) return;
-            tasks.transition(taskId, BackgroundTaskStore.RUNNING, null);
             String kind = task.getString("kind");
             if ("text".equals(kind)) executeText(taskId, task, token);
             else if ("image".equals(kind)) executeImage(taskId, task, token);
             else throw new IOException("未知后台任务类型");
         } catch (Exception error) {
-            try { tasks.transition(taskId, BackgroundTaskStore.FAILED, safeError(error, token)); } catch (Exception ignored) { }
+            try {
+                tasks.failUnlessCancelled(taskId, safeError(error, token));
+            } catch (Exception ignored) { }
         }
     }
 
@@ -95,8 +107,12 @@ public final class BackgroundGenerationService extends Service {
         URL endpoint = new URL(task.getString("endpoint"));
         if (!isHttpUrl(endpoint)) throw new IOException("文本接口地址必须使用 HTTP 或 HTTPS");
         HttpURLConnection connection = null;
+        File response = null;
+        File responseTemporary = null;
+        boolean persisted = false;
         try {
             connection = (HttpURLConnection) endpoint.openConnection();
+            CONNECTIONS.put(taskId, connection);
             connection.setRequestMethod("POST");
             connection.setConnectTimeout(30_000);
             connection.setReadTimeout(180_000);
@@ -113,17 +129,40 @@ public final class BackgroundGenerationService extends Service {
                 String detail = sanitize(readErrorBody(connection.getErrorStream()), token);
                 throw new IOException("文本接口返回 HTTP " + status + (detail.isEmpty() ? "" : "：" + detail));
             }
-            File response = responseFile(taskId);
-            File responseTemporary = new File(response.getParentFile(), taskId.replaceAll("[^a-zA-Z0-9_-]", "_") + ".response.tmp");
+            if (shouldAbort(taskId)) throw new IOException("任务已取消");
+            response = responseFile(taskId);
+            responseTemporary = new File(response.getParentFile(), taskId.replaceAll("[^a-zA-Z0-9_-]", "_") + ".response.tmp");
             writeSanitizedResponse(connection.getInputStream(), responseTemporary, token, 16 * 1024 * 1024);
+            if (shouldAbort(taskId)) {
+                if (responseTemporary.exists()) responseTemporary.delete();
+                throw new IOException("任务已取消");
+            }
             if (response.exists() && !response.delete()) throw new IOException("无法替换后台文本结果");
             if (!responseTemporary.renameTo(response)) throw new IOException("无法保存后台文本结果");
-            JSONObject completed = tasks.read(taskId);
-            completed.put("responsePath", response.getName());
-            completed.put("state", BackgroundTaskStore.COMPLETED);
-            completed.put("updatedAt", System.currentTimeMillis());
-            tasks.write(taskId, completed);
-        } finally { if (connection != null) connection.disconnect(); }
+            // Atomic RUNNING→COMPLETED: a cancel that lands mid-write wins and
+            // the late response file is discarded instead of being persisted.
+            final String responseName = response.getName();
+            if (!tasks.completeIfRunning(taskId, completed -> completed.put("responsePath", responseName))) {
+                return;
+            }
+            persisted = true;
+        } finally {
+            CONNECTIONS.remove(taskId, connection);
+            if (connection != null) connection.disconnect();
+            if (responseTemporary != null && responseTemporary.exists()) responseTemporary.delete();
+            if (!persisted && response != null && response.exists()) response.delete();
+        }
+    }
+
+    /**
+     * True when the durable task is cancelled or has been removed entirely
+     * (acknowledged while this worker was still finishing). A missing file is
+     * treated as abort so a late worker never re-creates a completed task or
+     * leaves an orphan response behind.
+     */
+    private boolean shouldAbort(String taskId) {
+        try { return BackgroundTaskStore.CANCELLED.equals(tasks.read(taskId).optString("state")); }
+        catch (Exception ignored) { return true; }
     }
 
     private void executeImage(String taskId, JSONObject task, String token) throws Exception {
@@ -134,12 +173,14 @@ public final class BackgroundGenerationService extends Service {
             this, endpoint, task.getString("model"), task.getString("prompt"), task.getString("size"),
             projectId, assetId, token, task.optJSONArray("referenceSources"), task.optString("responseFormat", null)
         );
-        JSONObject completed = tasks.read(taskId);
-        completed.put("localUri", stored.getString("localUri"));
-        copyImageMetrics(completed, stored);
-        completed.put("state", BackgroundTaskStore.COMPLETED);
-        completed.put("updatedAt", System.currentTimeMillis());
-        tasks.write(taskId, completed);
+        // Atomic RUNNING→COMPLETED so an in-flight cancel can never be
+        // overwritten by the late image result.
+        if (!tasks.completeIfRunning(taskId, completed -> {
+            completed.put("localUri", stored.getString("localUri"));
+            copyImageMetrics(completed, stored);
+        })) {
+            return;
+        }
         Log.i(IMAGE_PIPELINE_TAG, imageMetricsLogMessage(stored));
     }
 
@@ -224,5 +265,14 @@ public final class BackgroundGenerationService extends Service {
             return "{\"phase\":\"background-generation-persist-complete\"}";
         }
     }
-    private static String safeError(Exception error, String token) { String message = error.getMessage(); return message == null || message.trim().isEmpty() ? "后台生成失败" : sanitize(message, token); }
+    private static String safeError(Exception error, String token) {
+        String message = error.getMessage();
+        if (message == null || message.trim().isEmpty()) return "后台生成失败";
+        String sanitized = sanitize(message, token);
+        String normalized = sanitized.toLowerCase();
+        if (normalized.contains("timeout") || normalized.contains("timed out")) {
+            return "请求超时：上游服务未在限定时间内返回结果";
+        }
+        return sanitized;
+    }
 }

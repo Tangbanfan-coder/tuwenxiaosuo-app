@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import type { ProjectWorkspace } from '../../domain/models'
+import type { ProjectWorkspace, WritingProseResult } from '../../domain/models'
 import type { StoredScene } from '../../data/storyDatabase'
 import { buildProjectContext, parseWritingResult } from '../writing'
 import { SYSTEM_PROMPT } from '../writing/prompt'
+
+function asProse(result: ReturnType<typeof parseWritingResult>): WritingProseResult {
+  if (result.kind !== 'prose') throw new Error('expected a prose result')
+  return result
+}
 
 function workspace(): ProjectWorkspace {
   return {
@@ -48,7 +53,7 @@ function scene(overrides: Partial<StoredScene> = {}): StoredScene {
 
 describe('stable foreshadowing model contract', () => {
   it('separates new text from resolved ids even when the prose changes wording', () => {
-    const result = parseWritingResult(JSON.stringify({
+    const result = asProse(parseWritingResult(JSON.stringify({
       assistant_note: '已推进剧情。',
       chapter_action: 'continue',
       prose: {
@@ -59,7 +64,7 @@ describe('stable foreshadowing model contract', () => {
         new_foreshadowing_texts: ['窗外反复响起的钟声'],
         resolved_foreshadowing_ids: ['foreshadowing-known-id'],
       },
-    }))
+    })))
 
     expect(result.sceneNotes?.newForeshadowingTexts).toEqual(['窗外反复响起的钟声'])
     expect(result.sceneNotes?.resolvedForeshadowingIds).toEqual(['foreshadowing-known-id'])
@@ -67,7 +72,7 @@ describe('stable foreshadowing model contract', () => {
   })
 
   it('keeps obsolete text-only model fields explicitly on the compatibility path', () => {
-    const result = parseWritingResult(JSON.stringify({
+    const result = asProse(parseWritingResult(JSON.stringify({
       assistant_note: '已推进剧情。',
       chapter_action: 'continue',
       prose: { paragraphs: ['旧模型格式仍可保存。'] },
@@ -75,7 +80,7 @@ describe('stable foreshadowing model contract', () => {
         clues_planted: ['旧格式的新伏笔'],
         clues_resolved: ['旧格式的已核销文本'],
       },
-    }))
+    })))
 
     expect(result.sceneNotes?.newForeshadowingTexts).toEqual(['旧格式的新伏笔'])
     expect(result.sceneNotes?.resolvedForeshadowingIds).toEqual([])
@@ -99,7 +104,7 @@ describe('writing result recovery', () => {
   })
 
   it('keeps every metadata field from a complete structured response', () => {
-    const result = parseWritingResult(JSON.stringify({
+    const result = asProse(parseWritingResult(JSON.stringify({
       assistant_note: '本轮推进完成。',
       chapter_action: 'new',
       prose: { chapter_title: '第二章', paragraphs: ['第一段正文。'] },
@@ -111,7 +116,7 @@ describe('writing result recovery', () => {
         scene_anchor: { key: 'old-street-night', location: '旧城街道', time_period: '夜晚', fixed_elements: ['石板路', '巷口路灯'], lighting: '路灯侧光', palette: '冷蓝色' },
         characters: [],
       },
-    }))
+    })))
 
     expect(result).toMatchObject({
       assistantNote: '本轮推进完成。',
@@ -129,7 +134,7 @@ describe('writing result recovery', () => {
   })
 
   it('normalizes missing or invalid visual-plan pronouns to name without guessing gender', () => {
-    const result = parseWritingResult(JSON.stringify({
+    const result = asProse(parseWritingResult(JSON.stringify({
       prose: { paragraphs: ['林染走进雨里。'] },
       visual_plan: {
         title: '雨夜', prompt: '林染走进雨夜街头', characters: [
@@ -138,7 +143,7 @@ describe('writing result recovery', () => {
           { name: '沈舟', role: '路人' },
         ],
       },
-    }))
+    })))
 
     expect(result.visualPlan?.characters).toEqual([
       expect.objectContaining({ name: '林染', narrativePronoun: 'she' }),
@@ -148,7 +153,7 @@ describe('writing result recovery', () => {
   })
 
   it('recovers only completed prose paragraphs when trailing structured JSON is truncated', () => {
-    const result = parseWritingResult('{"assistant_note":"说明","prose":{"chapter_title":"第一章","paragraphs":["完整第一段。","完整第二段。","未完成的半句')
+    const result = asProse(parseWritingResult('{"assistant_note":"说明","prose":{"chapter_title":"第一章","paragraphs":["完整第一段。","完整第二段。","未完成的半句'))
 
     expect(result).toMatchObject({
       chapterAction: 'continue',
@@ -159,9 +164,11 @@ describe('writing result recovery', () => {
     expect(result.visualPlan).toBeUndefined()
   })
 
-  it('does not treat JSON metadata as prose when no prose paragraphs are available', () => {
-    expect(() => parseWritingResult('{"assistant_note":"只是说明","scene_notes":{"events":["事件"]}}'))
-      .toThrow('模型没有返回可解析的写作结果')
+  it('infers a note-only structured response as an assistant-only turn instead of prose', () => {
+    expect(parseWritingResult('{"assistant_note":"只是说明","scene_notes":{"events":["事件"]}}')).toEqual({
+      kind: 'assistant-only',
+      assistantNote: '只是说明',
+    })
   })
 
   it('keeps ordinary non-JSON text on the compatibility path', () => {

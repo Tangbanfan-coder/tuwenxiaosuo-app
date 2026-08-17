@@ -1,13 +1,14 @@
-import type { ProjectWorkspace } from '../../domain/models'
+import { resolveIllustrationMode, type ProjectWorkspace } from '../../domain/models'
 import {
-  listProjectParagraphs,
-  listRecentProjectFeedback,
+  listRecentPreferenceSignals,
   listRetrievableProjectParagraphs,
   loadProjectScenes,
 } from '../../data/storyDatabase'
 import { resolveTokenEstimator } from '../tokenEstimator'
 import type { HttpTransport, ProviderConfig } from '../types'
 import { normalizeBaseUrl } from '../openAiCompatible'
+import { resolveCapabilities } from '../providerCapabilities'
+import { buildChatCompletionPayload, extractTextResponse, resolveTextTransport } from '../chatCompatibility'
 import { BigramBm25Retriever, type Retriever } from '../retriever'
 import {
   assertContextCapacity,
@@ -16,7 +17,6 @@ import {
   contextPlanForRequest,
   contextPressureRatioForDemand,
   estimatedTokenCount,
-  outputTokenParameter,
   type ContextBudgetPlan,
 } from './budget'
 import {
@@ -24,20 +24,10 @@ import {
   CONTEXT_COMPRESSION_PROFILES,
   buildProjectContextForTokenBudget,
   buildUntrimmedProjectContextForDemand,
-  resolveRecentFeedbackContextSources,
 } from './context'
-import { contentToString } from './instructions'
-import { SYSTEM_PROMPT } from './prompt'
+import { systemPromptForIllustrationMode } from './prompt'
 import { parseWritingResult } from './result'
 import { retrieveStyleExamples } from './styleCorpus'
-
-interface ChatCompletionResponse {
-  choices?: Array<{
-    message?: {
-      content?: unknown
-    }
-  }>
-}
 
 const defaultParagraphRetriever = new BigramBm25Retriever()
 
@@ -48,6 +38,17 @@ export interface GenerateWritingTurnOptions {
   onContextPlan?: (plan: ContextBudgetPlan) => void
   /** Selected examples are reported for durable usage accounting after persistence succeeds. */
   onStyleFragmentsSelected?: (fragmentIds: string[]) => void
+  /** Caller-provided cancellation for the underlying stream request. */
+  signal?: AbortSignal
+  /** The user message that started this turn; excluded from recent-message context so a retry does not inject the requirement twice. */
+  excludeUserMessageId?: string
+  /** Excludes the replaced turn from both timeline facts and paragraph retrieval. */
+  regeneration?: {
+    turnId: string
+    proseMessageId: string
+    chapterId: string
+    baseParagraphCount: number
+  }
 }
 
 interface PreparedWritingTurnContext {
@@ -70,20 +71,31 @@ async function prepareWritingTurnContext(
   options: GenerateWritingTurnOptions,
 ): Promise<PreparedWritingTurnContext> {
   const contextBudget = workspace.project.contextBudget ?? 'standard'
-  const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model })
-  const initialPlan = contextPlanForRequest(config, contextBudget, userRequest, estimator)
+  const systemPrompt = systemPromptForIllustrationMode(resolveIllustrationMode(workspace.project))
+  const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model, tokenizerStrategy: resolveCapabilities(config).tokenizerStrategy })
+  const initialPlan = contextPlanForRequest(config, contextBudget, userRequest, estimator, systemPrompt)
 
-  const [scenes, paragraphs, recentFeedback, projectParagraphs, styleExamples] = await Promise.all([
+  const [storedScenes, storedParagraphs, preferenceSignals, styleExamples] = await Promise.all([
     loadProjectScenes(workspace.project.id),
     listRetrievableProjectParagraphs(workspace.project.id),
-    // Feedback is supplementary preference context. A workspace can briefly
-    // outlive a deleted project during UI refresh, so preserve the writing
-    // path with an empty feedback section rather than failing the whole turn.
-    listRecentProjectFeedback(workspace.project.id, 8).catch(() => []),
-    listProjectParagraphs(workspace.project.id),
+    // Only abstracted signals may reach the writing request. Feedback targets
+    // themselves remain local UI/statistics records and never leak old prose.
+    listRecentPreferenceSignals(workspace.project.id, 8).catch(() => []),
     retrieveStyleExamples(workspace, userRequest).catch(() => []),
   ])
-  const feedbackSources = resolveRecentFeedbackContextSources(recentFeedback, workspace, projectParagraphs)
+  const scenes = options.regeneration
+    ? storedScenes.filter((scene) => scene.turnId !== options.regeneration?.turnId)
+    : storedScenes
+  const paragraphs = options.regeneration
+    ? storedParagraphs.filter((paragraph) => (
+      paragraph.messageId !== options.regeneration?.proseMessageId
+      && !(
+        paragraph.sourceType === 'chapter'
+        && paragraph.chapterId === options.regeneration?.chapterId
+        && paragraph.index >= options.regeneration.baseParagraphCount
+      )
+    ))
+    : storedParagraphs
   const retrievedParagraphs = await (options.retriever ?? defaultParagraphRetriever).retrieve({
     query: buildParagraphRetrievalQuery(workspace, scenes, userRequest),
     paragraphs,
@@ -98,8 +110,9 @@ async function prepareWritingTurnContext(
     userRequest,
     estimator,
     retrievedParagraphs,
-    feedbackSources,
+    [],
     styleExamples.map((item) => item.fragment),
+    { excludeUserMessageId: options.excludeUserMessageId, preferenceSignals },
   )
   const contextDemandTokens = estimatedTokenCount(estimator, `当前作品资料：${rawContext.context}`)
   const compressionStage = contextCompressionStageForPressure(
@@ -112,7 +125,7 @@ async function prepareWritingTurnContext(
     userRequest,
     estimator,
     retrievedParagraphs,
-    { compressionStage, feedbackSources, styleCorpusFragments: styleExamples.map((item) => item.fragment) },
+    { compressionStage, preferenceSignals, styleCorpusFragments: styleExamples.map((item) => item.fragment), excludeUserMessageId: options.excludeUserMessageId },
   )
   const contextMessage = `当前作品资料：${context}`
   const finalPlan = buildContextBudgetPlan({
@@ -120,7 +133,7 @@ async function prepareWritingTurnContext(
     contextBudget,
     outputReserveTokens: initialPlan.outputReserveTokens,
     safetyMarginTokens: initialPlan.safetyMarginTokens,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt,
     projectWorkspace: contextSections.projectWorkspace,
     coreMemory: contextSections.coreMemory,
     timelineRetrievedContext: contextSections.timelineRetrievedContext,
@@ -171,21 +184,30 @@ export async function generateWritingTurn(
     throw new Error('局部创作设定超过核心预算，本轮已阻止生成。请在“局部创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
   }
   if (prepared.finalPlan.isOverLimit) {
-    throw new Error('最终请求的输入仍超过模型上下文窗口（真实 token 硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
+    throw new Error('最终请求的输入仍超过模型上下文窗口（本地估算 token 校验未通过，估算可能与模型真实分词存在偏差），请缩短本条输入或改用更大窗口的模型。')
   }
   options.onStyleFragmentsSelected?.(prepared.styleFragmentIds)
 
-  const body = JSON.stringify({
+  // One decision drives both the body stream field and the actual transport
+  // method, so a stream body is always consumed by a stream() transport and a
+  // non-stream body by request() — never mismatched.
+  const transportDecision = resolveTextTransport(config, {
+    transportMethod: onDelta ? 'stream' : 'request',
+    androidTransport: config.androidStreamingEnabled ? 'webview-stream' : 'native',
+  })
+  const stream = transportDecision.transportMethod === 'stream'
+  const configuredOutput = config.manualMaxOutputTokens ?? config.maxOutputTokens
+  const body = JSON.stringify(buildChatCompletionPayload(config, {
     model: config.model,
-    stream: true,
-    ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
-    ...outputTokenParameter(config, prepared.initialPlan.outputReserveTokens),
+    stream,
+    reasoningEffort: config.reasoningEffort,
+    maxOutputTokens: configuredOutput ? prepared.initialPlan.outputReserveTokens : undefined,
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPromptForIllustrationMode(resolveIllustrationMode(workspace.project)) },
       { role: 'system', content: prepared.contextMessage },
       { role: 'user', content: userRequest },
     ],
-  })
+  }))
 
   const request = {
     url: `${baseUrl}/chat/completions`,
@@ -194,15 +216,16 @@ export async function generateWritingTurn(
     auth: { kind: 'bearer' as const, secretRef: config.secretRef },
     timeoutMs: 120_000,
     body,
-    androidTransport: config.androidStreamingEnabled ? 'webview-stream' as const : 'native' as const,
+    androidTransport: transportDecision.androidTransport,
+    signal: options.signal,
   }
 
   let content: string
-  if (onDelta) {
+  if (stream) {
     content = await transport.stream(request, onDelta)
   } else {
-    const response = await transport.request<ChatCompletionResponse>(request)
-    content = contentToString(response.data.choices?.[0]?.message?.content)
+    const response = await transport.request<unknown>(request)
+    content = extractTextResponse(response.data)
   }
 
   if (!content.trim()) throw new Error('文本模型没有返回内容')
@@ -223,28 +246,33 @@ export async function prepareBackgroundWritingRequest(
   options.onContextPlan?.(prepared.finalPlan)
   assertContextCapacity(prepared.finalPlan)
   if (prepared.rulesTruncated) throw new Error('局部创作设定超过核心预算，本轮已阻止生成。请在“局部创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
-  if (prepared.finalPlan.isOverLimit) throw new Error('最终请求的输入仍超过模型上下文窗口（真实 token 硬校验未通过），请缩短本条输入或改用更大窗口的模型。')
+  if (prepared.finalPlan.isOverLimit) throw new Error('最终请求的输入仍超过模型上下文窗口（本地估算 token 校验未通过，估算可能与模型真实分词存在偏差），请缩短本条输入或改用更大窗口的模型。')
   options.onStyleFragmentsSelected?.(prepared.styleFragmentIds)
+  const configuredOutput = config.manualMaxOutputTokens ?? config.maxOutputTokens
   return {
     endpoint: `${baseUrl}/chat/completions`,
-    body: JSON.stringify({
+    body: JSON.stringify(buildChatCompletionPayload(config, {
       model: config.model,
+      // Android background must stay non-streaming even when the provider's
+      // stream capability is enabled; the foreground service sends this body
+      // over a native non-streaming request.
       stream: false,
-      ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
-      ...outputTokenParameter(config, prepared.initialPlan.outputReserveTokens),
+      forceNonStream: true,
+      reasoningEffort: config.reasoningEffort,
+      maxOutputTokens: configuredOutput ? prepared.initialPlan.outputReserveTokens : undefined,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPromptForIllustrationMode(resolveIllustrationMode(workspace.project)) },
         { role: 'system', content: prepared.contextMessage },
         { role: 'user', content: userRequest },
       ],
-    }),
+    })),
   }
 }
 
 export function parseBackgroundWritingResponse(rawResponse: string) {
-  let response: ChatCompletionResponse
-  try { response = JSON.parse(rawResponse) as ChatCompletionResponse } catch { throw new Error('文本模型返回格式无效') }
-  const content = contentToString(response.choices?.[0]?.message?.content)
+  let response: unknown
+  try { response = JSON.parse(rawResponse) } catch { throw new Error('文本模型返回格式无效') }
+  const content = extractTextResponse(response)
   if (!content.trim()) throw new Error('文本模型没有返回内容')
   return parseWritingResult(content)
 }

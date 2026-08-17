@@ -1,8 +1,8 @@
 import { AlertTriangle, Gauge, LoaderCircle, X } from 'lucide-react'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import type { ContextUsageState } from '../domain/contextUsage'
 import type { ContextBudgetPlan, ContextCompressionStage } from '../providers/writing'
 
-export type ContextUsageState = 'ready' | 'loading' | 'pending' | 'empty' | 'over-limit' | 'fallback' | 'error'
 export const CONTEXT_USAGE_SECTION_SCALE_PROPERTY = '--context-usage-section-scale'
 
 export interface ContextUsageDetailsProps {

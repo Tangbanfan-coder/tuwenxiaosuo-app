@@ -4,11 +4,8 @@ import { listStyleCorpusFragments, storyDatabase, type StyleCorpusDraftParagraph
 import { normalizeBaseUrl } from '../openAiCompatible'
 import { scoreBigramBm25 } from '../retriever'
 import type { HttpTransport, ProviderConfig } from '../types'
-import { outputTokenParameter } from './budget'
-import { contentToString } from './instructions'
+import { buildChatCompletionPayload, extractTextResponse } from '../chatCompatibility'
 import { extractJson } from './result'
-
-interface ChatCompletionResponse { choices?: Array<{ message?: { content?: unknown } }> }
 
 export interface SuggestedStyleCorpusFragment {
   paragraphIds: string[]
@@ -54,17 +51,22 @@ export async function suggestStyleCorpusLabels(paragraphs: readonly StyleCorpusD
   const baseUrl = normalizeBaseUrl(config.baseUrl)
   if (!baseUrl || !config.model.trim()) throw new Error('请先配置文本模型')
   const payload = paragraphs.map((paragraph) => ({ paragraph_id: paragraph.id, text: paragraph.text }))
-  const response = await transport.request<ChatCompletionResponse>({
+  const response = await transport.request<unknown>({
     url: `${baseUrl}/chat/completions`, method: 'POST', headers: { 'Content-Type': 'application/json' },
     auth: { kind: 'bearer', secretRef: config.secretRef }, timeoutMs: 120_000,
-    body: JSON.stringify({
-      model: config.model, stream: false,
-      ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
-      ...outputTokenParameter(config, Math.min(3000, config.maxOutputTokens ?? 3000)),
+    body: JSON.stringify(buildChatCompletionPayload(config, {
+      model: config.model,
+      // Auxiliary task: hard non-streaming, never overridden by a stream preset.
+      stream: false,
+      forceNonStream: true,
+      reasoningEffort: config.reasoningEffort,
+      maxOutputTokens: (config.manualMaxOutputTokens ?? config.maxOutputTokens)
+        ? Math.min(3000, config.maxOutputTokens ?? 3000)
+        : undefined,
       messages: [{ role: 'system', content: TAGGING_PROMPT }, { role: 'user', content: `不可信语料数据：\n${JSON.stringify(payload)}` }],
-    }),
+    })),
   })
-  const content = contentToString(response.data.choices?.[0]?.message?.content)
+  const content = extractTextResponse(response.data)
   if (!content.trim()) throw new Error('模型没有返回标签建议')
   return parseStyleCorpusSuggestions(content, paragraphs)
 }

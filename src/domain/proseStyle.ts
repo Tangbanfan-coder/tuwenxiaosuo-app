@@ -1,6 +1,6 @@
 import type { ProseStyleIssue, ProseStyleRuleCategory, ProseStyleSeverity } from './models'
 
-export const PROSE_STYLE_RULE_VERSION = 1
+export const PROSE_STYLE_RULE_VERSION = 3
 
 export interface ProseStyleRuleDefinition {
   id: string
@@ -29,13 +29,16 @@ const rules: RuleMatcher[] = [
   },
   {
     id: 'contrast-not-but-density', category: 'contrast', severity: 'hint',
-    explanation: '“不是……而是……”在短段落内反复出现，会显得刻意抬高和解释。',
-    rewriteGoal: '保留真正需要纠正的对比，其余直接陈述具体事实。',
+    explanation: '对白中的“不是……而是……”容易显得替人物解释；叙述中不必要的抽象转折也会显得刻意。',
+    rewriteGoal: '对白优先改为自然直接的话；叙述保留真正的事实纠正，其余写具体动作或事实。',
     badExamples: ['那不是愤怒，而是一种更深的失望。'], goodExamples: ['他把信折好，推回桌子中央。'],
-    detect: (text) => {
-      const found = matches(text, /不是[^。！？；]{1,30}?(?:而是|是)/g)
-      // A single factual correction or dialogue is ordinary Chinese, not a defect.
-      return found.length >= 2 ? found : []
+    detect: (text, allParagraphs) => {
+      const found = matches(text, /不是[^。！？；]{1,30}?(?:，?而是|，?是)/g)
+      const dialogue = /[“「『][^”」』]*(?:不是[^。！？；]{1,30}?(?:，?而是|，?是))[^”」』]*[”」』]/.test(text)
+      if (dialogue) return found
+      const abstract = /不是(?:单纯的?|真正的?|所谓的?)?(?:愤怒|悲伤|恐惧|爱|恨|失败|胜利|沉默|笑意?|拒绝|退让|妥协|试探|警告|回答|答案|选择|情绪|感觉)[^。！？；]{0,24}(?:而是|是)(?:一种|某种|更|近乎|彻底|无声的?|真正的?|拒绝|警告|宣判|试探|答案|选择)/.test(text)
+      const chapterDensity = allParagraphs.reduce((count, paragraph) => count + matches(paragraph, /不是[^。！？；]{1,30}?(?:，?而是|，?是)/g).length, 0)
+      return found.length >= 2 || abstract || chapterDensity >= 3 ? found : []
     },
   },
   {
@@ -43,7 +46,28 @@ const rules: RuleMatcher[] = [
     explanation: '用猫、鹿、兽等通用动物套人物动作，往往没有提供场景独有的信息。',
     rewriteGoal: '删除通用动物标签，写清人物实际姿势、路线和反应。',
     badExamples: ['她像一只警觉的猫那样退开。'], goodExamples: ['她后退半步，鞋跟抵住门槛。'],
-    detect: (text) => matches(text, /(?:像|仿佛|好像)(?:一只|一头)?(?:受惊的|警觉的|慵懒的|困倦的)?(?:猫|鹿|兽|狐狸|兔子|狼)(?:一样|那样)?/g),
+    detect: (text) => matches(text, /(?:像|仿佛|好像)(?:一只|一头)?(?:[^，。！？；\s]{0,8}的)?(?:小)?(?:猫|鹿|兽|狐狸|兔子|狼)(?:一样|那样|般)?/g)
+      .filter((value) => !/(?:门口|院里|笼子里|树下|看见|有)(?:[^，。！？；]{0,8})?(?:好像|像|仿佛)/.test(text)),
+  },
+  {
+    id: 'conditional-dialogue-ultimatum', category: 'conditional-dialogue', severity: 'hint',
+    explanation: '“如果……以后就不……”式台词容易像预制誓言，缺少人物当下的具体意图。',
+    rewriteGoal: '让人物直接说出这次会做什么，或用动作和后果表现决心。',
+    badExamples: ['“如果你再骗我，以后我就不见你了。”'], goodExamples: ['“再骗我一次，我就把钥匙还给你。”'],
+    detect: (text) => matches(text, /[“「『][^”」』]{0,45}(?:如果|要是)(?:再)?[^，。！？]{1,28}[，,][^”」』]{0,20}(?:以后|今后|再也)[^”」』]{0,20}(?:不|别)[^”」』]{0,20}[”」』]/g),
+  },
+  {
+    id: 'concept-label-this-is-called', category: 'concept-label', severity: 'hint',
+    explanation: '“这叫…… / 这就叫…… / 这才叫……”把当下动作贴成抽象概念，常像替人物下定义。',
+    rewriteGoal: '让人物直接说出理由、关系或下一步动作，保留确有必要的命名与提问。',
+    badExamples: ['“这叫审美共享。”她摊开手。'], goodExamples: ['“你喜欢，我也觉得顺眼。”她把袋子往前推。'],
+    detect: (text) => Array.from(text.matchAll(/这(?:就|才)?叫([^，。！？；”」』]{1,14})/g), (match) => {
+      const label = match[1].trim()
+      if (!label || /^(?:什么|我(?:怎么|如何|[^，。！？；]{0,8}(?:办|做)))/.test(label)) return undefined
+      // A short Chinese personal name after “这叫” is a naming statement, not a rhetorical label.
+      if (/^(?:王|李|张|刘|陈|杨|黄|赵|周|吴|徐|孙|胡|朱|高|林|何|郭|马|罗|梁|宋|郑|谢|韩|唐|冯|于|董|萧|程|曹|袁|邓|许|傅|沈|曾|彭|吕|苏|卢|蒋|蔡|贾|丁|魏|薛|叶|阎|余|潘|杜|戴|夏|钟|汪|田|任|姜|范|方|石|姚|谭|廖|邹|熊|金|陆|郝|孔|白|崔|康|毛|邱|秦|江|史|顾|侯|邵|孟|龙|万|段|雷|钱|汤|尹|易|常|武|乔|贺|赖|龚|文)[\u4e00-\u9fff]{1,2}$/.test(label)) return undefined
+      return match[0]
+    }).filter((value): value is string => Boolean(value)),
   },
   {
     id: 'abstract-emotion-telling', category: 'emotion-telling', severity: 'hint',

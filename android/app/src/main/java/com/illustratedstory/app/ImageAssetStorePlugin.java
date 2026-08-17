@@ -33,7 +33,10 @@ import java.util.UUID;
 @CapacitorPlugin(name = "ImageAssetStore")
 public class ImageAssetStorePlugin extends Plugin {
     private static final int CONNECT_TIMEOUT_MS = 30_000;
-    private static final int READ_TIMEOUT_MS = 180_000;
+    // Shared by generation responses and URL-mode image downloads. 5 minutes
+    // accommodates slow upstream queues; a billed generation can still complete
+    // after the local read timeout fires, so prefer a generous window.
+    private static final int READ_TIMEOUT_MS = 300_000;
     private static final int COPY_BUFFER_BYTES = 64 * 1024;
     private static final int MAX_REDIRECTS = 5;
     private static final int MAX_GENERATION_RESPONSE_BYTES = 32 * 1024 * 1024;
@@ -489,6 +492,14 @@ public class ImageAssetStorePlugin extends Plugin {
             "图片下载重定向", "无法备份现有图片", "无法替换现有图片"
         };
         for (String prefix : safePrefixes) if (message.startsWith(prefix)) return message;
+        // Common transport timeouts map to an actionable Chinese message.
+        // Everything else keeps the generic fallback: native exception
+        // messages may embed private provider URLs or local paths and must
+        // not be surfaced verbatim (see nativeErrorsDoNotExposeProviderUrlsOrLocalPaths).
+        String normalized = message.toLowerCase();
+        if (normalized.contains("timeout") || normalized.contains("timed out")) {
+            return "请求超时：上游服务未在限定时间内返回结果";
+        }
         return fallback;
     }
 

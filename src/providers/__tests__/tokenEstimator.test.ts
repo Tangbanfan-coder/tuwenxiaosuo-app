@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CONSERVATIVE_TOKENS_PER_CHAR,
+  createConservativeTokenEstimator,
   createOpenAiCompatibleTokenEstimator,
   resolveTokenEstimator,
 } from '../tokenEstimator'
@@ -54,5 +56,31 @@ describe('o200k token estimator', () => {
     expect(resolved.estimator.estimate('中文')).toBe(2)
     expect(resolved.source).toBe('chars-per-token')
     expect(resolved.isFallback).toBe(true)
+  })
+})
+
+describe('conservative token estimator', () => {
+  it('采用可测试的保守系数：每字符 1.5 token 上界', () => {
+    expect(CONSERVATIVE_TOKENS_PER_CHAR).toBe(1.5)
+    const resolved = createConservativeTokenEstimator()
+    expect(resolved.source).toBe('conservative')
+    expect(resolved.isFallback).toBe(false)
+    expect(resolved.estimator.estimate('你好，世界！')).toBe(Math.ceil('你好，世界！'.length * 1.5))
+    expect(resolved.estimator.estimate('')).toBe(0)
+  })
+
+  it('tokenizerStrategy=conservative 时解析为保守估算', () => {
+    const resolved = resolveTokenEstimator({ protocol: 'openai-compatible', model: 'gpt-4o', tokenizerStrategy: 'conservative' })
+    expect(resolved.source).toBe('conservative')
+  })
+
+  it('tokenizerStrategy=o200k_base 时强制 o200k 估算', () => {
+    const resolved = resolveTokenEstimator({ protocol: 'openai-compatible', model: 'gpt-4o', tokenizerStrategy: 'o200k_base' })
+    expect(resolved.source).toBe('o200k_base')
+  })
+
+  it('未配置 tokenizerStrategy 保持 legacy：openai-compatible 走 o200k', () => {
+    const resolved = resolveTokenEstimator({ protocol: 'openai-compatible', model: 'gpt-4o' })
+    expect(resolved.source).toBe('o200k_base')
   })
 })

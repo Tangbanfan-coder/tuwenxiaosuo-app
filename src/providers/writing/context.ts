@@ -1,4 +1,4 @@
-import type { Feedback, ProjectWorkspace, StoredParagraph, StyleCorpusFragment } from '../../domain/models'
+import type { Feedback, PreferenceSignal, ProjectWorkspace, StoredParagraph, StyleCorpusFragment } from '../../domain/models'
 import { collectOpenForeshadowings } from '../../domain/foreshadowing'
 import { resolveProjectIllustrationStyle } from '../../domain/illustrationStyles'
 import { hashText, type StoredScene } from '../../data/storyDatabase'
@@ -138,7 +138,10 @@ interface InternalProjectContextOptions extends BuildProjectContextOptions {
   /** Demand measurement uses the normal material before any token-budget trimming. */
   untrimmed?: boolean
   feedbackSources?: readonly FeedbackContextSource[]
+  preferenceSignals?: readonly PreferenceSignal[]
   styleCorpusFragments?: readonly StyleCorpusFragment[]
+  /** The user message that started the current turn; excluded from the recent-message section so a retry never injects the same requirement twice. */
+  excludeUserMessageId?: string
 }
 
 /**
@@ -231,6 +234,15 @@ function formatFeedbackContextEntries(
       reason ? `原因：${reason}` : '',
     ].filter(Boolean).join('\n')
   })
+}
+
+/** Only abstract signals may enter a future writing prompt. */
+export function formatPreferenceSignalContextEntries(signals: readonly PreferenceSignal[], profile: ContextCompressionProfile) {
+  return signals
+    .slice()
+    .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
+    .slice(0, profile.feedbackEntryLimit)
+    .map((signal) => `${signal.verdict === 'down' ? '避免' : '保持'}（${signal.dimension}）：${signal.instruction}`)
 }
 
 function retainPriorityContextRecords(parts: readonly string[], budgetUnits: number, measure: ContextTextMeasure) {
@@ -398,7 +410,9 @@ function buildProjectContextWithBudget(
     })
   }
 
-  const feedbackEntries = formatFeedbackContextEntries(options.feedbackSources ?? [], profile)
+  const feedbackEntries = options.preferenceSignals
+    ? formatPreferenceSignalContextEntries(options.preferenceSignals, profile)
+    : formatFeedbackContextEntries(options.feedbackSources ?? [], profile)
   if (feedbackEntries.length) {
     sections.push({
       label: '近期偏好反馈',
@@ -448,6 +462,7 @@ function buildProjectContextWithBudget(
     chapter?.id,
     untrimmed ? Number.MAX_SAFE_INTEGER : Math.floor(normalizedBudget * profile.recentMessagesBudgetRatio),
     measure,
+    options.excludeUserMessageId,
   )
   if (recentMessagesText) sections.push({ label: '近期对话', text: recentMessagesText, priority: 35, keepOrder: 'tail', planKey: 'recentMessages' })
 
@@ -553,6 +568,7 @@ export function buildUntrimmedProjectContextForDemand(
   retrievedParagraphs: readonly RetrievedParagraph[],
   feedbackSources: readonly FeedbackContextSource[],
   styleCorpusFragments: readonly StyleCorpusFragment[] = [],
+  options: InternalProjectContextOptions = {},
 ) {
   return buildProjectContextForTokenBudget(
     workspace,
@@ -561,7 +577,7 @@ export function buildUntrimmedProjectContextForDemand(
     userRequest,
     estimator,
     retrievedParagraphs,
-    { untrimmed: true, feedbackSources, styleCorpusFragments },
+    { ...options, untrimmed: true, feedbackSources, styleCorpusFragments },
   )
 }
 
@@ -659,7 +675,7 @@ function buildTimeline(scenes: StoredScene[], entryLimit = 30) {
     .map((scene) => {
       const notes = scene.notes
       if (!notes.time && !notes.location && !notes.events.length) return undefined
-      return `${notes.time || '某时'}@${notes.location || '某地'}：${notes.events.join('；')}`
+      return `[${scene.id}] ${notes.time || '某时'}@${notes.location || '某地'}：${notes.events.join('；')}`
     })
     .filter((line): line is string => Boolean(line))
   return entryLimit > 0 ? timeline.slice(-entryLimit).join('\n') : ''
@@ -670,12 +686,16 @@ function buildRecentMessages(
   currentChapterId: string | undefined,
   budgetUnits: number,
   measure: ContextTextMeasure,
+  excludeUserMessageId?: string,
 ) {
   const lines: string[] = []
   let remaining = budgetUnits
   for (let index = workspace.messages.length - 1; index >= 0; index--) {
     const message = workspace.messages[index]
     if (message.kind === 'notice') continue
+    // The current turn's own user message is re-sent as userRequest; including
+    // it again here would inject the requirement twice on a retry.
+    if (message.id === excludeUserMessageId) continue
     if (message.kind === 'prose' && message.chapterId === currentChapterId) continue
     const content = message.kind === 'prose' ? message.paragraphs?.join('\n\n') ?? '' : message.text ?? message.title ?? ''
     if (!content) continue

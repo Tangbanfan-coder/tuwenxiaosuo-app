@@ -52,4 +52,16 @@ public class ImageAssetStorePluginTest {
             new IOException("图片生成响应过大"), fallback
         ).equals("图片生成响应过大"));
     }
+
+    @Test
+    public void transportTimeoutsMapToAnActionableChineseMessage() {
+        String fallback = "无法生成并保存图片";
+        String expected = "请求超时：上游服务未在限定时间内返回结果";
+        assertTrue(ImageAssetStorePlugin.safeErrorMessage(
+            new java.net.SocketTimeoutException("timeout"), fallback
+        ).equals(expected));
+        assertTrue(ImageAssetStorePlugin.safeErrorMessage(
+            new IOException("Read timed out"), fallback
+        ).equals(expected));
+    }
 }

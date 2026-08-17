@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Check, ImagePlus, LoaderCircle, Maximize2, Sparkles, ThumbsDown, ThumbsUp, TriangleAlert, WandSparkles, X } from 'lucide-react'
-import { listMessageFeedback, listMessageParagraphsWithCurrentStyleIssues, storyDatabase, toggleFeedbackBatch } from '../data/storyDatabase'
-import type { CharacterAsset, ConversationMessage, Feedback, FeedbackScope, FeedbackVerdict, IllustrationAsset, ProseStyleIssue, RewriteStrength, StoredParagraph } from '../domain/models'
+import { Check, ImagePlus, LoaderCircle, Maximize2, Pencil, RefreshCcw, Save, Sparkles, Square, ThumbsDown, ThumbsUp, TriangleAlert, WandSparkles, X } from 'lucide-react'
+import { listMessageFeedback, listMessageParagraphsWithCurrentStyleIssues, storyDatabase, toggleFeedbackBatch, upsertPreferenceSignal } from '../data/storyDatabase'
+import type { CharacterAsset, ConversationMessage, Feedback, FeedbackScope, FeedbackVerdict, IllustrationAsset, ProseStyleIssue, RewriteStrength, StoredParagraph, WritingCandidate } from '../domain/models'
 import { resolveIllustrationReferences } from '../domain/illustrationReferences'
 import { createParagraphFingerprint } from '../domain/paragraphs'
 import { resolveImageSource } from '../providers/imageAssetStore'
@@ -36,19 +36,21 @@ export function illustrationDirectionItems(illustration: IllustrationAsset | und
 }
 
 function illustrationStatusText(illustration: IllustrationAsset | undefined, imageProviderReady: boolean, referenceReason?: string, generationStage?: IllustrationGenerationStage) {
-  if (!illustration) return '自动插画 · 等待生成'
-  if (illustration.status === 'generating') return `自动插画 · ${illustrationGenerationStageText(generationStage)}`
-  if (illustration.status === 'ready') return '自动插画 · 已保存'
-  if (illustration.status === 'failed') return `自动插画 · ${illustration.errorMessage || '生成失败'}`
-  if (!imageProviderReady) return '自动插画 · 等待配置图片模型'
-  if (referenceReason) return `自动插画 · ${referenceReason}`
-  return '自动插画 · 等待手动生成'
+  const label = illustration?.generationMode === 'manual' ? '按需插画' : '自动插画'
+  if (!illustration) return `${label} · 等待生成`
+  if (illustration.status === 'generating') return `${label} · ${illustrationGenerationStageText(generationStage)}`
+  if (illustration.status === 'ready') return `${label} · 已保存`
+  if (illustration.status === 'failed') return `${label} · ${illustration.errorMessage || '生成失败'}`
+  if (!imageProviderReady) return `${label} · 等待配置图片模型`
+  if (referenceReason) return `${label} · ${referenceReason}`
+  return `${label} · 等待手动生成`
 }
 
 export default function TimelineMessage({
   message,
   illustration,
   onRetryIllustration,
+  onRetryWriting,
   imageProviderReady,
   onOpenImageSettings,
   characters,
@@ -58,10 +60,21 @@ export default function TimelineMessage({
   onRewriteParagraph,
   onApplyRewrite,
   onProseEvaluation,
+  canEditUserMessage,
+  onEditUserMessage,
+  canRegenerate,
+  writingCandidate,
+  regenerationBusy,
+  writingBusy,
+  onRegenerateProse,
+  onKeepOriginalProse,
+  onAdoptCandidateProse,
+  onAnalyzeFeedbackPreference,
 }: {
   message: ConversationMessage
   illustration?: IllustrationAsset
   onRetryIllustration: (illustrationId: string) => Promise<void>
+  onRetryWriting?: (message: ConversationMessage) => void
   imageProviderReady: boolean
   onOpenImageSettings: () => void
   characters: CharacterAsset[]
@@ -71,6 +84,16 @@ export default function TimelineMessage({
   onRewriteParagraph?: (input: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) => Promise<string>
   onApplyRewrite?: (input: { message: ConversationMessage; paragraph: StoredParagraph; rewrittenText: string }) => Promise<void>
   onProseEvaluation?: (event: { type: 'analyzed' | 'rewrite_opened' | 'rewrite_kept_original'; message: ConversationMessage; paragraph: StoredParagraph }) => void
+  canEditUserMessage?: boolean
+  onEditUserMessage?: (message: ConversationMessage, text: string) => Promise<boolean>
+  canRegenerate?: boolean
+  writingCandidate?: WritingCandidate
+  regenerationBusy?: boolean
+  writingBusy?: boolean
+  onRegenerateProse?: (message: ConversationMessage) => void
+  onKeepOriginalProse?: (message: ConversationMessage) => Promise<void>
+  onAdoptCandidateProse?: (message: ConversationMessage) => Promise<void>
+  onAnalyzeFeedbackPreference?: (input: { feedback: Feedback[]; verdict: FeedbackVerdict; reason?: string; targetTexts: string[] }) => Promise<void>
 }) {
   const [showVisualPrompt, setShowVisualPrompt] = useState(false)
   const referenceResolution = illustration ? resolveIllustrationReferences(illustration, characters) : undefined
@@ -82,25 +105,32 @@ export default function TimelineMessage({
   const blockedCharacterReadyForConfirmation = Boolean(illustration && referenceReason && illustration.referenceCharacterIds.some((id) => characters.find((character) => character.id === id)?.portraitStatus === 'review'))
 
   if (message.kind === 'user') {
-    return <div className="message-row user-row"><div className="user-bubble">{message.text}</div></div>
+    return <EditableUserMessage message={message} canEdit={canEditUserMessage} onSave={onEditUserMessage} />
   }
 
   if (message.kind === 'notice') {
+    const failed = message.status === 'failed'
+    const cancelled = message.status === 'cancelled'
     return (
       <div className="message-row assistant-row notice-indent">
-        <div className={`assistant-notice ${message.status ?? 'ready'}`} role={message.status === 'failed' ? 'alert' : 'status'}>
+        <div className={`assistant-notice ${message.status ?? 'ready'}`} role={failed ? 'alert' : 'status'}>
           {message.status === 'pending'
             ? <LoaderCircle className="spin" size={14} />
-            : message.status === 'failed'
-              ? <TriangleAlert size={14} />
-              : <Sparkles size={14} />}
-          {message.text}
+            : cancelled
+              ? <Square size={13} />
+              : failed
+                ? <TriangleAlert size={14} />
+                : <Sparkles size={14} />}
+          <span>{message.text}</span>
+          {(failed || cancelled) && onRetryWriting && (
+            <button className="notice-retry" type="button" onClick={() => onRetryWriting(message)}>重新生成</button>
+          )}
         </div>
       </div>
     )
   }
 
-  if (message.kind === 'prose') return <FeedbackProse message={message} onRewriteParagraph={onRewriteParagraph} onApplyRewrite={onApplyRewrite} onProseEvaluation={onProseEvaluation} />
+  if (message.kind === 'prose') return <FeedbackProse message={message} onRewriteParagraph={onRewriteParagraph} onApplyRewrite={onApplyRewrite} onProseEvaluation={onProseEvaluation} canRegenerate={canRegenerate} writingCandidate={writingCandidate} regenerationBusy={regenerationBusy} writingBusy={writingBusy} onRegenerateProse={onRegenerateProse} onKeepOriginalProse={onKeepOriginalProse} onAdoptCandidateProse={onAdoptCandidateProse} onAnalyzeFeedbackPreference={onAnalyzeFeedbackPreference} />
 
   return (
     <div className="message-row illustration-row">
@@ -115,22 +145,14 @@ export default function TimelineMessage({
             <img className="generated-illustration" src={imageSource} alt={message.title ?? '剧情插画'} />
             <span className="illustration-zoom-hint" aria-hidden="true"><Maximize2 size={17} /></span>
           </button>
-        ) : (
+        ) : illustration?.status === 'generating' ? (
           <div className="illustration-placeholder" role="img" aria-label={`${message.title ?? '剧情'}插画生成占位图`}>
-            {illustration?.status === 'generating' ? <LoaderCircle className="spin" size={27} aria-hidden="true" /> : <ImagePlus size={27} aria-hidden="true" />}
+            <LoaderCircle className="spin" size={27} aria-hidden="true" />
             <span className="placeholder-label">
-              {illustration?.status === 'generating'
-                ? illustrationGenerationStageText(illustrationGenerationStage)
-                : !imageProviderReady
-                   ? '请先配置图片模型'
-                   : blockedCharacterReadyForConfirmation
-                     ? '定妆照已就绪，确认后自动生成'
-                     : referenceReason
-                       ? referenceReason
-                       : '点击下方按钮生成插画'}
+              {illustrationGenerationStageText(illustrationGenerationStage)}
             </span>
           </div>
-        )}
+        ) : <div className="illustration-asset-summary"><ImagePlus size={18} aria-hidden="true" /><span>{illustration?.status === 'failed' ? '插画生成失败，可检查指令后重试' : '已保存视觉建议，等待你决定是否生成'}</span></div>}
         <figcaption>
           <div><strong>{message.title}</strong><span>{illustrationStatusText(illustration, imageProviderReady, referenceReason, illustrationGenerationStage)}</span></div>
           <div className="illustration-actions">
@@ -165,7 +187,47 @@ export default function TimelineMessage({
   )
 }
 
-function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEvaluation }: { message: ConversationMessage; onRewriteParagraph?: (input: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) => Promise<string>; onApplyRewrite?: (input: { message: ConversationMessage; paragraph: StoredParagraph; rewrittenText: string }) => Promise<void>; onProseEvaluation?: (event: { type: 'analyzed' | 'rewrite_opened' | 'rewrite_kept_original'; message: ConversationMessage; paragraph: StoredParagraph }) => void }) {
+function EditableUserMessage({ message, canEdit, onSave }: { message: ConversationMessage; canEdit?: boolean; onSave?: (message: ConversationMessage, text: string) => Promise<boolean> }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(message.text ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setDraft(message.text ?? '')
+    if (!canEdit) setEditing(false)
+  }, [canEdit, message.id, message.text])
+
+  async function save() {
+    const text = draft.trim()
+    if (!text) {
+      setError('内容不能为空')
+      return
+    }
+    if (!onSave) return
+    setSaving(true)
+    setError('')
+    try {
+      if (await onSave(message, text)) setEditing(false)
+      else setError('保存失败，请稍后重试')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <div className="message-row user-row"><div className={`user-bubble ${editing ? 'is-editing' : ''}`}>
+    {editing ? <form className="user-message-editor" onSubmit={(event) => { event.preventDefault(); void save() }}>
+      <textarea aria-label="编辑已发送内容" value={draft} disabled={saving} onChange={(event) => setDraft(event.target.value)} rows={3} autoFocus />
+      {error && <span className="user-message-edit-error" role="alert">{error}</span>}
+      <div className="user-message-editor-actions">
+        <button type="button" aria-label="取消编辑" title="取消编辑" disabled={saving} onClick={() => { setDraft(message.text ?? ''); setError(''); setEditing(false) }}><X size={17} aria-hidden="true" /></button>
+        <button type="submit" aria-label="保存已发送内容" title="保存" disabled={saving}>{saving ? <LoaderCircle className="spin" size={17} aria-hidden="true" /> : <Save size={17} aria-hidden="true" />}</button>
+      </div>
+    </form> : <><span>{message.text}</span>{canEdit && <button className="user-message-edit-trigger" type="button" aria-label="编辑已发送内容" title="编辑已发送内容" onClick={() => setEditing(true)}><Pencil size={16} aria-hidden="true" /></button>}</>}
+  </div></div>
+}
+
+function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEvaluation, canRegenerate, writingCandidate, regenerationBusy, writingBusy, onRegenerateProse, onKeepOriginalProse, onAdoptCandidateProse, onAnalyzeFeedbackPreference }: { message: ConversationMessage; onRewriteParagraph?: (input: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) => Promise<string>; onApplyRewrite?: (input: { message: ConversationMessage; paragraph: StoredParagraph; rewrittenText: string }) => Promise<void>; onProseEvaluation?: (event: { type: 'analyzed' | 'rewrite_opened' | 'rewrite_kept_original'; message: ConversationMessage; paragraph: StoredParagraph }) => void; canRegenerate?: boolean; writingCandidate?: WritingCandidate; regenerationBusy?: boolean; writingBusy?: boolean; onRegenerateProse?: (message: ConversationMessage) => void; onKeepOriginalProse?: (message: ConversationMessage) => Promise<void>; onAdoptCandidateProse?: (message: ConversationMessage) => Promise<void>; onAnalyzeFeedbackPreference?: (input: { feedback: Feedback[]; verdict: FeedbackVerdict; reason?: string; targetTexts: string[] }) => Promise<void> }) {
   const [panelOpen, setPanelOpen] = useState(false)
   const [feedback, setFeedback] = useState<Feedback[]>([])
   const [loading, setLoading] = useState(false)
@@ -226,7 +288,26 @@ function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEva
           title="点踩这条正文"
           onClick={() => openPanel('down')}
         ><ThumbsDown size={15} aria-hidden="true" />点踩</button>
+        {canRegenerate && onRegenerateProse && (
+          <button className="feedback-trigger prose-regenerate-trigger" type="button" disabled={writingBusy} onClick={() => onRegenerateProse(message)}>
+            {regenerationBusy ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : <RefreshCcw size={15} aria-hidden="true" />}
+            {regenerationBusy ? '生成中…' : '重新生成'}
+          </button>
+        )}
       </div>
+      {writingCandidate && (
+        <div className="writing-candidate-panel" role="dialog" aria-label="正文版本比较" aria-modal="false">
+          <header><strong>比较最近一轮正文</strong><span>原版仍在使用，采用前不会覆盖</span></header>
+          <div className="writing-candidate-comparison">
+            <section><h4>原版</h4>{message.paragraphs?.map((paragraph, index) => <p key={`original-${index}`}>{paragraph}</p>)}</section>
+            <section><h4>新版</h4>{writingCandidate.result.paragraphs.map((paragraph, index) => <p key={`candidate-${index}`}>{paragraph}</p>)}</section>
+          </div>
+          <footer>
+            <button type="button" disabled={writingBusy} onClick={() => void onKeepOriginalProse?.(message)}>保留原版</button>
+            <button className="primary" type="button" disabled={writingBusy} onClick={() => void onAdoptCandidateProse?.(message)}><Check size={16} aria-hidden="true" />采用新版</button>
+          </footer>
+        </div>
+      )}
       {panelOpen && (
         <FeedbackPanel
           message={message}
@@ -237,6 +318,7 @@ function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEva
           onClose={() => setPanelOpen(false)}
           onSaved={setFeedback}
           refreshFeedback={refreshFeedback}
+          onAnalyzeFeedbackPreference={onAnalyzeFeedbackPreference}
         />
       )}
       {rewriteParagraph && <RewritePanel message={message} paragraph={rewriteParagraph} onClose={() => { onProseEvaluation?.({ type: 'rewrite_kept_original', message, paragraph: rewriteParagraph }); setRewriteParagraph(undefined) }} onRewrite={onRewriteParagraph} onApply={async (rewrittenText) => { await onApplyRewrite?.({ message, paragraph: rewriteParagraph, rewrittenText }); setRewriteParagraph(undefined) }} />}
@@ -271,6 +353,7 @@ function FeedbackPanel({
   onClose,
   onSaved,
   refreshFeedback,
+  onAnalyzeFeedbackPreference,
 }: {
   message: ConversationMessage
   feedback: Feedback[]
@@ -280,6 +363,7 @@ function FeedbackPanel({
   onClose: () => void
   onSaved: (feedback: Feedback[]) => void
   refreshFeedback: () => Promise<void>
+  onAnalyzeFeedbackPreference?: (input: { feedback: Feedback[]; verdict: FeedbackVerdict; reason?: string; targetTexts: string[] }) => Promise<void>
 }) {
   const [scope, setScope] = useState<FeedbackScope>('message')
   const [paragraphIndexes, setParagraphIndexes] = useState<number[]>([])
@@ -339,6 +423,7 @@ function FeedbackPanel({
     }
     setSaving(true)
     setSaveError('')
+    let feedbackSaved = false
     try {
       const targets = scope === 'message'
         ? [{ projectId: message.projectId, messageId: message.id, chapterId: message.chapterId, scope }]
@@ -357,12 +442,37 @@ function FeedbackPanel({
         reason: reason || undefined,
         customNote: customNote.trim() || undefined,
       }
-      await toggleFeedbackBatch(input)
+      const changed = await toggleFeedbackBatch(input)
+      feedbackSaved = true
       await refreshFeedback()
       onSaved(await listMessageFeedback(message.projectId, message.id))
+      if (changed.length === 0) {
+        onClose()
+        return
+      }
+      // A user-written note is already the authority. Store only a compact
+      // future-facing instruction; the reviewed prose stays out of context.
+      if (customNote.trim()) {
+        const dimension = reason === '剧情方向' ? 'plot' : reason === '人物塑造' ? 'character' : reason === '节奏' ? 'pace' : reason === '语言表达' ? 'rhetoric' : 'description'
+        await Promise.all(changed.map((item) => upsertPreferenceSignal({
+          feedbackId: item.id, projectId: item.projectId, verdict: item.verdict, dimension,
+          instruction: `后续写作：${customNote.trim()}`, source: 'user',
+        })))
+      } else {
+        if (!onAnalyzeFeedbackPreference) throw new Error('反馈已经保存，但当前版本无法调用 AI 分析')
+        await onAnalyzeFeedbackPreference({
+          feedback: changed,
+          verdict,
+          reason: reason || undefined,
+          targetTexts: scope === 'message' ? (message.paragraphs ?? []) : anchors.map((anchor) => anchor.text),
+        })
+      }
       onClose()
     } catch (cause) {
-      setSaveError(cause instanceof Error ? cause.message : '反馈提交失败，请稍后重试')
+      const messageText = cause instanceof Error ? cause.message : '反馈提交失败，请稍后重试'
+      setSaveError(feedbackSaved
+        ? (messageText.includes('反馈已经保存') ? messageText : `反馈已经保存，但偏好分析未完成：${messageText}`)
+        : messageText)
     } finally {
       setSaving(false)
     }
@@ -387,11 +497,12 @@ function FeedbackPanel({
           return <button key={paragraph.id} type="button" role="option" aria-selected={selected} className={selected ? 'selected' : ''} onClick={() => setParagraphIndexes((current) => selected ? current.filter((index) => index !== paragraph.index) : [...current, paragraph.index].sort((a, b) => a - b))}><span>第 {paragraph.index + 1} 段</span><small>{paragraph.text.slice(0, 44)}{paragraph.text.length > 44 ? '…' : ''}</small></button>
         })}
       </div>}
-      {verdict === 'down' && <div className="feedback-reasons"><span>点踩原因（可选）</span><div>{['剧情方向', '人物塑造', '节奏', '语言表达', '其他'].map((item) => <button key={item} type="button" className={reason === item ? 'selected' : ''} onClick={() => setReason(reason === item ? '' : item)}>{item}</button>)}</div></div>}
+      <div className="feedback-reasons"><span>{verdict === 'up' ? '喜欢原因' : '点踩原因'}（可选）</span><div>{['剧情方向', '人物塑造', '节奏', '语言表达', '其他'].map((item) => <button key={item} type="button" className={reason === item ? 'selected' : ''} onClick={() => setReason(reason === item ? '' : item)}>{item}</button>)}</div></div>
       <label className="feedback-note">补充说明（可选）<textarea value={customNote} onChange={(event) => setCustomNote(event.target.value)} rows={2} placeholder="告诉我们更多想法…" /></label>
+      {!customNote.trim() && <p className="feedback-hint">提交后会调用 1 次文本模型分析写作偏好，可能产生费用；失败不会自动重试，原始反馈仍会保留。</p>}
       {current && <p className="feedback-hint">当前已{current.verdict === 'up' ? '点赞' : '点踩'}，再次提交相同选项将撤销。</p>}
       {saveError && <p className="feedback-error" role="alert">{saveError}</p>}
-      <div className="feedback-panel-actions"><button type="button" onClick={onClose}>取消</button><button type="button" className="primary" disabled={saving} onClick={() => void submit()}>{saving ? '提交中…' : '提交反馈'}</button></div>
+      <div className="feedback-panel-actions"><button type="button" onClick={onClose}>取消</button><button type="button" className="primary" disabled={saving} onClick={() => void submit()}>{saving ? '提交中…' : customNote.trim() ? '提交反馈' : 'AI 分析并提交'}</button></div>
     </div>
   )
 }

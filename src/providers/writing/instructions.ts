@@ -3,16 +3,10 @@ import { hashText, type StoredScene } from '../../data/storyDatabase'
 import { resolveTokenEstimator, type ResolvedTokenEstimator } from '../tokenEstimator'
 import type { HttpTransport, ProviderConfig } from '../types'
 import { normalizeBaseUrl } from '../openAiCompatible'
-import { CONTEXT_NARROWING_FACTOR, contextSafetyMarginTokens, effectiveWindowTokens, estimatedTokenCount, maxOutputForRequest, outputTokenParameter } from './budget'
+import { resolveCapabilities } from '../providerCapabilities'
+import { buildChatCompletionPayload, extractTextResponse } from '../chatCompatibility'
+import { CONTEXT_NARROWING_FACTOR, contextSafetyMarginTokens, effectiveWindowTokens, estimatedTokenCount, maxOutputForRequest } from './budget'
 import { extractJson, stringValue } from './result'
-
-interface ChatCompletionResponse {
-  choices?: Array<{
-    message?: {
-      content?: unknown
-    }
-  }>
-}
 
 export function normalizeText(value: string) {
   return value.trim().replace(/\s+/g, '').toLocaleLowerCase()
@@ -170,16 +164,6 @@ export function selectStyleSamples(structure: WritingInstructionsStructure | und
     .sort((left, right) => right.score - left.score)
   const ranked = scored.length ? scored : structure.styleSamples.map((sample) => ({ sample, score: 0 }))
   return ranked.slice(0, limit).map((item) => item.sample)
-}
-
-
-export function contentToString(content: unknown) {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return content.map((part) => {
-    if (part && typeof part === 'object' && 'text' in part && typeof part.text === 'string') return part.text
-    return ''
-  }).join('')
 }
 
 const STRUCTURE_CHUNK_PROMPT = `你是小说创作设定整理助手。用户会提供一篇长设定的一部分片段，请只从这个片段中提取结构化信息，只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要在 JSON 外添加文字：
@@ -391,7 +375,7 @@ function planWritingInstructionStructure(source: string, config: ProviderConfig)
   const windowTokens = effectiveWindowTokens(config)
   const maxOutput = Math.min(maxOutputForRequest(config, windowTokens), 4_096)
   const safetyMarginTokens = contextSafetyMarginTokens(windowTokens)
-  const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model })
+  const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model, tokenizerStrategy: resolveCapabilities(config).tokenizerStrategy })
   const promptTokens = STRUCTURE_REQUEST_OVERHEAD_TOKENS + estimatedTokenCount(estimator, STRUCTURE_CHUNK_PROMPT)
   const availableChunkTokens = windowTokens - maxOutput - safetyMarginTokens - promptTokens
   if (availableChunkTokens < 512) {
@@ -430,19 +414,21 @@ export async function structureWritingInstructions(
           headers: { 'Content-Type': 'application/json' },
           auth: { kind: 'bearer' as const, secretRef: config.secretRef },
           timeoutMs: 120_000,
-          body: JSON.stringify({
+          body: JSON.stringify(buildChatCompletionPayload(config, {
             model: config.model,
+            // Auxiliary task: hard non-streaming, never overridden by a stream preset.
             stream: false,
-            ...(config.reasoningEffort && config.reasoningEffort !== 'auto' ? { reasoning_effort: config.reasoningEffort } : {}),
-            ...outputTokenParameter(config, maxOutput),
+            forceNonStream: true,
+            reasoningEffort: config.reasoningEffort,
+            maxOutputTokens: (config.manualMaxOutputTokens ?? config.maxOutputTokens) ? maxOutput : undefined,
             messages: [
               { role: 'system', content: STRUCTURE_CHUNK_PROMPT },
               { role: 'user', content: chunks[index] },
             ],
-          }),
+          })),
         }
-        const response = await transport.request<ChatCompletionResponse>(request)
-        const content = contentToString(response.data.choices?.[0]?.message?.content)
+        const response = await transport.request<unknown>(request)
+        const content = extractTextResponse(response.data)
         if (!content.trim()) throw new Error('模型没有返回内容')
         result = parseStructureChunk(content)
         break

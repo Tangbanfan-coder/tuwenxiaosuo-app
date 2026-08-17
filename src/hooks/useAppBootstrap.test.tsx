@@ -22,6 +22,7 @@ const databaseMocks = vi.hoisted(() => ({
   setWritingTurnBackgroundTask: vi.fn(),
   completeWritingTurn: vi.fn(),
   failWritingTurn: vi.fn(),
+  cancelWritingTurn: vi.fn(),
 }))
 
 const imageAssetMocks = vi.hoisted(() => ({
@@ -77,6 +78,7 @@ beforeEach(() => {
   for (const mock of Object.values(databaseMocks)) mock.mockReset()
   for (const mock of Object.values(imageAssetMocks)) mock.mockReset()
   for (const mock of Object.values(modelLimitMocks)) mock.mockReset()
+  for (const mock of Object.values(backgroundMocks)) mock.mockReset()
 
   databaseMocks.initializeStoryDatabase.mockResolvedValue(undefined)
   databaseMocks.listGeneratingImageAssets.mockResolvedValue({ illustrations: [], characters: [] })
@@ -176,8 +178,43 @@ describe('useAppBootstrap', () => {
     await waitFor(() => expect(result.current.booting).toBe(false))
 
     expect(databaseMocks.setWritingTurnBackgroundTask).toHaveBeenCalledWith(notice.id, 'task-1')
-    expect(databaseMocks.completeWritingTurn).toHaveBeenCalledWith(project.id, 'user-1', notice.id, expect.anything(), false, false, 'task-1')
+    expect(databaseMocks.completeWritingTurn).toHaveBeenCalledWith(project.id, 'user-1', notice.id, expect.anything(), 'manual', false, 'task-1')
     expect(backgroundMocks.acknowledgeBackgroundGenerationTask).toHaveBeenCalledWith('task-1')
+  })
+
+  it('fetches the raw response through the detail call when the native list omits it', async () => {
+    const notice = { id: 'notice-1', projectId: project.id, kind: 'notice', status: 'pending' }
+    databaseMocks.getWritingNotice.mockResolvedValue(notice)
+    backgroundMocks.listBackgroundGenerationTasks.mockResolvedValue([{
+      id: 'task-1', kind: 'text', state: 'completed',
+      metadata: { noticeId: notice.id, projectId: project.id, userMessageId: 'user-1', autoIllustrate: false, forceNewChapter: false },
+    }])
+    backgroundMocks.readBackgroundGenerationTask.mockResolvedValue({ id: 'task-1', kind: 'text', state: 'completed', rawResponse: '{"choices":[]}' })
+    databaseMocks.setWritingTurnBackgroundTask.mockResolvedValue(true)
+    databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
+    const { result } = renderHook(() => useAppBootstrap({ onEmptyLibrary: vi.fn(), onToast: vi.fn() }))
+
+    await waitFor(() => expect(result.current.booting).toBe(false))
+
+    expect(backgroundMocks.readBackgroundGenerationTask).toHaveBeenCalledWith('task-1')
+    expect(databaseMocks.completeWritingTurn).toHaveBeenCalledWith(project.id, 'user-1', notice.id, expect.anything(), 'manual', false, 'task-1')
+    expect(backgroundMocks.acknowledgeBackgroundGenerationTask).toHaveBeenCalledWith('task-1')
+  })
+
+  it('leaves a completed task pending when no raw response is available anywhere', async () => {
+    const notice = { id: 'notice-1', projectId: project.id, kind: 'notice', status: 'pending' }
+    databaseMocks.getWritingNotice.mockResolvedValue(notice)
+    backgroundMocks.listBackgroundGenerationTasks.mockResolvedValue([{
+      id: 'task-1', kind: 'text', state: 'completed',
+      metadata: { noticeId: notice.id, projectId: project.id, userMessageId: 'user-1', autoIllustrate: false, forceNewChapter: false },
+    }])
+    backgroundMocks.readBackgroundGenerationTask.mockResolvedValue({ id: 'task-1', kind: 'text', state: 'completed' })
+    const { result } = renderHook(() => useAppBootstrap({ onEmptyLibrary: vi.fn(), onToast: vi.fn() }))
+
+    await waitFor(() => expect(result.current.booting).toBe(false))
+
+    expect(databaseMocks.completeWritingTurn).not.toHaveBeenCalled()
+    expect(backgroundMocks.acknowledgeBackgroundGenerationTask).not.toHaveBeenCalledWith('task-1')
   })
 
   it('acknowledges a completed task when its notice was already committed', async () => {
@@ -188,6 +225,18 @@ describe('useAppBootstrap', () => {
     const { result } = renderHook(() => useAppBootstrap({ onEmptyLibrary: vi.fn(), onToast: vi.fn() }))
     await waitFor(() => expect(result.current.booting).toBe(false))
     expect(backgroundMocks.acknowledgeBackgroundGenerationTask).toHaveBeenCalledWith('task-ready')
+    expect(databaseMocks.completeWritingTurn).not.toHaveBeenCalled()
+  })
+
+  it('acknowledges a task whose notice was already cancelled locally', async () => {
+    backgroundMocks.listBackgroundGenerationTasks.mockResolvedValue([{
+      id: 'task-cancelled', kind: 'text', state: 'cancelled', metadata: { noticeId: 'notice-cancelled' }, rawResponse: '{}',
+    }])
+    databaseMocks.getWritingNotice.mockResolvedValue({ id: 'notice-cancelled', projectId: project.id, kind: 'notice', status: 'cancelled' })
+    const { result } = renderHook(() => useAppBootstrap({ onEmptyLibrary: vi.fn(), onToast: vi.fn() }))
+    await waitFor(() => expect(result.current.booting).toBe(false))
+    expect(backgroundMocks.acknowledgeBackgroundGenerationTask).toHaveBeenCalledWith('task-cancelled')
+    expect(databaseMocks.cancelWritingTurn).not.toHaveBeenCalled()
     expect(databaseMocks.completeWritingTurn).not.toHaveBeenCalled()
   })
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HttpTransport, ProviderConfig } from './types'
-import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage } from './images'
+import { buildCharacterPortraitPrompt, editOpenAiImage, generateOpenAiImage, resolveImageSize } from './images'
 
 const imageAssetStoreMocks = vi.hoisted(() => ({ generateNativeImageAsset: vi.fn() }))
 
@@ -26,7 +26,7 @@ afterEach(() => {
 })
 
 describe('editOpenAiImage', () => {
-  it('明确说明 edits multipart 依赖并保留原始错误', async () => {
+  it('edits 端点返回 404 时说明 multipart 依赖并保留原始错误', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new Blob(['image']), { status: 200 })))
     const original = new Error('接口返回 HTTP 404：路由不存在')
     const request = vi.fn().mockRejectedValue(original)
@@ -42,6 +42,19 @@ describe('editOpenAiImage', () => {
       url: 'https://api.test/v1/images/edits',
       body: expect.any(FormData),
     }))
+  })
+
+  it('timeout 等传输错误透传真实原因，不再归因于 multipart 兼容性', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new Blob(['image']), { status: 200 })))
+    const original = new Error('timeout')
+    const request = vi.fn().mockRejectedValue(original)
+    const transport = { request } as unknown as HttpTransport
+
+    const promise = editOpenAiImage(config, '保持角色一致', ['data:image/png;base64,aW1hZ2U='], transport)
+
+    await expect(promise).rejects.toThrow('参考图生图失败：timeout')
+    await expect(promise).rejects.not.toThrow('multipart')
+    await expect(promise).rejects.toMatchObject({ cause: original })
   })
 
   it('edits 成功时保持原有图片结果', async () => {
@@ -220,5 +233,67 @@ describe('buildCharacterPortraitPrompt', () => {
     })
 
     expect(prompt).toContain('保留上一张参考图自身的绘制或摄影风格')
+  })
+})
+
+describe('图片能力校验', () => {
+  it('imageEdits=unsupported 时在网络请求前拒绝参考图编辑', async () => {
+    const request = vi.fn()
+    const transport = { request } as unknown as HttpTransport
+    const unsupported = { ...config, capabilities: { imageEdits: 'unsupported' as const } }
+
+    const promise = editOpenAiImage(unsupported, '保持角色一致', ['data:image/png;base64,aW1hZ2U='], transport)
+
+    await expect(promise).rejects.toThrow('不支持参考图编辑')
+    expect(request).not.toHaveBeenCalled()
+    expect(imageAssetStoreMocks.generateNativeImageAsset).not.toHaveBeenCalled()
+  })
+
+  it('参考图数量超限时在请求前报出实际数量与上限，不静默丢弃', async () => {
+    const request = vi.fn()
+    const transport = { request } as unknown as HttpTransport
+    const limited = { ...config, capabilities: { maxReferenceImages: 1 } }
+
+    const promise = editOpenAiImage(limited, '保持角色一致', ['ref-a', 'ref-b'], transport)
+
+    await expect(promise).rejects.toThrow('参考图数量超出该图片供应商限制：当前 2 张，上限 1 张')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('未配置能力时保持 legacy 行为，不阻止编辑', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new Blob(['image']), { status: 200 })))
+    const request = vi.fn().mockResolvedValue({ status: 200, data: { data: [{ b64_json: 'generated' }] } })
+    const transport = { request } as unknown as HttpTransport
+
+    await expect(editOpenAiImage(config, '保持角色一致', ['data:image/png;base64,aW1hZ2U='], transport))
+      .resolves.toEqual({ kind: 'inline', dataUrl: 'data:image/png;base64,generated' })
+  })
+})
+
+describe('resolveImageSize', () => {
+  it('未配置能力时返回调用点默认尺寸', () => {
+    expect(resolveImageSize(config, 'portrait', '1024x1536')).toBe('1024x1536')
+    expect(resolveImageSize(config, 'landscape', '1536x1024')).toBe('1536x1024')
+  })
+
+  it('手动首选尺寸优先于默认值', () => {
+    const custom = { ...config, capabilities: { portraitSize: '768x1152' } }
+    expect(resolveImageSize(custom, 'portrait', '1024x1536')).toBe('768x1152')
+  })
+
+  it('首选尺寸不在支持列表时从列表选择方向兼容的尺寸', () => {
+    const custom = { ...config, capabilities: { imageSizes: ['1024x1024', '768x1152', '1536x1024'] } }
+    expect(resolveImageSize(custom, 'portrait', '1024x1536')).toBe('768x1152')
+    expect(resolveImageSize(custom, 'landscape', '1536x1024')).toBe('1536x1024')
+  })
+
+  it('首选尺寸在支持列表中时保持首选', () => {
+    const custom = { ...config, capabilities: { imageSizes: ['1024x1536', '1536x1024'], portraitSize: '1024x1536' } }
+    expect(resolveImageSize(custom, 'portrait', '1024x1536')).toBe('1024x1536')
+  })
+
+  it('支持列表没有兼容方向的尺寸时明确报错而不是静默替换', () => {
+    const custom = { ...config, capabilities: { imageSizes: ['1536x1024'] } }
+    expect(() => resolveImageSize(custom, 'portrait', '1024x1536')).toThrow('不支持竖版尺寸')
   })
 })

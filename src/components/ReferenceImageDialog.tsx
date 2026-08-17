@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronDown, ImagePlus, LoaderCircle, Upload, UserPlus, X } from 'lucide-react'
 import type { CharacterAsset, ReferenceStyleMode } from '../domain/models'
+import type { ReferenceImageTarget } from '../domain/referenceImage'
 import { usePresence } from '../hooks/usePresence'
+
+export type { ReferenceImageTarget } from '../domain/referenceImage'
 
 interface Props {
   open: boolean
@@ -10,8 +13,6 @@ interface Props {
   onImport: (target: ReferenceImageTarget, dataUrl: string, referenceStyleMode: ReferenceStyleMode, autoAnalyze: boolean) => Promise<void>
   onCreate?: (target: { name: string; role: string }) => Promise<void>
 }
-
-export type ReferenceImageTarget = { characterId: string } | { name: string; role: string }
 
 const NEW_CHARACTER_ID = '__new_character__'
 const IMAGE_DECODE_TIMEOUT_MS = 10_000

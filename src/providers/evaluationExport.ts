@@ -8,7 +8,7 @@ export type EvaluationExportFormat = 'json' | 'csv'
 export interface EvaluationExportOptions { reportType: EvaluationReportType; dateRange: EvaluationDateRange; projectId?: string; format: EvaluationExportFormat; customStartAt?: number; customEndAt?: number; linkReports?: boolean }
 
 export interface AnonymousEvaluationEvent {
-  eventType: ProseEvaluationEventType; occurredAt: number; schemaVersion: 1; appVersion: '0.1.0'; databaseVersion: 11; proseRuleVersion: number
+  eventType: ProseEvaluationEventType; occurredAt: number; schemaVersion: 1; appVersion: '0.1.0'; databaseVersion: 12; proseRuleVersion: number
   projectId?: string; messageId?: string; paragraphId?: string; ruleIds?: string[]; severities?: string[]; beforeRuleIds?: string[]; afterRuleIds?: string[]
   paragraphLengthBucket?: string; suggestionLengthBucket?: string; lengthChangeBucket?: string; rewriteStrength?: string; durationBucket?: string
   corpusFragmentCount?: number; contextBudget?: string; failureKind?: string; factProtection?: 'not_checked'

@@ -30,4 +30,23 @@ describe('detectProseStyleIssues', () => {
     const result = detectProseStyleIssues(['她把钥匙压进掌心，等脚步越过楼梯口才开门。', '门缝里没有光。'])
     expect(result).toEqual([[], []])
   })
+
+  it('covers free-form animal similes and dialogue-only template warnings', () => {
+    expect(detectProseStyleIssues(['她好像一只偷腥成功的猫，悄悄把糖纸塞进口袋。'])[0].map((issue) => issue.ruleId)).toContain('generic-animal-simile')
+    expect(detectProseStyleIssues(['他像只偷腥的狐狸，笑着避开她的眼睛。'])[0].map((issue) => issue.ruleId)).toContain('generic-animal-simile')
+    expect(detectProseStyleIssues(['她像一只小鹿般缩到窗边。'])[0].map((issue) => issue.ruleId)).toContain('generic-animal-simile')
+    expect(detectProseStyleIssues(['门口好像有一只猫，正在啃鱼骨。'])[0]).toEqual([])
+    expect(detectProseStyleIssues(['“不是我，而是他拿走了信。”她说。'])[0].map((issue) => issue.ruleId)).toContain('contrast-not-but-density')
+    expect(detectProseStyleIssues(['这不是钥匙，而是一枚旧徽章。'])[0]).toEqual([])
+    expect(detectProseStyleIssues(['那不是笑意，而是一种无声的警告。'])[0].map((issue) => issue.ruleId)).toContain('contrast-not-but-density')
+    expect(detectProseStyleIssues(['那不是门响，而是风吹动了插销。'])[0]).toEqual([])
+    expect(detectProseStyleIssues(['这不是迟疑，而是等待。', '那不是拒绝，而是试探。', '门后的声音不是哭声，而是水管在响。']).every((issues) => issues.some((issue) => issue.ruleId === 'contrast-not-but-density'))).toBe(true)
+    expect(detectProseStyleIssues(['“如果你再骗我，以后我就不见你了。”'])[0].map((issue) => issue.ruleId)).toContain('conditional-dialogue-ultimatum')
+  })
+
+  it('flags rhetorical “this is called” labels without rewriting or mistaking ordinary language for one', () => {
+    const flagged = detectProseStyleIssues(['“这叫审美共享。”林晚理直气壮地摊开手。', '这就叫懂得分寸。', '这才叫真正的默契。'])
+    expect(flagged.every((issues) => issues.some((issue) => issue.ruleId === 'concept-label-this-is-called'))).toBe(true)
+    expect(detectProseStyleIssues(['这叫什么名字？', '这叫我怎么办。', '这里叫青石巷。', '这叫林晚。']).every((issues) => issues.length === 0)).toBe(true)
+  })
 })

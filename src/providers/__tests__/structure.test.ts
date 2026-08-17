@@ -298,3 +298,22 @@ describe('章节号解析', () => {
     expect(parseChapterOrder('第三')).toBeUndefined()
   })
 })
+
+describe('重试上下文去重', () => {
+  it('excludeUserMessageId 从近期对话排除本轮原用户消息，避免重试重复注入', () => {
+    const workspace = makeWorkspace()
+    workspace.messages = [
+      { id: 'user-0', projectId: 'project-1', kind: 'user', text: '旧的要求', order: 0, createdAt: 1 },
+      { id: 'user-retry', projectId: 'project-1', kind: 'user', text: '本轮重试的要求', order: 1, createdAt: 2 },
+      { id: 'notice-1', projectId: 'project-1', kind: 'notice', text: '生成中', order: 2, createdAt: 3, status: 'pending' },
+    ]
+    const estimator = resolveTokenEstimator({ protocol: 'openai-compatible', providerId: 'test', model: 'test' })
+
+    const excluded = buildProjectContextForTokenBudget(workspace, [], 20_000, '本轮重试的要求', estimator, [], { excludeUserMessageId: 'user-retry' })
+    expect(excluded.contextSections.recentMessages).toContain('旧的要求')
+    expect(excluded.contextSections.recentMessages).not.toContain('本轮重试的要求')
+
+    const included = buildProjectContextForTokenBudget(workspace, [], 20_000, '本轮重试的要求', estimator)
+    expect(included.contextSections.recentMessages).toContain('本轮重试的要求')
+  })
+})

@@ -31,3 +31,28 @@ describe('reference appearance analysis', () => {
     expect(parseReferenceAppearanceAnalysis('{"narrative_pronoun":"unknown","default_look":"短发"}').narrativePronoun).toBe('ta')
   })
 })
+
+describe('vision capability gate', () => {
+  it('visionInput=unsupported 时在网络请求前阻止识图并说明原因', async () => {
+    const request = vi.fn()
+    const transport = { request } as unknown as HttpTransport
+    const noVision = { ...config, capabilities: { visionInput: 'unsupported' as const } }
+
+    const promise = analyzeReferenceImage('data:image/png;base64,aW1hZ2U=', noVision, transport)
+
+    await expect(promise).rejects.toThrow('当前文本模型不支持视觉输入（识图）')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('visionInput=auto 时保持现有识图行为', async () => {
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      data: { choices: [{ message: { content: '{"narrative_pronoun":"he","default_look":"短发"}' } }] },
+    })
+    const transport = { request } as unknown as HttpTransport
+
+    const result = await analyzeReferenceImage('data:image/png;base64,aW1hZ2U=', config, transport)
+    expect(result.narrativePronoun).toBe('he')
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+})

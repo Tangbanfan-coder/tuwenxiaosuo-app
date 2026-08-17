@@ -4,6 +4,13 @@ export type IllustrationStylePresetId = 'unconstrained' | 'realistic-cinematic' 
 export type ReferenceStyleMode = 'project' | 'reference'
 export type ContextBudget = 'standard' | 'long' | 'full'
 export type RewriteStrength = 'light' | 'balanced' | 'strong'
+export type IllustrationMode = 'none' | 'manual' | 'auto'
+
+/** Resolves historical projects before their v12 storage migration has run. */
+export function resolveIllustrationMode(project: Pick<StoryProject, 'illustrationMode' | 'autoIllustrate'>): IllustrationMode {
+  if (project.illustrationMode === 'none' || project.illustrationMode === 'manual' || project.illustrationMode === 'auto') return project.illustrationMode
+  return project.autoIllustrate === false ? 'manual' : 'auto'
+}
 
 export type ProseEvaluationEventType =
   | 'prose_analyzed' | 'rewrite_opened' | 'rewrite_requested' | 'rewrite_succeeded' | 'rewrite_failed'
@@ -17,7 +24,7 @@ export interface ProseEvaluationEvent {
   occurredAt: number
   schemaVersion: 1
   appVersion: '0.1.0'
-  databaseVersion: 11
+  databaseVersion: 14
   proseRuleVersion: number
   projectId?: string
   messageId?: string
@@ -47,6 +54,8 @@ export type ProseStyleRuleCategory =
   | 'repetition'
   | 'mechanical-list'
   | 'elevated-ending'
+  | 'conditional-dialogue'
+  | 'concept-label'
 
 export type ProseStyleSeverity = 'hint' | 'warning' | 'strong'
 
@@ -131,7 +140,10 @@ export interface StoryProject {
   title: string
   themeId: ThemePresetId
   activeChapterId?: string
-  autoIllustrate: boolean
+  /** The authoritative policy for future writing turns. */
+  illustrationMode?: IllustrationMode
+  /** @deprecated Read-only compatibility for records created before database v12. */
+  autoIllustrate?: boolean
   writingInstructions?: string
   writingStructure?: string
   contextBudget?: ContextBudget
@@ -153,9 +165,13 @@ export interface ConversationMessage {
   paragraphs?: string[]
   title?: string
   illustrationId?: string
-  status?: 'ready' | 'pending' | 'failed'
+  status?: 'ready' | 'pending' | 'failed' | 'cancelled'
   /** Native foreground task linked while this writing result is pending. */
   backgroundTaskId?: string
+  /** For notices, links back to the user message that started this turn. */
+  userMessageId?: string
+  /** Stable ownership for all records emitted by one writing request. */
+  turnId?: string
 }
 
 export type ParagraphSourceType = 'message' | 'chapter'
@@ -200,6 +216,36 @@ export interface Feedback {
   verdict: FeedbackVerdict
   reason?: string
   customNote?: string
+  createdAt: number
+  updatedAt: number
+}
+
+export type PreferenceDimension = 'plot' | 'character' | 'dialogue' | 'pace' | 'description' | 'rhetoric' | 'emotion' | 'ending'
+
+/** A text-free, reusable preference. Source feedback remains an UI record. */
+export interface PreferenceSignal {
+  id: string
+  projectId: string
+  feedbackId: string
+  verdict: FeedbackVerdict
+  dimension: PreferenceDimension
+  instruction: string
+  source: 'user' | 'ai'
+  fingerprint: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface WritingCandidate {
+  id: string
+  projectId: string
+  turnId: string
+  proseMessageId: string
+  chapterId: string
+  baseChapterHash: string
+  baseChapterContent: string
+  result: WritingProseResult
+  status: 'ready' | 'adopted' | 'discarded'
   createdAt: number
   updatedAt: number
 }
@@ -300,9 +346,16 @@ export interface WritingSceneNotes extends SceneNoteFacts {
   resolvedForeshadowingIds: string[]
   /** Compatibility input from the obsolete text-only `clues_resolved` response field. */
   legacyResolvedForeshadowingTexts?: string[]
+  /** Stable scene ids supporting explicit references to earlier events. */
+  priorSceneEvidenceIds?: string[]
 }
 
-export interface WritingTurnResult {
+/**
+ * A prose turn advances the story: it always carries non-empty paragraphs and
+ * may create a chapter, scene notes, a summary and a visual plan.
+ */
+export interface WritingProseResult {
+  kind: 'prose'
   assistantNote: string
   chapterAction: 'continue' | 'new'
   chapterTitle?: string
@@ -311,6 +364,17 @@ export interface WritingTurnResult {
   sceneNotes?: WritingSceneNotes
   visualPlan?: VisualPlan
 }
+
+/**
+ * A collaboration-only turn responds without advancing the plot. It must not
+ * create chapters, scenes, prose messages, summaries or visual plans.
+ */
+export interface WritingAssistantOnlyResult {
+  kind: 'assistant-only'
+  assistantNote: string
+}
+
+export type WritingTurnResult = WritingProseResult | WritingAssistantOnlyResult
 
 export interface Chapter {
   id: string
@@ -341,6 +405,7 @@ export interface SummaryVersion {
   reason: SummaryVersionReason
   restoredFromId?: string
   createdAt: number
+  turnId?: string
 }
 
 export interface CharacterAsset {
@@ -369,6 +434,7 @@ export interface CharacterAsset {
   status: 'draft' | 'confirmed'
   createdAt: number
   updatedAt: number
+  turnId?: string
 }
 
 export type NarrativePronoun = 'she' | 'he' | 'ta' | 'name'
@@ -390,6 +456,8 @@ export interface IllustrationAsset {
   motion?: string
   sceneAnchor?: SceneContinuityAnchor
   referenceCharacterIds: string[]
+  /** Whether this planned asset is eligible for automatic image generation. */
+  generationMode?: Extract<IllustrationMode, 'manual' | 'auto'>
   imageUrl?: string
   localUri?: string
   status: 'planned' | 'generating' | 'ready' | 'failed'
@@ -398,6 +466,9 @@ export interface IllustrationAsset {
   failureKind?: 'reference-unavailable'
   createdAt: number
   updatedAt: number
+  turnId?: string
+  /** Preserves generated or in-flight paid assets after their prose turn is replaced. */
+  archivedAt?: number
 }
 
 export interface ProjectStyle {

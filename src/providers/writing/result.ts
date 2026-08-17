@@ -1,6 +1,8 @@
 import type { NarrativePronoun, VisualPlan, WritingCharacterPlan, WritingSceneNotes, WritingTurnResult } from '../../domain/models'
 
 interface RawWritingResult {
+  /** Explicit turn kind. `assistant_only` means "no prose, no persistence side effects". */
+  response_kind?: unknown
   assistant_note?: unknown
   chapter_action?: unknown
   prose?: {
@@ -23,6 +25,7 @@ interface RawWritingResult {
     clues_planted?: unknown
     clues_resolved?: unknown
     unresolved_threads?: unknown
+    prior_scene_evidence_ids?: unknown
   } | null
   visual_plan?: {
     title?: unknown
@@ -315,33 +318,48 @@ function normalizeSceneNotes(value: RawWritingResult['scene_notes']): WritingSce
     unresolvedThreads: Array.isArray(notes.unresolved_threads)
       ? notes.unresolved_threads.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean)
       : [],
+    priorSceneEvidenceIds: stringArray(notes.prior_scene_evidence_ids),
   }
 }
 
 export function parseWritingResult(content: string): WritingTurnResult {
   let parsed: RawWritingResult | undefined
   try {
-    const candidate = extractJson(content)
-    if (stringArray(candidate.prose?.paragraphs).length) {
-      parsed = candidate
-    }
+    parsed = extractJson(content)
   } catch {
     // Fall through to plain-text handling.
   }
   if (parsed) {
-    return {
-      assistantNote: stringValue(parsed.assistant_note) || '正文已完成，并整理了本轮视觉计划。',
-      chapterAction: parsed.chapter_action === 'new' ? 'new' : 'continue',
-      chapterTitle: stringValue(parsed.prose?.chapter_title) || undefined,
-      paragraphs: stringArray(parsed.prose?.paragraphs),
-      chapterSummary: stringValue(parsed.chapter_summary) || undefined,
-      sceneNotes: normalizeSceneNotes(parsed.scene_notes),
-      visualPlan: normalizeVisualPlan(parsed.visual_plan),
+    const paragraphs = stringArray(parsed.prose?.paragraphs)
+    const assistantNote = stringValue(parsed.assistant_note)
+    const responseKind = stringValue(parsed.response_kind).toLocaleLowerCase()
+    // A structured prose result always carries non-empty paragraphs.
+    if (paragraphs.length) {
+      return {
+        kind: 'prose',
+        assistantNote: assistantNote || '正文已完成。',
+        chapterAction: parsed.chapter_action === 'new' ? 'new' : 'continue',
+        chapterTitle: stringValue(parsed.prose?.chapter_title) || undefined,
+        paragraphs,
+        chapterSummary: stringValue(parsed.chapter_summary) || undefined,
+        sceneNotes: normalizeSceneNotes(parsed.scene_notes),
+        visualPlan: normalizeVisualPlan(parsed.visual_plan),
+      }
     }
+    // Explicit protocol, or a legacy model that replied with only a note and
+    // no prose. Both are collaboration-only turns, never empty prose.
+    if (responseKind === 'assistant_only' || assistantNote) {
+      return {
+        kind: 'assistant-only',
+        assistantNote: assistantNote || '已收到你的消息，本轮没有推进剧情。',
+      }
+    }
+    // Structured JSON with neither prose nor a note: not a valid result.
   }
   const projectedParagraphs = projectedProseParagraphs(content, false)
   if (projectedParagraphs.length) {
     return {
+      kind: 'prose',
       assistantNote: '模型的结构化结果不完整，已保存可确认的正文；本轮没有自动创建视觉计划。',
       chapterAction: 'continue',
       paragraphs: projectedParagraphs,
@@ -350,6 +368,7 @@ export function parseWritingResult(content: string): WritingTurnResult {
   const paragraphs = stripJsonFragments(content).split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean)
   if (!paragraphs.length) throw new Error('模型没有返回可解析的写作结果')
   return {
+    kind: 'prose',
     assistantNote: '模型返回了普通文本，已作为正文保存；本轮没有自动创建视觉计划。',
     chapterAction: 'continue',
     paragraphs,
