@@ -1,5 +1,6 @@
 import { ImagePlus, UserRound, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { usePresence } from '../hooks/usePresence'
 
 interface Props {
   onOpenCharacterAssets: () => void
@@ -11,6 +12,7 @@ export default function ComposerAssetsMenu({ onOpenCharacterAssets, onOpenRefere
   const dialogRef = useRef<HTMLElement>(null)
   const firstActionRef = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(false)
+  const { present: menuPresent, closing: menuClosing } = usePresence(open, () => {}, 180)
 
   function closeMenu() {
     setOpen(false)
@@ -65,8 +67,8 @@ export default function ComposerAssetsMenu({ onOpenCharacterAssets, onOpenRefere
         <ImagePlus size={17} aria-hidden="true" />
         <span>素材</span>
       </button>
-      {open && (
-        <div className="composer-assets-menu-surface" role="presentation" onMouseDown={(event) => {
+      {menuPresent && (
+        <div className={`composer-assets-menu-surface${menuClosing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
           if (event.currentTarget === event.target) closeMenu()
         }}>
           <section ref={dialogRef} className="composer-assets-menu-dialog" role="dialog" aria-modal="true" aria-labelledby="composer-assets-menu-title">

@@ -2,6 +2,7 @@ import { AlertTriangle, Gauge, LoaderCircle, X } from 'lucide-react'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { ContextUsageState } from '../domain/contextUsage'
 import type { ContextBudgetPlan, ContextCompressionStage } from '../providers/writing'
+import { usePresence } from '../hooks/usePresence'
 
 export const CONTEXT_USAGE_SECTION_SCALE_PROPERTY = '--context-usage-section-scale'
 
@@ -218,6 +219,9 @@ export default function ContextUsage({
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const isDetailsOpen = detailsOpen ?? internalDetailsOpen
+  const { present: detailsPresent, closing: detailsClosing } = usePresence(isDetailsOpen, () => {
+    if (detailsOpen === undefined) setInternalDetailsOpen(false)
+  }, 180)
   const summary = contextUsageSummary(plan, state)
 
   function setDetailsOpen(nextOpen: boolean) {
@@ -288,8 +292,8 @@ export default function ContextUsage({
         </button>
       )}
 
-      {showDetails && isDetailsOpen && (
-        <div className={`context-usage-surface context-usage-surface--${detailsPresentation}`} role="presentation" onMouseDown={(event) => {
+      {showDetails && detailsPresent && (
+        <div className={`context-usage-surface context-usage-surface--${detailsPresentation}${detailsClosing ? ' closing' : ''}`} role="presentation" onMouseDown={(event) => {
           if (detailsPresentation === 'sheet' && event.currentTarget === event.target) setDetailsOpen(false)
         }}>
           <section className="context-usage-dialog" role="dialog" aria-modal={detailsPresentation === 'sheet'} aria-labelledby="context-usage-dialog-title">
