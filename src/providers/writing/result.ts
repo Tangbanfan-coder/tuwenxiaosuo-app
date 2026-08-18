@@ -278,6 +278,16 @@ function proseParagraphsArrayStart(content: string) {
   return undefined
 }
 
+function isParagraphStringTerminator(content: string, quoteIndex: number) {
+  let next = quoteIndex + 1
+  while (/\s/.test(content[next] ?? '')) next++
+  if (content[next] === ']') return true
+  if (content[next] !== ',') return false
+  next++
+  while (/\s/.test(content[next] ?? '')) next++
+  return content[next] === '"'
+}
+
 function projectedProseParagraphs(content: string, includePartial: boolean) {
   const arrayStart = proseParagraphsArrayStart(content)
   if (arrayStart === undefined) return []
@@ -319,11 +329,13 @@ function projectedProseParagraphs(content: string, includePartial: boolean) {
       raw += character
       escaped = true
     } else if (character === '"') {
-      let next = index + 1
-      while (/\s/.test(content[next] ?? '')) next++
-      // Do not persist the first half of a paragraph when an unescaped
-      // dialogue quote prematurely terminates its JSON string.
-      if (next < content.length && content[next] !== ',' && content[next] !== ']') break
+      // Inside prose.paragraphs, a real string terminator must close the array
+      // or be followed by the next string element. Any other quote is bounded
+      // prose content from a provider that failed to JSON-escape dialogue.
+      if (!isParagraphStringTerminator(content, index)) {
+        raw += '"'
+        continue
+      }
       values.push(decodeFragment(raw))
       raw = ''
       inString = false
@@ -358,12 +370,14 @@ function hasLikelyUnescapedAsciiQuoteInProse(content: string) {
     }
     if (character !== '"') continue
 
-    // A JSON string can only be followed by a comma, its array close, or
-    // whitespace before either. Any other token means this quote is almost
-    // certainly dialogue punctuation that was not escaped.
-    let next = index + 1
-    while (/\s/.test(content[next] ?? '')) next++
-    if (next < content.length && content[next] !== ',' && content[next] !== ']') return true
+    // A paragraph terminator either closes the array or separates two string
+    // elements. A quote before prose text (including a comma followed by
+    // narration) is dialogue punctuation that the provider failed to escape.
+    if (isParagraphStringTerminator(content, index)) {
+      inString = false
+      continue
+    }
+    if (index + 1 < content.length) return true
     inString = false
   }
   return false
@@ -371,7 +385,7 @@ function hasLikelyUnescapedAsciiQuoteInProse(content: string) {
 
 function structuredFailureDiagnosis(content: string) {
   if (hasLikelyUnescapedAsciiQuoteInProse(content)) {
-    return '模型的结构化结果不完整：正文对白中的英文引号未按 JSON 规则转义。'
+    return '中转站或模型未落实结构化输出约束：正文对白中的英文引号未按 JSON 规则转义。'
   }
   const candidate = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
   if (candidate.startsWith('{') && !candidate.endsWith('}')) {

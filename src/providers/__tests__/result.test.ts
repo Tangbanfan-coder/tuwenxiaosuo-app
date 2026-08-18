@@ -58,12 +58,17 @@ describe('parseWritingResult turn kinds', () => {
     expect(result).toMatchObject({ kind: 'prose', paragraphs: ['林舟说："你来了。"'] })
   })
 
-  it('diagnoses unescaped ASCII dialogue without exposing the model text', () => {
+  it('recovers unescaped ASCII dialogue without exposing the model text in diagnostics', () => {
     const result = parseWritingResult('{"prose":{"paragraphs":["上一段。","林舟说："你来了。""]}')
-    expect(result).toMatchObject({ kind: 'prose', paragraphs: ['上一段。'] })
+    expect(result).toMatchObject({ kind: 'prose', paragraphs: ['上一段。', '林舟说："你来了。"'] })
     if (result.kind !== 'prose') throw new Error('expected prose')
     expect(result.assistantNote).toContain('英文引号未按 JSON 规则转义')
     expect(result.assistantNote).not.toContain('林舟')
+  })
+
+  it('does not mistake an unescaped dialogue quote before narration for an array separator', () => {
+    const result = parseWritingResult('{"prose":{"paragraphs":["林舟说："好",然后推开门。","第二段。"]}}')
+    expect(result).toMatchObject({ kind: 'prose', paragraphs: ['林舟说："好",然后推开门。', '第二段。'] })
   })
 
   it('diagnoses a truncated structured response without exposing its text', () => {
@@ -105,5 +110,9 @@ describe('projectStreamingProse', () => {
     }))
     expect(projected).toContain('第一段。')
     expect(projected).toContain('第二段。')
+  })
+
+  it('keeps unescaped ASCII dialogue visible while projecting a provider response', () => {
+    expect(projectStreamingProse('{"prose":{"paragraphs":["林舟说："你来了。""]}}')).toBe('林舟说："你来了。"')
   })
 })
