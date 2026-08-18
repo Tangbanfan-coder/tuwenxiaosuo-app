@@ -6,6 +6,7 @@ import type {
   ReasoningEffortParameter,
   TextTransport,
   TokenizerStrategy,
+  StructuredOutput,
   VisionInput,
 } from './types'
 
@@ -27,6 +28,7 @@ export interface ResolvedCapabilities {
   portraitSize?: string
   sceneSize?: string
   tokenizerStrategy: TokenizerStrategy
+  structuredOutput: StructuredOutput
 }
 
 export const DEFAULT_RESOLVED_CAPABILITIES: ResolvedCapabilities = {
@@ -36,6 +38,7 @@ export const DEFAULT_RESOLVED_CAPABILITIES: ResolvedCapabilities = {
   visionInput: 'auto',
   imageEdits: 'auto',
   tokenizerStrategy: 'auto',
+  structuredOutput: 'auto',
 }
 
 /**
@@ -57,7 +60,28 @@ export function resolveCapabilities(config: Pick<ProviderConfig, 'capabilities'>
     portraitSize: typeof c?.portraitSize === 'string' ? c.portraitSize : undefined,
     sceneSize: typeof c?.sceneSize === 'string' ? c.sceneSize : undefined,
     tokenizerStrategy: c?.tokenizerStrategy ?? 'auto',
+    structuredOutput: c?.structuredOutput === 'json_schema' || c?.structuredOutput === 'json_object' || c?.structuredOutput === 'prompt_only'
+      ? c.structuredOutput
+      : 'auto',
   }
+}
+
+/**
+ * Resolves the structured-output strategy used only by the primary writing
+ * turn. `auto` deliberately chooses JSON Object: it is accepted by more
+ * OpenAI-compatible relays than JSON Schema while still enforcing JSON.
+ */
+export function resolveWritingStructuredOutput(config: Pick<ProviderConfig, 'capabilities'>): Exclude<StructuredOutput, 'auto'> {
+  const strategy = resolveCapabilities(config).structuredOutput
+  if (strategy !== 'auto') return strategy
+
+  // Preserve the effective behavior promised by legacy named presets. Older
+  // saved configs predate structuredOutput, but their remaining capability
+  // fields still identify the official or strict-relay preset.
+  const legacyPreset = presetForCapabilities(config.capabilities)
+  if (legacyPreset === 'openai-official') return 'json_schema'
+  if (legacyPreset === 'strict-relay') return 'prompt_only'
+  return 'json_object'
 }
 
 function presetCapabilitiesObject(preset: CompatibilityPreset): ProviderCapabilities {
@@ -70,6 +94,7 @@ function presetCapabilitiesObject(preset: CompatibilityPreset): ProviderCapabili
         visionInput: 'supported',
         imageEdits: 'supported',
         tokenizerStrategy: 'o200k_base',
+        structuredOutput: 'json_schema',
       }
     case 'strict-relay':
       return {
@@ -79,6 +104,7 @@ function presetCapabilitiesObject(preset: CompatibilityPreset): ProviderCapabili
         visionInput: 'unsupported',
         imageEdits: 'unsupported',
         tokenizerStrategy: 'conservative',
+        structuredOutput: 'prompt_only',
       }
     case 'custom':
       // The UI drives each field; an empty object means "everything auto".
@@ -111,6 +137,7 @@ function capabilitiesEqual(left: ProviderCapabilities | undefined, right: Provid
     && (left.portraitSize ?? undefined) === (right.portraitSize ?? undefined)
     && (left.sceneSize ?? undefined) === (right.sceneSize ?? undefined)
     && (left.tokenizerStrategy ?? 'auto') === (right.tokenizerStrategy ?? 'auto')
+    && (left.structuredOutput ?? 'auto') === (right.structuredOutput ?? 'auto')
   )
 }
 
@@ -124,6 +151,13 @@ export function presetForCapabilities(capabilities?: ProviderCapabilities): Comp
   const normalized = capabilities ?? {}
   for (const preset of ['automatic', 'openai-official', 'strict-relay'] as const) {
     if (capabilitiesEqual(normalized, presetCapabilitiesObject(preset))) return preset
+    // Configurations saved before structured output was introduced retain the
+    // known preset identity, rather than unexpectedly appearing as custom.
+    const presetCapabilities = presetCapabilitiesObject(preset)
+    if (preset !== 'automatic' && capabilities?.structuredOutput === undefined && capabilitiesEqual(
+      { ...normalized, structuredOutput: presetCapabilities.structuredOutput },
+      presetCapabilities,
+    )) return preset
   }
   return 'custom'
 }

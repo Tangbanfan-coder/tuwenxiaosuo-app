@@ -7,7 +7,7 @@ import {
 import { resolveTokenEstimator } from '../tokenEstimator'
 import type { HttpTransport, ProviderConfig } from '../types'
 import { normalizeBaseUrl } from '../openAiCompatible'
-import { resolveCapabilities } from '../providerCapabilities'
+import { resolveCapabilities, resolveWritingStructuredOutput } from '../providerCapabilities'
 import { buildChatCompletionPayload, extractTextResponse, resolveTextTransport } from '../chatCompatibility'
 import { BigramBm25Retriever, type Retriever } from '../retriever'
 import {
@@ -26,7 +26,7 @@ import {
   buildUntrimmedProjectContextForDemand,
 } from './context'
 import { systemPromptForIllustrationMode } from './prompt'
-import { parseWritingResult } from './result'
+import { parseWritingResult, writingResponseFormatForIllustrationMode } from './result'
 import { retrieveStyleExamples } from './styleCorpus'
 
 const defaultParagraphRetriever = new BigramBm25Retriever()
@@ -57,6 +57,34 @@ interface PreparedWritingTurnContext {
   contextMessage: string
   rulesTruncated: boolean
   styleFragmentIds: string[]
+}
+
+function buildWritingPayload(
+  workspace: ProjectWorkspace,
+  userRequest: string,
+  config: ProviderConfig,
+  prepared: PreparedWritingTurnContext,
+  stream: boolean,
+  forceNonStream = false,
+) {
+  const configuredOutput = config.manualMaxOutputTokens ?? config.maxOutputTokens
+  const illustrationMode = resolveIllustrationMode(workspace.project)
+  const responseFormat = writingResponseFormatForIllustrationMode(illustrationMode, resolveWritingStructuredOutput(config))
+  return buildChatCompletionPayload(config, {
+    model: config.model,
+    stream,
+    forceNonStream,
+    reasoningEffort: config.reasoningEffort,
+    maxOutputTokens: configuredOutput ? prepared.initialPlan.outputReserveTokens : undefined,
+    extra: {
+      ...(responseFormat ? { response_format: responseFormat } : {}),
+    },
+    messages: [
+      { role: 'system', content: systemPromptForIllustrationMode(illustrationMode) },
+      { role: 'system', content: prepared.contextMessage },
+      { role: 'user', content: userRequest },
+    ],
+  })
 }
 
 /**
@@ -196,18 +224,7 @@ export async function generateWritingTurn(
     androidTransport: config.androidStreamingEnabled ? 'webview-stream' : 'native',
   })
   const stream = transportDecision.transportMethod === 'stream'
-  const configuredOutput = config.manualMaxOutputTokens ?? config.maxOutputTokens
-  const body = JSON.stringify(buildChatCompletionPayload(config, {
-    model: config.model,
-    stream,
-    reasoningEffort: config.reasoningEffort,
-    maxOutputTokens: configuredOutput ? prepared.initialPlan.outputReserveTokens : undefined,
-    messages: [
-      { role: 'system', content: systemPromptForIllustrationMode(resolveIllustrationMode(workspace.project)) },
-      { role: 'system', content: prepared.contextMessage },
-      { role: 'user', content: userRequest },
-    ],
-  }))
+  const body = JSON.stringify(buildWritingPayload(workspace, userRequest, config, prepared, stream))
 
   const request = {
     url: `${baseUrl}/chat/completions`,
@@ -248,24 +265,12 @@ export async function prepareBackgroundWritingRequest(
   if (prepared.rulesTruncated) throw new Error('局部创作设定超过核心预算，本轮已阻止生成。请在“局部创作设定”中精简核心规则，或将完整设定拆成按场景加载的分类章节。')
   if (prepared.finalPlan.isOverLimit) throw new Error('最终请求的输入仍超过模型上下文窗口（本地估算 token 校验未通过，估算可能与模型真实分词存在偏差），请缩短本条输入或改用更大窗口的模型。')
   options.onStyleFragmentsSelected?.(prepared.styleFragmentIds)
-  const configuredOutput = config.manualMaxOutputTokens ?? config.maxOutputTokens
   return {
     endpoint: `${baseUrl}/chat/completions`,
-    body: JSON.stringify(buildChatCompletionPayload(config, {
-      model: config.model,
-      // Android background must stay non-streaming even when the provider's
-      // stream capability is enabled; the foreground service sends this body
-      // over a native non-streaming request.
-      stream: false,
-      forceNonStream: true,
-      reasoningEffort: config.reasoningEffort,
-      maxOutputTokens: configuredOutput ? prepared.initialPlan.outputReserveTokens : undefined,
-      messages: [
-        { role: 'system', content: systemPromptForIllustrationMode(resolveIllustrationMode(workspace.project)) },
-        { role: 'system', content: prepared.contextMessage },
-        { role: 'user', content: userRequest },
-      ],
-    })),
+    // Android background must stay non-streaming even when the provider's
+    // stream capability is enabled; the foreground service sends this body
+    // over a native non-streaming request.
+    body: JSON.stringify(buildWritingPayload(workspace, userRequest, config, prepared, false, true)),
   }
 }
 

@@ -14,6 +14,8 @@ export type TextTransport = 'auto' | 'stream' | 'non-stream'
 export type VisionInput = 'auto' | 'supported' | 'unsupported'
 export type ImageEdits = 'auto' | 'supported' | 'unsupported'
 export type TokenizerStrategy = 'auto' | 'o200k_base' | 'conservative'
+/** How a text provider accepts structured writing output. */
+export type StructuredOutput = 'auto' | 'json_schema' | 'json_object' | 'prompt_only'
 
 export interface ProviderCapabilities {
   /** Whether reasoning_effort is accepted. 'unsupported' never sends it. */
@@ -36,6 +38,8 @@ export interface ProviderCapabilities {
   sceneSize?: string
   /** Token estimation strategy. 'conservative' over-estimates deliberately. */
   tokenizerStrategy?: TokenizerStrategy
+  /** Structured output mechanism for the main writing turn. */
+  structuredOutput?: StructuredOutput
 }
 
 export type RequestAuth = { kind: 'bearer'; secretRef: SecretRef }

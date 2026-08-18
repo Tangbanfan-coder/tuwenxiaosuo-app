@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { capabilitiesForPreset, presetForCapabilities, resolveCapabilities } from '../providerCapabilities'
+import { capabilitiesForPreset, presetForCapabilities, resolveCapabilities, resolveWritingStructuredOutput } from '../providerCapabilities'
 import type { ProviderConfig } from '../types'
 
 const legacyConfig: ProviderConfig = {
@@ -20,6 +20,7 @@ describe('resolveCapabilities', () => {
       portraitSize: undefined,
       sceneSize: undefined,
       tokenizerStrategy: 'auto',
+      structuredOutput: 'auto',
     })
   })
 
@@ -59,6 +60,7 @@ describe('presetCapabilities', () => {
       visionInput: 'supported',
       imageEdits: 'supported',
       tokenizerStrategy: 'o200k_base',
+      structuredOutput: 'json_schema',
     })
   })
 
@@ -70,6 +72,7 @@ describe('presetCapabilities', () => {
       visionInput: 'unsupported',
       imageEdits: 'unsupported',
       tokenizerStrategy: 'conservative',
+      structuredOutput: 'prompt_only',
     })
   })
 })
@@ -111,5 +114,26 @@ describe('presetForCapabilities', () => {
     }
     expect(presetForCapabilities(legacyOfficial)).toBe('openai-official')
     expect(presetForCapabilities(legacyStrict)).toBe('strict-relay')
+  })
+
+  it('结构化输出为自动时使用 JSON Object，未知旧字段安全降级', () => {
+    expect(resolveWritingStructuredOutput(legacyConfig)).toBe('json_object')
+    expect(resolveWritingStructuredOutput({ ...legacyConfig, capabilities: { structuredOutput: 'invalid' as never } })).toBe('json_object')
+  })
+
+  it('自定义能力可明确选择 JSON Schema、JSON Object 或仅提示词', () => {
+    expect(resolveWritingStructuredOutput({ ...legacyConfig, capabilities: { structuredOutput: 'json_schema' } })).toBe('json_schema')
+    expect(resolveWritingStructuredOutput({ ...legacyConfig, capabilities: { structuredOutput: 'json_object' } })).toBe('json_object')
+    expect(resolveWritingStructuredOutput({ ...legacyConfig, capabilities: { structuredOutput: 'prompt_only' } })).toBe('prompt_only')
+  })
+
+  it('旧版命名预设缺少新字段时仍兑现对应的结构化输出行为', () => {
+    const legacyOfficial = { ...capabilitiesForPreset('openai-official') }
+    const legacyStrict = { ...capabilitiesForPreset('strict-relay') }
+    delete legacyOfficial.structuredOutput
+    delete legacyStrict.structuredOutput
+
+    expect(resolveWritingStructuredOutput({ ...legacyConfig, capabilities: legacyOfficial })).toBe('json_schema')
+    expect(resolveWritingStructuredOutput({ ...legacyConfig, capabilities: legacyStrict })).toBe('prompt_only')
   })
 })

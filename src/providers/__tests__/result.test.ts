@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseWritingResult, projectStreamingProse } from '../writing'
+import { writingResponseFormatForIllustrationMode } from '../writing/result'
 
 describe('parseWritingResult turn kinds', () => {
   it('parses a structured prose result with its full metadata', () => {
@@ -50,6 +51,49 @@ describe('parseWritingResult turn kinds', () => {
       paragraphs: ['第一段普通文本。', '第二段普通文本。'],
       chapterAction: 'continue',
     })
+  })
+
+  it('keeps correctly escaped ASCII dialogue as one complete paragraph', () => {
+    const result = parseWritingResult('{"prose":{"paragraphs":["林舟说：\\\"你来了。\\\""]}}')
+    expect(result).toMatchObject({ kind: 'prose', paragraphs: ['林舟说："你来了。"'] })
+  })
+
+  it('diagnoses unescaped ASCII dialogue without exposing the model text', () => {
+    const result = parseWritingResult('{"prose":{"paragraphs":["上一段。","林舟说："你来了。""]}')
+    expect(result).toMatchObject({ kind: 'prose', paragraphs: ['上一段。'] })
+    if (result.kind !== 'prose') throw new Error('expected prose')
+    expect(result.assistantNote).toContain('英文引号未按 JSON 规则转义')
+    expect(result.assistantNote).not.toContain('林舟')
+  })
+
+  it('diagnoses a truncated structured response without exposing its text', () => {
+    const result = parseWritingResult('{"prose":{"paragraphs":["完整段落。","未完成')
+    if (result.kind !== 'prose') throw new Error('expected prose')
+    expect(result.assistantNote).toContain('JSON 结束前被截断')
+    expect(result.assistantNote).not.toContain('完整段落')
+  })
+
+  it('uses a strict schema without visual_plan when illustrations are disabled', () => {
+    const format = writingResponseFormatForIllustrationMode('none', 'json_schema')
+    const schema = (format?.json_schema as { schema: { properties: Record<string, unknown> } }).schema
+    expect(schema.properties.visual_plan).toBeUndefined()
+    expect(schema.properties.scene_notes).toBeDefined()
+  })
+
+  it('makes every object in the strict schema closed with all properties required', () => {
+    const format = writingResponseFormatForIllustrationMode('auto', 'json_schema')
+    const root = (format?.json_schema as { schema: Record<string, unknown> }).schema
+    const visit = (node: unknown) => {
+      if (!node || typeof node !== 'object') return
+      const schema = node as Record<string, unknown>
+      if (schema.type === 'object') {
+        const properties = schema.properties as Record<string, unknown>
+        expect(schema.additionalProperties).toBe(false)
+        expect(schema.required).toEqual(Object.keys(properties))
+      }
+      Object.values(schema).forEach(visit)
+    }
+    visit(root)
   })
 })
 
