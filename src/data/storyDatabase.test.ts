@@ -19,6 +19,7 @@ import {
   deleteStyleCorpusSource,
   failWritingTurn,
   getLatestRegenerableWritingTurn,
+  getLatestEditableWritingUserMessage,
   getLatestRetryableWritingUserMessage,
   getWritingCandidate,
   hashText,
@@ -35,7 +36,7 @@ import {
   restoreChapterSummaryVersion,
   restoreIllustrationsBlockedByReference,
   retryWritingTurn,
-  updateLatestRetryableWritingUserMessage,
+  saveLatestUserMessageRevision,
   saveStyleCorpusImport,
   saveWritingCandidate,
   splitStyleCorpusText,
@@ -1134,7 +1135,7 @@ describe('writing turn stop and retry', () => {
     const [userMessage, notice] = await beginWritingTurn(project.id, '还没写完', false)
     await cancelWritingTurn(notice.id)
 
-    await expect(updateLatestRetryableWritingUserMessage(project.id, userMessage.id, '  继续写雨夜重逢  ')).resolves.toBe('继续写雨夜重逢')
+    await expect(saveLatestUserMessageRevision(project.id, userMessage.id, '  继续写雨夜重逢  ')).resolves.toEqual({ mode: 'retry', text: '继续写雨夜重逢' })
     await expect(retryWritingTurn(project.id, notice.id)).resolves.toMatchObject({ userText: '继续写雨夜重逢' })
   })
 
@@ -1147,22 +1148,17 @@ describe('writing turn stop and retry', () => {
     ])
 
     await expect(getLatestRetryableWritingUserMessage(project.id)).resolves.toMatchObject({ id: userMessage.id })
-    await expect(updateLatestRetryableWritingUserMessage(project.id, userMessage.id, '更新后的要求')).resolves.toBe('更新后的要求')
+    await expect(saveLatestUserMessageRevision(project.id, userMessage.id, '更新后的要求')).resolves.toEqual({ mode: 'retry', text: '更新后的要求' })
   })
 
-  it('rejects empty, superseded, and completed writing-turn user message edits', async () => {
+  it('rejects empty, superseded, and pending writing-turn user message edits', async () => {
     const [firstUser, firstNotice] = await beginWritingTurn(project.id, '第一轮', false)
     await failWritingTurn(firstNotice.id, '网络失败')
     const [latestUser] = await beginWritingTurn(project.id, '第二轮', false)
 
-    await expect(updateLatestRetryableWritingUserMessage(project.id, firstUser.id, '')).rejects.toThrow('不能为空')
-    await expect(updateLatestRetryableWritingUserMessage(project.id, firstUser.id, '修改第一轮')).rejects.toThrow('最新一轮')
-    await expect(updateLatestRetryableWritingUserMessage(project.id, latestUser.id, '修改第二轮')).rejects.toThrow('失败或已停止')
-
-    const completedProject = await createProject('完成回合')
-    const [completedUser, completedNotice] = await beginWritingTurn(completedProject.id, '已经完成', false)
-    await completeWritingTurn(completedProject.id, completedUser.id, completedNotice.id, writingResult, false)
-    await expect(updateLatestRetryableWritingUserMessage(completedProject.id, completedUser.id, '不应修改')).rejects.toThrow('失败或已停止')
+    await expect(saveLatestUserMessageRevision(project.id, firstUser.id, '')).rejects.toThrow('不能为空')
+    await expect(saveLatestUserMessageRevision(project.id, firstUser.id, '修改第一轮')).rejects.toThrow('最新一轮')
+    await expect(saveLatestUserMessageRevision(project.id, latestUser.id, '修改第二轮')).rejects.toThrow('只有失败、已停止或最近一轮可重新生成正文')
   })
 
   it('rejects a result whose background task no longer matches the linked task', async () => {
@@ -1211,6 +1207,7 @@ describe('latest prose regeneration candidates', () => {
       chapterId: target.chapter.id,
       baseChapterHash: target.baseChapterHash,
       baseChapterContent: target.baseChapterContent,
+      sourceUserText: target.user.text!,
       result: candidateResult,
     })
 
@@ -1238,6 +1235,7 @@ describe('latest prose regeneration candidates', () => {
       chapterId: target.chapter.id,
       baseChapterHash: target.baseChapterHash,
       baseChapterContent: target.baseChapterContent,
+      sourceUserText: target.user.text!,
       result: { ...writingResult, chapterAction: 'continue', paragraphs: ['不应采用。'] },
     })
     const manualContent = `手动补充。\n\n${target.chapter.content}`
@@ -1246,6 +1244,54 @@ describe('latest prose regeneration candidates', () => {
     await expect(adoptWritingCandidate(project.id, target.prose.turnId!)).rejects.toThrow('章节正文已经变化')
     expect((await storyDatabase.chapters.get(target.chapter.id))?.content).toBe(manualContent)
     expect((await storyDatabase.messages.get(target.prose.id))?.paragraphs).toEqual(target.prose.paragraphs)
+  })
+
+  it('keeps a successful request revision pending until its matching candidate is adopted', async () => {
+    const target = await seedLatestTurnWithIllustration()
+    await expect(saveLatestUserMessageRevision(project.id, target.user.id, '改成在码头重逢')).resolves.toEqual({ mode: 'pending', text: '改成在码头重逢' })
+    expect(await getLatestEditableWritingUserMessage(project.id)).toMatchObject({ id: target.user.id, text: '继续写雨夜重逢', pendingRevisionText: '改成在码头重逢' })
+
+    await saveWritingCandidate({
+      projectId: project.id, turnId: target.prose.turnId!, proseMessageId: target.prose.id, chapterId: target.chapter.id,
+      baseChapterHash: target.baseChapterHash, baseChapterContent: target.baseChapterContent, sourceUserText: '改成在码头重逢',
+      result: { ...writingResult, chapterAction: 'continue', paragraphs: ['码头的新正文。'] },
+    })
+    await adoptWritingCandidate(project.id, target.prose.turnId!)
+
+    expect(await storyDatabase.messages.get(target.user.id)).toMatchObject({ text: '改成在码头重逢' })
+    expect((await storyDatabase.messages.get(target.user.id))?.pendingRevisionText).toBeUndefined()
+  })
+
+  it('rejects a candidate saved after another tab revised the request', async () => {
+    const target = await seedLatestTurnWithIllustration()
+    await saveLatestUserMessageRevision(project.id, target.user.id, 'B 版本要求')
+
+    await expect(saveWritingCandidate({
+      projectId: project.id, turnId: target.prose.turnId!, proseMessageId: target.prose.id, chapterId: target.chapter.id,
+      baseChapterHash: target.baseChapterHash, baseChapterContent: target.baseChapterContent, sourceUserText: target.user.text!,
+      result: { ...writingResult, chapterAction: 'continue', paragraphs: ['不应保存。'] },
+    })).rejects.toThrow('发送内容已修改')
+    expect(await getWritingCandidate(project.id, target.prose.turnId!)).toBeUndefined()
+  })
+
+  it('clears every ready candidate before a new turn makes it unreachable', async () => {
+    const target = await seedLatestTurnWithIllustration()
+    await saveWritingCandidate({
+      projectId: project.id, turnId: target.prose.turnId!, proseMessageId: target.prose.id, chapterId: target.chapter.id,
+      baseChapterHash: target.baseChapterHash, baseChapterContent: target.baseChapterContent, sourceUserText: target.user.text!,
+      result: { ...writingResult, chapterAction: 'continue', paragraphs: ['旧候选。'] },
+    })
+
+    await beginWritingTurn(project.id, '开始下一轮', 'manual')
+
+    expect(await getWritingCandidate(project.id, target.prose.turnId!)).toBeUndefined()
+  })
+
+  it('does not expose an assistant-only turn as an editable prose revision', async () => {
+    const [user, notice] = await beginWritingTurn(project.id, '先聊聊思路', 'manual')
+    await storyDatabase.messages.update(notice.id, { status: 'ready', text: '可以，先确定冲突。' })
+    expect(await getLatestEditableWritingUserMessage(project.id)).toBeUndefined()
+    expect(user.id).toBeTruthy()
   })
 
   it('keeps identical abstract preferences owned by their source feedback and deduplicates only when listing context', async () => {

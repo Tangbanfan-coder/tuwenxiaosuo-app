@@ -177,6 +177,7 @@ describe('ProviderSettingsDialog Android streaming', () => {
           visionInput: 'supported',
           imageEdits: 'supported',
           tokenizerStrategy: 'o200k_base',
+          structuredOutput: 'json_schema',
         },
       },
     }
@@ -202,6 +203,7 @@ describe('ProviderSettingsDialog Android streaming', () => {
           visionInput: 'unsupported',
           imageEdits: 'unsupported',
           tokenizerStrategy: 'conservative',
+          structuredOutput: 'prompt_only',
         },
       },
     }
@@ -327,6 +329,7 @@ describe('ProviderSettingsDialog compatibility presets', () => {
       visionInput: 'unsupported',
       imageEdits: 'unsupported',
       tokenizerStrategy: 'conservative',
+      structuredOutput: 'prompt_only',
     })
   })
 
@@ -422,6 +425,19 @@ describe('ProviderSettingsDialog compatibility presets', () => {
 
     await user.click(screen.getByRole('radio', { name: '自定义' }))
     expect(screen.queryByLabelText('响应格式')).toBeNull()
+  })
+
+  it('自定义预设可保存结构化输出策略', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn()
+    render(<ProviderSettingsDialog open settings={settings} onClose={vi.fn()} onSave={onSave} />)
+
+    await user.click(screen.getByRole('radio', { name: '自定义' }))
+    await user.selectOptions(screen.getByLabelText('结构化输出'), 'prompt_only')
+    await user.click(screen.getByRole('button', { name: '保存配置' }))
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+    expect(onSave.mock.calls[0][0].text.capabilities).toEqual({ structuredOutput: 'prompt_only' })
   })
 
   it('从自定义切回自动兼容时清空能力字段（明确选择整体替换）', async () => {

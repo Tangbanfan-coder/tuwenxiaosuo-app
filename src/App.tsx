@@ -152,13 +152,13 @@ export default function App() {
     activeContextUsagePlan,
     activeContextUsageState,
     contextUsageError,
-    editLatestRetryableUserMessage,
+    editLatestUserMessage,
     generationPhase,
     handleStopGeneration,
     adoptCandidateProse,
     keepOriginalProse,
     latestRegenerableMessageId,
-    latestRetryableUserMessageId,
+    latestEditableUserMessageId,
     regenerateLatestProse,
     regeneratingProseMessageId,
     retryWriting,
@@ -537,8 +537,8 @@ export default function App() {
                     illustrationGenerationStage={illustration ? illustrationGenerationStages[illustration.id] : undefined}
                     onRetryIllustration={retryIllustration}
                     onRetryWriting={retryWriting}
-                    canEditUserMessage={message.id === latestRetryableUserMessageId && generationPhase === 'idle'}
-                    onEditUserMessage={editLatestRetryableUserMessage}
+                    canEditUserMessage={message.id === latestEditableUserMessageId && generationPhase === 'idle'}
+                    onEditUserMessage={editLatestUserMessage}
                     canRegenerate={message.id === latestRegenerableMessageId}
                     writingCandidate={writingCandidate?.proseMessageId === message.id ? writingCandidate : undefined}
                     regenerationBusy={regeneratingProseMessageId === message.id}

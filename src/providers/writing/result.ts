@@ -1,4 +1,73 @@
-import type { NarrativePronoun, VisualPlan, WritingCharacterPlan, WritingSceneNotes, WritingTurnResult } from '../../domain/models'
+import type { IllustrationMode, NarrativePronoun, VisualPlan, WritingCharacterPlan, WritingSceneNotes, WritingTurnResult } from '../../domain/models'
+import type { StructuredOutput } from '../types'
+
+type JsonSchema = Record<string, unknown>
+
+const nullableString: JsonSchema = { anyOf: [{ type: 'string' }, { type: 'null' }] }
+const stringArraySchema: JsonSchema = { type: 'array', items: { type: 'string' } }
+
+function strictObject(properties: Record<string, JsonSchema>, required = Object.keys(properties)): JsonSchema {
+  return { type: 'object', additionalProperties: false, properties, required }
+}
+
+const sceneNotesSchema = strictObject({
+  time: nullableString,
+  location: nullableString,
+  pov_character: nullableString,
+  characters_present: stringArraySchema,
+  events: stringArraySchema,
+  state_changes: { type: 'array', items: strictObject({ character: { type: 'string' }, aspect: { type: 'string' }, state: { type: 'string' } }) },
+  relationship_changes: stringArraySchema,
+  knowledge_changes: { type: 'array', items: strictObject({ character: { type: 'string' }, now_knows: { type: 'string' } }) },
+  new_foreshadowing_texts: stringArraySchema,
+  resolved_foreshadowing_ids: stringArraySchema,
+  unresolved_threads: stringArraySchema,
+  prior_scene_evidence_ids: stringArraySchema,
+})
+
+const visualPlanSchema = strictObject({
+  title: { type: 'string' },
+  prompt: { type: 'string' },
+  style_prompt: { type: 'string' },
+  negative_prompt: { type: 'string' },
+  action: { type: 'string' },
+  body_language: { type: 'string' },
+  expression: { type: 'string' },
+  gaze: { type: 'string' },
+  camera: { type: 'string' },
+  motion: { type: 'string' },
+  scene_anchor: { anyOf: [{ type: 'null' }, strictObject({ key: { type: 'string' }, location: { type: 'string' }, time_period: { type: 'string' }, fixed_elements: stringArraySchema, lighting: { type: 'string' }, palette: { type: 'string' } })] },
+  characters: { type: 'array', items: strictObject({ name: { type: 'string' }, role: { type: 'string' }, narrative_pronoun: { type: 'string', enum: ['she', 'he', 'ta', 'name'] }, age_and_build: { type: 'string' }, fixed_traits: stringArraySchema, default_look: { type: 'string' }, wardrobe: { type: 'string' } }) },
+})
+
+/**
+ * OpenAI strict JSON Schema for the exact writing protocol. All keys are
+ * required because OpenAI strict mode requires it; collaboration-only turns
+ * use empty strings/arrays and null metadata rather than being excluded.
+ */
+export function writingResponseFormatForIllustrationMode(mode: IllustrationMode, strategy: StructuredOutput): Record<string, unknown> | undefined {
+  if (strategy === 'prompt_only') return undefined
+  if (strategy === 'json_object' || strategy === 'auto') return { type: 'json_object' }
+
+  const properties: Record<string, JsonSchema> = {
+    response_kind: { type: 'string', enum: ['prose', 'assistant_only'] },
+    assistant_note: { type: 'string' },
+    chapter_action: { type: 'string', enum: ['continue', 'new'] },
+    prose: strictObject({ chapter_title: nullableString, paragraphs: stringArraySchema }),
+    chapter_summary: nullableString,
+    scene_notes: { anyOf: [{ type: 'null' }, sceneNotesSchema] },
+  }
+  if (mode !== 'none') properties.visual_plan = { anyOf: [{ type: 'null' }, visualPlanSchema] }
+
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: mode === 'none' ? 'writing_turn' : 'writing_turn_with_visual_plan',
+      strict: true,
+      schema: strictObject(properties),
+    },
+  }
+}
 
 interface RawWritingResult {
   /** Explicit turn kind. `assistant_only` means "no prose, no persistence side effects". */
@@ -209,6 +278,16 @@ function proseParagraphsArrayStart(content: string) {
   return undefined
 }
 
+function isParagraphStringTerminator(content: string, quoteIndex: number) {
+  let next = quoteIndex + 1
+  while (/\s/.test(content[next] ?? '')) next++
+  if (content[next] === ']') return true
+  if (content[next] !== ',') return false
+  next++
+  while (/\s/.test(content[next] ?? '')) next++
+  return content[next] === '"'
+}
+
 function projectedProseParagraphs(content: string, includePartial: boolean) {
   const arrayStart = proseParagraphsArrayStart(content)
   if (arrayStart === undefined) return []
@@ -250,6 +329,13 @@ function projectedProseParagraphs(content: string, includePartial: boolean) {
       raw += character
       escaped = true
     } else if (character === '"') {
+      // Inside prose.paragraphs, a real string terminator must close the array
+      // or be followed by the next string element. Any other quote is bounded
+      // prose content from a provider that failed to JSON-escape dialogue.
+      if (!isParagraphStringTerminator(content, index)) {
+        raw += '"'
+        continue
+      }
       values.push(decodeFragment(raw))
       raw = ''
       inString = false
@@ -260,6 +346,52 @@ function projectedProseParagraphs(content: string, includePartial: boolean) {
 
   if (includePartial && inString && raw) values.push(decodeFragment(raw))
   return values.filter((value) => value.trim())
+}
+
+function hasLikelyUnescapedAsciiQuoteInProse(content: string) {
+  const arrayStart = proseParagraphsArrayStart(content)
+  if (arrayStart === undefined) return false
+  let inString = false
+  let escaped = false
+  for (let index = arrayStart + 1; index < content.length; index++) {
+    const character = content[index]
+    if (!inString) {
+      if (character === '"') inString = true
+      else if (character === ']') return false
+      continue
+    }
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (character === '\\') {
+      escaped = true
+      continue
+    }
+    if (character !== '"') continue
+
+    // A paragraph terminator either closes the array or separates two string
+    // elements. A quote before prose text (including a comma followed by
+    // narration) is dialogue punctuation that the provider failed to escape.
+    if (isParagraphStringTerminator(content, index)) {
+      inString = false
+      continue
+    }
+    if (index + 1 < content.length) return true
+    inString = false
+  }
+  return false
+}
+
+function structuredFailureDiagnosis(content: string) {
+  if (hasLikelyUnescapedAsciiQuoteInProse(content)) {
+    return '中转站或模型未落实结构化输出约束：正文对白中的英文引号未按 JSON 规则转义。'
+  }
+  const candidate = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+  if (candidate.startsWith('{') && !candidate.endsWith('}')) {
+    return '模型的结构化结果不完整：响应在 JSON 结束前被截断。'
+  }
+  return '模型的结构化结果不完整：返回内容不符合 JSON 格式。'
 }
 
 export function projectStreamingProse(content: string) {
@@ -324,9 +456,11 @@ function normalizeSceneNotes(value: RawWritingResult['scene_notes']): WritingSce
 
 export function parseWritingResult(content: string): WritingTurnResult {
   let parsed: RawWritingResult | undefined
+  let jsonParseFailed = false
   try {
     parsed = extractJson(content)
   } catch {
+    jsonParseFailed = true
     // Fall through to plain-text handling.
   }
   if (parsed) {
@@ -360,13 +494,16 @@ export function parseWritingResult(content: string): WritingTurnResult {
   if (projectedParagraphs.length) {
     return {
       kind: 'prose',
-      assistantNote: '模型的结构化结果不完整，已保存可确认的正文；本轮没有自动创建视觉计划。',
+      assistantNote: `${structuredFailureDiagnosis(content)} 已保存可确认的正文；本轮没有自动创建视觉计划。`,
       chapterAction: 'continue',
       paragraphs: projectedParagraphs,
     }
   }
   const paragraphs = stripJsonFragments(content).split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean)
-  if (!paragraphs.length) throw new Error('模型没有返回可解析的写作结果')
+  if (!paragraphs.length) {
+    if (jsonParseFailed && content.trim()) throw new Error(structuredFailureDiagnosis(content))
+    throw new Error('模型没有返回可解析的写作结果')
+  }
   return {
     kind: 'prose',
     assistantNote: '模型返回了普通文本，已作为正文保存；本轮没有自动创建视觉计划。',

@@ -257,6 +257,7 @@ describe('上下文预算', () => {
         reasoningEffortParameter: 'unsupported' as const,
         outputTokenParameter: 'none' as const,
         textTransport: 'non-stream' as const,
+        structuredOutput: 'prompt_only' as const,
       },
     }
     await generateWritingTurn(emptyWorkspace(), '写一章', strict, captureRequestBody((value) => { body = value }))
@@ -264,6 +265,28 @@ describe('上下文预算', () => {
     expect(body).not.toHaveProperty('reasoning_effort')
     expect(body).not.toHaveProperty('max_tokens')
     expect(body).not.toHaveProperty('max_completion_tokens')
+    expect(body).not.toHaveProperty('response_format')
+  })
+
+  it('自动兼容在前台和 Android 后台都发送 JSON Object 约束', async () => {
+    let foregroundBody: Record<string, unknown> = {}
+    await generateWritingTurn(emptyWorkspace(), '写一章', textProvider, captureRequestBody((value) => { foregroundBody = value }))
+    const background = JSON.parse((await prepareBackgroundWritingRequest(emptyWorkspace(), '写一章', textProvider)).body) as Record<string, unknown>
+
+    expect(foregroundBody.response_format).toEqual({ type: 'json_object' })
+    expect(background.response_format).toEqual({ type: 'json_object' })
+  })
+
+  it('OpenAI JSON Schema 严格约束包含写作字段与必要的 object 规则', async () => {
+    let body: Record<string, unknown> = {}
+    const official = { ...textProvider, capabilities: { structuredOutput: 'json_schema' as const } }
+    await generateWritingTurn(emptyWorkspace(), '写一章', official, captureRequestBody((value) => { body = value }))
+
+    const format = body.response_format as { type: string; json_schema: { strict: boolean; schema: Record<string, unknown> } }
+    expect(format.type).toBe('json_schema')
+    expect(format.json_schema.strict).toBe(true)
+    expect(format.json_schema.schema.additionalProperties).toBe(false)
+    expect((format.json_schema.schema.properties as Record<string, unknown>).prose).toBeDefined()
   })
 })
 

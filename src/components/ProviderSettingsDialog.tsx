@@ -8,7 +8,7 @@ import { isModelKnown, lookupModelLimit, withModelMetadata } from '../providers/
 import { capabilitiesForPreset, presetForCapabilities, resolveCapabilities, type CompatibilityPreset } from '../providers/providerCapabilities'
 import { resolveTextTransport } from '../providers/chatCompatibility'
 import { secretStore } from '../providers/secretStore'
-import type { ImageEdits, ModelSummary, OutputTokenParameter, ProviderCapabilities, ProviderConfig, ProviderSettings, ProviderSlot, ReasoningEffortParameter, TextTransport, TokenizerStrategy, VisionInput } from '../providers/types'
+import type { ImageEdits, ModelSummary, OutputTokenParameter, ProviderCapabilities, ProviderConfig, ProviderSettings, ProviderSlot, ReasoningEffortParameter, StructuredOutput, TextTransport, TokenizerStrategy, VisionInput } from '../providers/types'
 import { usePresence } from '../hooks/usePresence'
 import ConfirmDialog from './ConfirmDialog'
 
@@ -41,10 +41,10 @@ const COMPATIBILITY_PRESETS: ReadonlyArray<readonly [CompatibilityPreset, string
 ]
 
 const PRESET_HINTS: Record<CompatibilityPreset, string> = {
-  automatic: '自动推断各项兼容能力，适配大多数 OpenAI 兼容服务，保持当前行为不变。',
-  'openai-official': '使用官方参数与流式输出，适合 OpenAI 官方接口或完整兼容的中转服务。',
-  'strict-relay': '省略可选参数、改用非流式与保守估算，兼容性优先，适合严格过滤参数的中转服务。',
-  custom: '手动配置各项兼容能力；这些设置只影响请求参数与预估方式。',
+  automatic: '使用兼容性较广的 JSON Object 约束，其余能力自动推断，适配大多数 OpenAI 兼容服务。',
+  'openai-official': '使用官方 JSON Schema、官方参数与流式输出，适合 OpenAI 官方接口或完整兼容的中转服务。',
+  'strict-relay': '仅依赖提示词约束 JSON，并省略可选参数、改用非流式与保守估算，适合严格过滤参数的中转服务。',
+  custom: '手动配置各项兼容能力；结构化输出只影响主写作请求。',
 }
 
 const REASONING_EFFORT_CAPABILITY_OPTIONS: ReadonlyArray<readonly [ReasoningEffortParameter, string]> = [
@@ -64,6 +64,13 @@ const TEXT_TRANSPORT_CAPABILITY_OPTIONS: ReadonlyArray<readonly [TextTransport, 
   ['auto', '自动'],
   ['stream', '流式'],
   ['non-stream', '非流式'],
+]
+
+const STRUCTURED_OUTPUT_CAPABILITY_OPTIONS: ReadonlyArray<readonly [StructuredOutput, string]> = [
+  ['auto', '自动（JSON Object）'],
+  ['json_schema', 'JSON Schema'],
+  ['json_object', 'JSON Object'],
+  ['prompt_only', '仅提示词'],
 ]
 
 const VISION_CAPABILITY_OPTIONS: ReadonlyArray<readonly [VisionInput, string]> = [
@@ -593,6 +600,12 @@ export default function ProviderSettingsDialog({ open, nested = false, settings,
                     <span>文本传输</span>
                     <select aria-label="文本传输" value={current.capabilities?.textTransport ?? 'auto'} onChange={(event) => updateCapability({ textTransport: event.target.value as TextTransport })}>
                       {TEXT_TRANSPORT_CAPABILITY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>结构化输出</span>
+                    <select aria-label="结构化输出" value={current.capabilities?.structuredOutput ?? 'auto'} onChange={(event) => updateCapability({ structuredOutput: event.target.value as StructuredOutput })}>
+                      {STRUCTURED_OUTPUT_CAPABILITY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                     </select>
                   </label>
                   <label className="field">

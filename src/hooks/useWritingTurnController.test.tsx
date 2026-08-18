@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, render } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ProjectWorkspace } from '../domain/models'
 import { useWritingTurnController } from './useWritingTurnController'
@@ -10,16 +10,16 @@ const databaseMocks = vi.hoisted(() => ({
   beginWritingTurn: vi.fn(),
   cancelWritingTurn: vi.fn(),
   completeWritingTurn: vi.fn(),
-  discardWritingCandidate: vi.fn(),
   failWritingTurn: vi.fn(),
+  getLatestEditableWritingUserMessage: vi.fn(),
   getLatestRegenerableWritingTurn: vi.fn(),
-  getLatestRetryableWritingUserMessage: vi.fn(),
   getWritingCandidate: vi.fn(),
+  keepOriginalWritingCandidate: vi.fn(),
   recordProseEvaluationEvent: vi.fn(),
   retryWritingTurn: vi.fn(),
   saveWritingCandidate: vi.fn(),
   setWritingTurnBackgroundTask: vi.fn(),
-  updateLatestRetryableWritingUserMessage: vi.fn(),
+  saveLatestUserMessageRevision: vi.fn(),
 }))
 const writingMocks = vi.hoisted(() => ({
   explicitlyRequestsNewChapter: vi.fn(),
@@ -105,7 +105,7 @@ describe('useWritingTurnController', () => {
 
   it('generates a foreground candidate from the pre-turn workspace and persists it without replacing prose', async () => {
     const prose = { id: 'prose-1', projectId: 'project-1', chapterId: 'chapter-1', kind: 'prose' as const, order: 3, createdAt: 3, paragraphs: ['旧版正文'], status: 'ready' as const, turnId: 'turn-1' }
-    const userMessage = { id: 'user-1', projectId: 'project-1', kind: 'user' as const, order: 1, createdAt: 1, text: '继续写', turnId: 'turn-1' }
+    const userMessage = { id: 'user-1', projectId: 'project-1', kind: 'user' as const, order: 1, createdAt: 1, text: '继续写', pendingRevisionText: '改成码头重逢', turnId: 'turn-1' }
     const notice = { id: 'notice-1', projectId: 'project-1', kind: 'notice' as const, order: 2, createdAt: 2, text: '完成', status: 'ready' as const, turnId: 'turn-1' }
     const chapter = { id: 'chapter-1', projectId: 'project-1', title: '第一章', order: 1, content: '前文\n\n旧版正文', summary: '旧摘要', status: 'draft' as const, createdAt: 1, updatedAt: 3 }
     const currentWorkspace = { ...workspace, project: { ...workspace.project, activeChapterId: chapter.id }, chapters: [chapter], messages: [userMessage, notice, prose] }
@@ -142,13 +142,13 @@ describe('useWritingTurnController', () => {
         messages: [],
         chapters: [expect.objectContaining({ id: chapter.id, content: '前文', summary: '前文摘要' })],
       }),
-      expect.stringContaining('重新生成要求'),
+      expect.stringContaining('改成码头重逢'),
       providerSettings.text,
       expect.anything(),
       undefined,
       expect.objectContaining({ regeneration: { turnId: 'turn-1', proseMessageId: prose.id, chapterId: chapter.id, baseParagraphCount: 1 } }),
     )
-    expect(databaseMocks.saveWritingCandidate).toHaveBeenCalledWith(expect.objectContaining({ result, baseChapterHash: 'chapter-hash', baseChapterContent: '前文' }))
+    expect(databaseMocks.saveWritingCandidate).toHaveBeenCalledWith(expect.objectContaining({ result, baseChapterHash: 'chapter-hash', baseChapterContent: '前文', sourceUserText: '改成码头重逢' }))
     expect(databaseMocks.completeWritingTurn).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), result, expect.anything())
     expect(onWritingCompleted).not.toHaveBeenCalled()
     expect(showToast).toHaveBeenCalledWith('候选正文已生成，请比较后选择')
@@ -156,8 +156,8 @@ describe('useWritingTurnController', () => {
 
   it('treats the database write as the edit commit even when project-list refresh fails', async () => {
     databaseMocks.getLatestRegenerableWritingTurn.mockResolvedValue(undefined)
-    databaseMocks.getLatestRetryableWritingUserMessage.mockResolvedValue(undefined)
-    databaseMocks.updateLatestRetryableWritingUserMessage.mockResolvedValue('已修改的要求')
+    databaseMocks.getLatestEditableWritingUserMessage.mockResolvedValue(undefined)
+    databaseMocks.saveLatestUserMessageRevision.mockResolvedValue({ mode: 'retry', text: '已修改的要求' })
     const userMessage = { id: 'user-1', projectId: 'project-1', kind: 'user' as const, order: 1, createdAt: 1, text: '原要求' }
     const refreshWorkspace = vi.fn().mockResolvedValue(workspace)
     const refreshProjects = vi.fn().mockRejectedValue(new Error('项目列表暂不可用'))
@@ -180,10 +180,10 @@ describe('useWritingTurnController', () => {
     render(<Probe />)
 
     let saved = false
-    await act(async () => { saved = await controller!.editLatestRetryableUserMessage(userMessage, ' 已修改的要求 ') })
+    await act(async () => { saved = await controller!.editLatestUserMessage(userMessage, ' 已修改的要求 ') })
 
     expect(saved).toBe(true)
-    expect(databaseMocks.updateLatestRetryableWritingUserMessage).toHaveBeenCalledWith('project-1', 'user-1', ' 已修改的要求 ')
+    expect(databaseMocks.saveLatestUserMessageRevision).toHaveBeenCalledWith('project-1', 'user-1', ' 已修改的要求 ')
     expect(refreshWorkspace).not.toHaveBeenCalled()
     expect(refreshProjects).toHaveBeenCalledTimes(1)
     const workspaceUpdater = setWorkspace.mock.calls[0][0] as (current: ProjectWorkspace) => ProjectWorkspace
@@ -191,5 +191,47 @@ describe('useWritingTurnController', () => {
     expect(nextWorkspace.messages[0].text).toBe('已修改的要求')
     expect(nextWorkspace.project.updatedAt).toBeGreaterThan(workspace.project.updatedAt)
     expect(showToast).toHaveBeenCalledWith('已更新发送内容，可重新生成')
+  })
+
+  it('clears in-memory pending revisions and candidates as soon as a new turn is created', async () => {
+    const oldUser = { id: 'user-old', projectId: 'project-1', kind: 'user' as const, order: 1, createdAt: 1, text: '旧要求', pendingRevisionText: '待采用的旧修改', turnId: 'turn-old' }
+    const prose = { id: 'prose-old', projectId: 'project-1', chapterId: 'chapter-1', kind: 'prose' as const, order: 3, createdAt: 3, paragraphs: ['旧正文'], status: 'ready' as const, turnId: 'turn-old' }
+    const notice = { id: 'notice-old', projectId: 'project-1', kind: 'notice' as const, order: 2, createdAt: 2, text: '完成', status: 'ready' as const, turnId: 'turn-old' }
+    const chapter = { id: 'chapter-1', projectId: 'project-1', title: '第一章', order: 1, content: '旧正文', status: 'draft' as const, createdAt: 1, updatedAt: 1 }
+    const currentWorkspace = { ...workspace, chapters: [chapter], messages: [oldUser, notice, prose] }
+    const candidate = { id: 'candidate-old', projectId: 'project-1', turnId: 'turn-old', proseMessageId: prose.id, chapterId: chapter.id, baseChapterHash: 'hash', baseChapterContent: '', sourceUserText: '待采用的旧修改', result: { kind: 'prose' as const, assistantNote: '完成', chapterAction: 'continue' as const, paragraphs: ['候选正文'] }, status: 'ready' as const, createdAt: 4, updatedAt: 4 }
+    databaseMocks.getLatestRegenerableWritingTurn.mockResolvedValue({ prose, user: oldUser, notice, chapter, baseChapterHash: 'hash', baseChapterContent: '', baseParagraphCount: 0 })
+    databaseMocks.getLatestEditableWritingUserMessage.mockResolvedValue(oldUser)
+    databaseMocks.getWritingCandidate.mockResolvedValue(candidate)
+    databaseMocks.beginWritingTurn.mockResolvedValue([
+      { id: 'user-new', projectId: 'project-1', kind: 'user', text: '开始新回合', order: 4, createdAt: 4 },
+      { id: 'notice-new', projectId: 'project-1', kind: 'notice', text: '生成中', order: 5, createdAt: 5, status: 'pending' },
+    ])
+    writingMocks.generateWritingTurn.mockImplementation(() => new Promise(() => undefined))
+    secretStoreMocks.has.mockResolvedValue(true)
+    const setWorkspace = vi.fn()
+    let controller: ReturnType<typeof useWritingTurnController> | undefined
+    function Probe() {
+      controller = useWritingTurnController({
+        workspace: currentWorkspace,
+        providerSettings,
+        setWorkspace: setWorkspace as never,
+        refreshWorkspace: vi.fn(),
+        refreshProjects: vi.fn(),
+        showToast: vi.fn(),
+        openTextProviderSettings: vi.fn(),
+        onWritingCompleted: vi.fn(),
+      })
+      return null
+    }
+    render(<Probe />)
+    await waitFor(() => expect(controller!.writingCandidate).toMatchObject({ id: 'candidate-old' }))
+
+    await act(async () => { void controller!.sendMessage('开始新回合'); await Promise.resolve() })
+    const workspaceUpdater = setWorkspace.mock.calls.at(-1)?.[0] as (current: ProjectWorkspace) => ProjectWorkspace
+    const nextWorkspace = workspaceUpdater(currentWorkspace)
+    expect(nextWorkspace.messages.find((message) => message.id === oldUser.id)?.pendingRevisionText).toBeUndefined()
+    expect(nextWorkspace.messages).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'user-new' })]))
+    expect(controller!.writingCandidate).toBeUndefined()
   })
 })

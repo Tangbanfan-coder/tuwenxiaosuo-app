@@ -49,4 +49,10 @@ describe('detectProseStyleIssues', () => {
     expect(flagged.every((issues) => issues.some((issue) => issue.ruleId === 'concept-label-this-is-called'))).toBe(true)
     expect(detectProseStyleIssues(['这叫什么名字？', '这叫我怎么办。', '这里叫青石巷。', '这叫林晚。']).every((issues) => issues.length === 0)).toBe(true)
   })
+
+  it('flags defensive reframing without treating ordinary “我这是” statements as a template', () => {
+    const flagged = detectProseStyleIssues(['“什么破坏公物，我这是提前帮你打理好出场形象。”', '“我这不是管你，是替你挡麻烦。”'])
+    expect(flagged.every((issues) => issues.some((issue) => issue.ruleId === 'defensive-benefactive-reframing'))).toBe(true)
+    expect(detectProseStyleIssues(['我这是第一次来，不认识路。', '我这是在帮你拿书。']).every((issues) => issues.length === 0)).toBe(true)
+  })
 })
