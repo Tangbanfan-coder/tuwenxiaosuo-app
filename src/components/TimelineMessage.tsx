@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Check, ImagePlus, LoaderCircle, Maximize2, Pencil, RefreshCcw, Save, Sparkles, Square, ThumbsDown, ThumbsUp, TriangleAlert, WandSparkles, X } from 'lucide-react'
 import { listMessageFeedback, listMessageParagraphsWithCurrentStyleIssues, storyDatabase, toggleFeedbackBatch, upsertPreferenceSignal } from '../data/storyDatabase'
 import type { CharacterAsset, ConversationMessage, Feedback, FeedbackScope, FeedbackVerdict, IllustrationAsset, ProseStyleIssue, RewriteStrength, StoredParagraph, WritingCandidate } from '../domain/models'
 import { resolveIllustrationReferences } from '../domain/illustrationReferences'
 import { createParagraphFingerprint } from '../domain/paragraphs'
 import { resolveImageSource } from '../providers/imageAssetStore'
+import { usePresence } from '../hooks/usePresence'
 
 type ParagraphAnchor = {
   id: string
@@ -189,14 +191,45 @@ export default function TimelineMessage({
 
 function EditableUserMessage({ message, canEdit, onSave }: { message: ConversationMessage; canEdit?: boolean; onSave?: (message: ConversationMessage, text: string) => Promise<boolean> }) {
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(message.text ?? '')
+  const effectiveText = message.pendingRevisionText ?? message.text ?? ''
+  const [draft, setDraft] = useState(effectiveText)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const editTriggerRef = useRef<HTMLButtonElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const { present: editorPresent, closing: editorClosing } = usePresence(editing, () => undefined, 220)
 
   useEffect(() => {
-    setDraft(message.text ?? '')
+    setDraft(message.pendingRevisionText ?? message.text ?? '')
     if (!canEdit) setEditing(false)
-  }, [canEdit, message.id, message.text])
+  }, [canEdit, message.id, message.pendingRevisionText, message.text])
+
+  useEffect(() => {
+    if (!editing) return
+    const focusTimer = window.setTimeout(() => {
+      const textarea = textareaRef.current
+      textarea?.focus()
+      textarea?.setSelectionRange(textarea.value.length, textarea.value.length)
+    }, 0)
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || saving) return
+      event.preventDefault()
+      closeEditor()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.clearTimeout(focusTimer)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [editing, saving])
+
+  function closeEditor() {
+    if (saving) return
+    setDraft(effectiveText)
+    setError('')
+    setEditing(false)
+    window.setTimeout(() => editTriggerRef.current?.focus(), 240)
+  }
 
   async function save() {
     const text = draft.trim()
@@ -208,23 +241,54 @@ function EditableUserMessage({ message, canEdit, onSave }: { message: Conversati
     setSaving(true)
     setError('')
     try {
-      if (await onSave(message, text)) setEditing(false)
+      if (await onSave(message, text)) {
+        setEditing(false)
+        window.setTimeout(() => editTriggerRef.current?.focus(), 240)
+      }
       else setError('保存失败，请稍后重试')
     } finally {
       setSaving(false)
     }
   }
 
-  return <div className="message-row user-row"><div className={`user-bubble ${editing ? 'is-editing' : ''}`}>
-    {editing ? <form className="user-message-editor" onSubmit={(event) => { event.preventDefault(); void save() }}>
-      <textarea aria-label="编辑已发送内容" value={draft} disabled={saving} onChange={(event) => setDraft(event.target.value)} rows={3} autoFocus />
-      {error && <span className="user-message-edit-error" role="alert">{error}</span>}
-      <div className="user-message-editor-actions">
-        <button type="button" aria-label="取消编辑" title="取消编辑" disabled={saving} onClick={() => { setDraft(message.text ?? ''); setError(''); setEditing(false) }}><X size={17} aria-hidden="true" /></button>
-        <button type="submit" aria-label="保存已发送内容" title="保存" disabled={saving}>{saving ? <LoaderCircle className="spin" size={17} aria-hidden="true" /> : <Save size={17} aria-hidden="true" />}</button>
+  const editor = editorPresent && createPortal(
+    <div
+      className={`user-message-edit-backdrop${editorClosing ? ' closing' : ''}`}
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target) closeEditor()
+      }}
+    >
+      <section className="user-message-edit-sheet" role="dialog" aria-modal="true" aria-label="编辑已发送内容">
+        <div className="user-message-edit-handle" aria-hidden="true" />
+        <form className="user-message-edit-form" onSubmit={(event) => { event.preventDefault(); void save() }}>
+          <textarea ref={textareaRef} aria-label="编辑已发送内容" value={draft} disabled={saving} onChange={(event) => setDraft(event.target.value)} rows={5} />
+          {error && <span className="user-message-edit-error" role="alert">{error}</span>}
+          <div className="user-message-edit-sheet-actions">
+            <button type="button" disabled={saving} onClick={closeEditor}>取消</button>
+            <button className="primary" type="submit" disabled={saving}>
+              {saving ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Save size={16} aria-hidden="true" />}
+              {saving ? '保存中…' : '保存修改'}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>,
+    document.querySelector('.app-shell') ?? document.body,
+  )
+
+  return <>
+    <div className="message-row user-row"><div className="user-message-stack">
+      <div className="user-bubble">
+        <div className="user-message-content"><span className="user-message-text">{effectiveText}</span>{message.pendingRevisionText && <span className="user-message-pending-revision">修改待重新生成，尚未应用</span>}</div>
       </div>
-    </form> : <><span>{message.text}</span>{canEdit && <button className="user-message-edit-trigger" type="button" aria-label="编辑已发送内容" title="编辑已发送内容" onClick={() => setEditing(true)}><Pencil size={16} aria-hidden="true" /></button>}</>}
-  </div></div>
+      {!editing && canEdit && <div className="user-message-actions" aria-label="消息操作">
+        <button ref={editTriggerRef} className="user-message-edit-trigger" type="button" aria-label="编辑已发送内容" title="编辑已发送内容" onClick={() => setEditing(true)}><Pencil size={16} aria-hidden="true" /></button>
+      </div>}
+    </div>
+    </div>
+    {editor}
+  </>
 }
 
 function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEvaluation, canRegenerate, writingCandidate, regenerationBusy, writingBusy, onRegenerateProse, onKeepOriginalProse, onAdoptCandidateProse, onAnalyzeFeedbackPreference }: { message: ConversationMessage; onRewriteParagraph?: (input: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) => Promise<string>; onApplyRewrite?: (input: { message: ConversationMessage; paragraph: StoredParagraph; rewrittenText: string }) => Promise<void>; onProseEvaluation?: (event: { type: 'analyzed' | 'rewrite_opened' | 'rewrite_kept_original'; message: ConversationMessage; paragraph: StoredParagraph }) => void; canRegenerate?: boolean; writingCandidate?: WritingCandidate; regenerationBusy?: boolean; writingBusy?: boolean; onRegenerateProse?: (message: ConversationMessage) => void; onKeepOriginalProse?: (message: ConversationMessage) => Promise<void>; onAdoptCandidateProse?: (message: ConversationMessage) => Promise<void>; onAnalyzeFeedbackPreference?: (input: { feedback: Feedback[]; verdict: FeedbackVerdict; reason?: string; targetTexts: string[] }) => Promise<void> }) {

@@ -1614,7 +1614,8 @@ label {
   .story-meta { padding: 19px 17px 14px; }
   .story-meta h1 { font-size: 19px; }
   .timeline { padding-right: 14px; padding-left: 14px; }
-  .user-bubble { max-width: 91%; }
+  .user-message-stack { max-width: 91%; }
+  .user-bubble { max-width: 100%; }
   .story-prose { font-size: 16px; }
   .illustration-placeholder { height: 190px; }
   .notice-indent { padding-left: 20px; }
@@ -1744,22 +1745,39 @@ label {
 
 /* Chat motion uses a small, consistent Android-like cadence. */
 @keyframes inline-panel-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-.user-bubble { position: relative; display: flex; align-items: flex-start; gap: 8px; white-space: pre-wrap; }
-.user-bubble > span { min-width: 0; overflow-wrap: anywhere; }
-.user-bubble.is-editing { width: min(100%, 520px); max-width: 100%; padding: 10px; }
-.user-message-edit-trigger, .user-message-editor-actions button { width: 48px; min-width: 48px; height: 48px; flex: none; display: inline-grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: inherit; }
-.user-message-edit-trigger { margin: -9px -10px -9px 0; opacity: .76; }
-.user-message-edit-trigger:hover, .user-message-editor-actions button:hover { background: color-mix(in srgb, currentColor 12%, transparent); opacity: 1; }
-.user-message-editor { width: 100%; display: grid; gap: 8px; animation: inline-panel-in var(--motion-panel) var(--motion-enter-ease); }
-.user-message-editor textarea { width: 100%; min-height: 84px; resize: vertical; border: 1px solid color-mix(in srgb, var(--story-user-text) 38%, transparent); border-radius: 8px; background: color-mix(in srgb, #fff 78%, var(--story-user)); color: var(--story-user-text); padding: 9px; font: inherit; line-height: 1.55; }
-.user-message-editor-actions { display: flex; justify-content: flex-end; gap: 4px; }
-.user-message-editor-actions button:last-child { background: color-mix(in srgb, var(--story-user-text) 16%, transparent); }
-.user-message-edit-error { font-size: 12px; color: #8b3038; }
+.user-message-stack { max-width: 84%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.user-bubble { position: relative; width: fit-content; max-width: 100%; white-space: pre-wrap; }
+.user-message-content { min-width: 0; display: grid; gap: 4px; }
+.user-message-text { min-width: 0; overflow-wrap: anywhere; }
+.user-message-actions { display: inline-flex; align-items: center; gap: 2px; height: 32px; margin-bottom: -12px; padding: 0; animation: inline-panel-in var(--motion-panel) var(--motion-enter-ease); }
+.user-message-edit-trigger { width: 32px; min-width: 32px; height: 32px; flex: none; display: inline-grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: inherit; opacity: .76; }
+.user-message-edit-trigger:hover { background: color-mix(in srgb, currentColor 12%, transparent); opacity: 1; }
+.user-message-edit-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: end center; background: rgba(6, 6, 5, 0.58); animation: overlay-in var(--motion-feedback) ease-out; overscroll-behavior: contain; }
+.user-message-edit-backdrop.closing { animation: overlay-out var(--motion-exit) var(--motion-exit-ease) forwards; }
+.user-message-edit-sheet { width: min(100%, 720px); max-height: min(72svh, 560px); padding: 8px 14px max(14px, env(safe-area-inset-bottom)); overflow-y: auto; border: 1px solid #484740; border-bottom: 0; border-radius: 16px 16px 0 0; background: #1b1b18; color: #efede7; box-shadow: 0 22px 60px rgba(0, 0, 0, 0.46); animation: sheet-in var(--motion-drawer) var(--motion-enter-ease); }
+.user-message-edit-backdrop.closing .user-message-edit-sheet { animation: sheet-out var(--motion-exit) var(--motion-exit-ease) forwards; }
+.user-message-edit-handle { width: 38px; height: 4px; margin: 0 auto 10px; border-radius: 999px; background: #68675f; }
+.user-message-edit-form { display: grid; gap: 12px; }
+.user-message-edit-form textarea { width: 100%; min-height: 132px; max-height: 42svh; resize: vertical; padding: 13px 14px; border: 1px solid #4b4a44; border-radius: 10px; outline: 0; background: #121210; color: #efede7; font: inherit; font-size: 15px; line-height: 1.6; caret-color: #d7c18d; }
+.user-message-edit-form textarea:focus { border-color: #9e8c5e; box-shadow: 0 0 0 2px rgba(215, 193, 141, 0.14); }
+.user-message-edit-error { font-size: 12px; color: #df8b91; }
+.user-message-edit-sheet-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.user-message-edit-sheet-actions button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 15px; border: 1px solid #484740; border-radius: 8px; background: transparent; color: #cbc8be; font: inherit; font-size: 13px; }
+.user-message-edit-sheet-actions button.primary { border-color: #d7c18d; background: #d7c18d; color: #1b1913; font-weight: 650; }
+.user-message-edit-sheet-actions button:disabled { opacity: .58; cursor: wait; }
+.app-shell[data-appearance="light"] .user-message-edit-sheet { border-color: #c9cdc6; background: #fbfbf8; color: #202520; box-shadow: 0 22px 60px rgba(43, 47, 42, 0.19); }
+.app-shell[data-appearance="light"] .user-message-edit-handle { background: #b8bcb5; }
+.app-shell[data-appearance="light"] .user-message-edit-form textarea { border-color: #bcc2ba; background: #ffffff; color: #202520; caret-color: #8f7a4e; }
+.app-shell[data-appearance="light"] .user-message-edit-form textarea:focus { border-color: #8f7a4e; box-shadow: 0 0 0 2px rgba(143, 122, 78, 0.13); }
+.app-shell[data-appearance="light"] .user-message-edit-error { color: #a8444b; }
+.app-shell[data-appearance="light"] .user-message-edit-sheet-actions button { border-color: #c4c8c1; color: #555c55; }
+.app-shell[data-appearance="light"] .user-message-edit-sheet-actions button.primary { border-color: #8f7a4e; background: #8f7a4e; color: #ffffff; }
+.user-message-pending-revision { overflow-wrap: anywhere; font-size: 12px; line-height: 1.35; color: color-mix(in srgb, var(--story-user-text) 72%, transparent); }
 .feedback-panel, .rewrite-panel, .writing-candidate-panel, .visual-prompt { animation: inline-panel-in var(--motion-panel) var(--motion-enter-ease); }
 .illustration-mode-menu, .reasoning-effort-quick-menu { animation: theme-menu-in var(--motion-panel) var(--motion-enter-ease); }
 .style-corpus-dialog, .prose-evaluation-dialog { animation: asset-in var(--motion-drawer) var(--motion-enter-ease); }
 .style-corpus-backdrop.closing .style-corpus-dialog, .prose-evaluation-backdrop.closing .prose-evaluation-dialog { animation: asset-out var(--motion-exit) var(--motion-exit-ease) forwards; }
-.feedback-trigger, .notice-retry, .user-message-edit-trigger, .user-message-editor-actions button { transition: background-color var(--motion-feedback) ease-out, border-color var(--motion-feedback) ease-out, color var(--motion-feedback) ease-out, opacity var(--motion-feedback) ease-out; }
+.feedback-trigger, .notice-retry, .user-message-edit-trigger, .user-message-edit-sheet-actions button { transition: background-color var(--motion-feedback) ease-out, border-color var(--motion-feedback) ease-out, color var(--motion-feedback) ease-out, opacity var(--motion-feedback) ease-out; }
 .image-lightbox-backdrop, .context-usage-surface--sheet, .composer-assets-menu-surface, .dialog-backdrop, .confirm-backdrop { animation-duration: var(--motion-panel); animation-timing-function: var(--motion-enter-ease); }
 .image-lightbox-backdrop.closing, .dialog-backdrop.closing, .confirm-backdrop.closing { animation-duration: var(--motion-exit); animation-timing-function: var(--motion-exit-ease); }
 .context-usage-dialog { animation-duration: var(--motion-panel); animation-timing-function: var(--motion-enter-ease); }

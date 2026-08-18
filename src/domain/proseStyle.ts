@@ -1,6 +1,6 @@
 import type { ProseStyleIssue, ProseStyleRuleCategory, ProseStyleSeverity } from './models'
 
-export const PROSE_STYLE_RULE_VERSION = 3
+export const PROSE_STYLE_RULE_VERSION = 4
 
 export interface ProseStyleRuleDefinition {
   id: string
@@ -68,6 +68,17 @@ const rules: RuleMatcher[] = [
       if (/^(?:王|李|张|刘|陈|杨|黄|赵|周|吴|徐|孙|胡|朱|高|林|何|郭|马|罗|梁|宋|郑|谢|韩|唐|冯|于|董|萧|程|曹|袁|邓|许|傅|沈|曾|彭|吕|苏|卢|蒋|蔡|贾|丁|魏|薛|叶|阎|余|潘|杜|戴|夏|钟|汪|田|任|姜|范|方|石|姚|谭|廖|邹|熊|金|陆|郝|孔|白|崔|康|毛|邱|秦|江|史|顾|侯|邵|孟|龙|万|段|雷|钱|汤|尹|易|常|武|乔|贺|赖|龚|文)[\u4e00-\u9fff]{1,2}$/.test(label)) return undefined
       return match[0]
     }).filter((value): value is string => Boolean(value)),
+  },
+  {
+    id: 'defensive-benefactive-reframing', category: 'defensive-reframing', severity: 'hint',
+    explanation: '先否认破坏、管束等负面行为，再包装成“我是帮你”的好意，容易显得像替人物强行洗白。',
+    rewriteGoal: '保留人物的自我辩解，但说清具体动机、代价或关系拉扯，不用否认加好意的固定话术。',
+    badExamples: ['“什么破坏公物，我这是提前帮你打理好出场形象。”'], goodExamples: ['“门牌本来就松了，我只是怕它砸到你。”'],
+    detect: (text) => {
+      const accusation = /(?:什么|哪算|算什么)?(?:破坏|损坏|捣乱|添乱|浪费|胡闹|欺负|闯祸|麻烦|坏事)[^，。！？；”」』]{0,18}(?:，|,)?\s*我这是(?:提前|顺手|特地|专门)?(?:帮|替|给|为你)/g
+      const denial = /我这不是(?:管|干涉|控制|责备|挑刺)[^，。！？；”」』]{0,18}(?:，|,)?\s*(?:而)?是(?:提前|顺手|特地|专门)?(?:帮|替|给|为你)/g
+      return [...matches(text, accusation), ...matches(text, denial)]
+    },
   },
   {
     id: 'abstract-emotion-telling', category: 'emotion-telling', severity: 'hint',

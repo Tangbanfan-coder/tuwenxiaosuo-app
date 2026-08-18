@@ -17,9 +17,8 @@ const databaseMocks = vi.hoisted(() => ({
   createProject: vi.fn(),
   deleteProject: vi.fn(),
   failWritingTurn: vi.fn(),
-  discardWritingCandidate: vi.fn(),
+  getLatestEditableWritingUserMessage: vi.fn(),
   getLatestRegenerableWritingTurn: vi.fn(),
-  getLatestRetryableWritingUserMessage: vi.fn(),
   getWritingCandidate: vi.fn(),
   getStyleCorpusSummary: vi.fn().mockResolvedValue({ sourceCount: 0, fragmentCount: 0 }),
   recordProseEvaluationEvent: vi.fn(() => Promise.resolve()),
@@ -39,7 +38,8 @@ const databaseMocks = vi.hoisted(() => ({
   restoreIllustrationsBlockedByReference: vi.fn(),
   saveWritingCandidate: vi.fn(),
   retryWritingTurn: vi.fn(),
-  updateLatestRetryableWritingUserMessage: vi.fn(),
+  keepOriginalWritingCandidate: vi.fn(),
+  saveLatestUserMessageRevision: vi.fn(),
   setCharacterPortraitFailed: vi.fn(),
   setCharacterPortraitGenerating: vi.fn(),
   setCharacterPortraitReady: vi.fn(),
@@ -301,14 +301,14 @@ beforeEach(() => {
   databaseMocks.listMessageParagraphsWithCurrentStyleIssues.mockResolvedValue([])
   databaseMocks.getStyleCorpusSummary.mockResolvedValue({ sourceCount: 0, fragmentCount: 0 })
   databaseMocks.getLatestRegenerableWritingTurn.mockResolvedValue(undefined)
-  databaseMocks.getLatestRetryableWritingUserMessage.mockResolvedValue(undefined)
+  databaseMocks.getLatestEditableWritingUserMessage.mockResolvedValue(undefined)
   databaseMocks.getWritingCandidate.mockResolvedValue(undefined)
   databaseMocks.recordProseEvaluationEvent.mockResolvedValue(undefined)
   databaseMocks.applyParagraphRewrite.mockResolvedValue(undefined)
   databaseMocks.toggleFeedback.mockResolvedValue({ id: 'feedback-1', verdict: 'down' })
   databaseMocks.toggleFeedbackBatch.mockResolvedValue([])
   databaseMocks.upsertPreferenceSignal.mockResolvedValue(undefined)
-  databaseMocks.updateLatestRetryableWritingUserMessage.mockResolvedValue(undefined)
+  databaseMocks.saveLatestUserMessageRevision.mockResolvedValue(undefined)
   databaseMocks.storyDatabase.paragraphs.where.mockReturnValue({
     equals: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }),
   })
@@ -1007,6 +1007,30 @@ describe('prose feedback UI', () => {
 })
 
 describe('latest prose regeneration UI', () => {
+  it('显示待应用的最新用户修改，而不是旧请求文本', async () => {
+    const user = userEvent.setup()
+    const prose = { id: 'prose-revision', projectId: project.id, chapterId: 'chapter-1', kind: 'prose' as const, order: 3, createdAt: 3, paragraphs: ['原版正文。'], status: 'ready' as const, turnId: 'turn-revision' }
+    const userMessage = { id: 'user-revision', projectId: project.id, kind: 'user' as const, order: 1, createdAt: 1, text: '旧请求文本', turnId: 'turn-revision' }
+    const notice = { id: 'notice-revision', projectId: project.id, kind: 'notice' as const, order: 2, createdAt: 2, text: '完成', status: 'ready' as const, userMessageId: userMessage.id, turnId: 'turn-revision' }
+    const chapter = { ...workspace.chapters[0], content: '原版正文。' }
+    databaseMocks.loadProjectWorkspace.mockResolvedValue({ ...workspace, chapters: [chapter], messages: [userMessage, notice, prose] })
+    databaseMocks.getLatestRegenerableWritingTurn.mockResolvedValue({ prose, user: userMessage, notice, chapter, baseChapterHash: 'hash', baseChapterContent: '', baseParagraphCount: 0 })
+    databaseMocks.getLatestEditableWritingUserMessage.mockResolvedValue(userMessage)
+    databaseMocks.saveLatestUserMessageRevision.mockResolvedValue({ mode: 'pending', text: '改成码头重逢' })
+
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '编辑已发送内容' }))
+    const editor = screen.getByRole('textbox', { name: '编辑已发送内容' })
+    await user.clear(editor)
+    await user.type(editor, '改成码头重逢')
+    await user.click(screen.getByRole('button', { name: '保存已发送内容' }))
+
+    expect(await screen.findByText('改成码头重逢')).toBeDefined()
+    expect(screen.queryByText('旧请求文本')).toBeNull()
+    expect(screen.getByText('修改待重新生成，尚未应用')).toBeDefined()
+  })
+
   it('只在最近一轮正文显示候选比较，并可保留原版', async () => {
     const user = userEvent.setup()
     const prose = {
@@ -1032,7 +1056,7 @@ describe('latest prose regeneration UI', () => {
     expect(screen.getAllByText('原版正文。')).toHaveLength(2)
     expect(screen.getByText('新版正文。')).toBeDefined()
     await user.click(screen.getByRole('button', { name: '保留原版' }))
-    await waitFor(() => expect(databaseMocks.discardWritingCandidate).toHaveBeenCalledWith(project.id, 'turn-latest'))
+    await waitFor(() => expect(databaseMocks.keepOriginalWritingCandidate).toHaveBeenCalledWith(project.id, 'turn-latest'))
   })
 })
 
@@ -1174,8 +1198,8 @@ describe('生成停止与重试', () => {
     const user = userEvent.setup()
     configureSendable()
     databaseMocks.loadProjectWorkspace.mockResolvedValue(failedWorkspace)
-    databaseMocks.getLatestRetryableWritingUserMessage.mockResolvedValue(failedWorkspace.messages[0])
-    databaseMocks.updateLatestRetryableWritingUserMessage.mockResolvedValue('改成雨夜重逢')
+    databaseMocks.getLatestEditableWritingUserMessage.mockResolvedValue(failedWorkspace.messages[0])
+    databaseMocks.saveLatestUserMessageRevision.mockResolvedValue({ mode: 'retry', text: '改成雨夜重逢' })
     databaseMocks.retryWritingTurn.mockResolvedValue({ userText: '改成雨夜重逢', illustrationMode: 'manual' })
     databaseMocks.completeWritingTurn.mockResolvedValue(undefined)
     writingMocks.generateWritingTurn.mockResolvedValue({ kind: 'prose', assistantNote: '正文已完成。', chapterAction: 'continue', paragraphs: ['重试正文。'] })
@@ -1186,7 +1210,7 @@ describe('生成停止与重试', () => {
     await user.clear(editor)
     await user.type(editor, '改成雨夜重逢')
     await user.click(screen.getByRole('button', { name: '保存已发送内容' }))
-    await waitFor(() => expect(databaseMocks.updateLatestRetryableWritingUserMessage).toHaveBeenCalledWith(project.id, 'user-1', '改成雨夜重逢'))
+    await waitFor(() => expect(databaseMocks.saveLatestUserMessageRevision).toHaveBeenCalledWith(project.id, 'user-1', '改成雨夜重逢'))
 
     await user.click(screen.getByRole('button', { name: '重新生成' }))
     await waitFor(() => expect(writingMocks.generateWritingTurn).toHaveBeenCalled())

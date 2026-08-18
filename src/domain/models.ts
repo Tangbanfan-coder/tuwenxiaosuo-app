@@ -56,6 +56,7 @@ export type ProseStyleRuleCategory =
   | 'elevated-ending'
   | 'conditional-dialogue'
   | 'concept-label'
+  | 'defensive-reframing'
 
 export type ProseStyleSeverity = 'hint' | 'warning' | 'strong'
 
@@ -172,6 +173,8 @@ export interface ConversationMessage {
   userMessageId?: string
   /** Stable ownership for all records emitted by one writing request. */
   turnId?: string
+  /** A saved revision that only becomes canonical when its candidate prose is adopted. */
+  pendingRevisionText?: string
 }
 
 export type ParagraphSourceType = 'message' | 'chapter'
@@ -244,6 +247,8 @@ export interface WritingCandidate {
   chapterId: string
   baseChapterHash: string
   baseChapterContent: string
+  /** User request used to create this candidate, for cross-tab revision safety. */
+  sourceUserText?: string
   result: WritingProseResult
   status: 'ready' | 'adopted' | 'discarded'
   createdAt: number

@@ -1272,11 +1272,23 @@ export async function getLatestRegenerableWritingTurn(projectId: string) {
   }
 }
 
-export async function saveWritingCandidate(input: Omit<WritingCandidate, 'id' | 'status' | 'createdAt' | 'updatedAt'>) {
+export type SaveWritingCandidateInput = Omit<WritingCandidate, 'id' | 'status' | 'createdAt' | 'updatedAt' | 'sourceUserText'> & {
+  sourceUserText: string
+}
+
+export async function saveWritingCandidate(input: SaveWritingCandidateInput) {
   const now = Date.now()
   const candidate: WritingCandidate = { ...input, id: createId('candidate'), status: 'ready', createdAt: now, updatedAt: now }
-  await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([input.projectId, input.turnId]).delete()
-  await storyDatabase.writingCandidates.add(candidate)
+  await storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.writingCandidates], async () => {
+    const user = await storyDatabase.messages.where('projectId').equals(input.projectId)
+      .filter((message) => message.kind === 'user' && message.turnId === input.turnId).first()
+    const currentRequest = user?.pendingRevisionText ?? user?.text
+    if (!user || !currentRequest || !input.sourceUserText || currentRequest !== input.sourceUserText) {
+      throw new Error('发送内容已修改，请重新生成候选稿')
+    }
+    await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([input.projectId, input.turnId]).delete()
+    await storyDatabase.writingCandidates.add(candidate)
+  })
   return candidate
 }
 
@@ -1284,8 +1296,18 @@ export async function getWritingCandidate(projectId: string, turnId: string) {
   return storyDatabase.writingCandidates.where('[projectId+turnId]').equals([projectId, turnId]).filter((item) => item.status === 'ready').first()
 }
 
-export async function discardWritingCandidate(projectId: string, turnId: string) {
-  await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([projectId, turnId]).delete()
+/** Keeps the current prose and abandons any unadopted user revision for its turn. */
+export async function keepOriginalWritingCandidate(projectId: string, turnId: string) {
+  return storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.writingCandidates], async () => {
+    const candidate = await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([projectId, turnId])
+      .filter((item) => item.status === 'ready').first()
+    if (!candidate) throw new Error('候选正文不存在或已经处理')
+    const user = await storyDatabase.messages.where('projectId').equals(projectId)
+      .filter((message) => message.kind === 'user' && message.turnId === turnId).first()
+    if (user?.pendingRevisionText) await storyDatabase.messages.update(user.id, { pendingRevisionText: undefined })
+    await storyDatabase.writingCandidates.delete(candidate.id)
+    return user?.id
+  })
 }
 
 /**
@@ -1647,35 +1669,21 @@ function illustrationModeInput(mode: IllustrationMode | boolean): IllustrationMo
 export async function beginWritingTurn(projectId: string, text: string, mode: IllustrationMode | boolean, chapterId?: string) {
   const illustrationMode = illustrationModeInput(mode)
   const now = Date.now()
-  const nextOrder = (await getLastMessageOrder(projectId)) + 1
   const userMessageId = createId('message')
   const turnId = createId('turn')
-  const messages: ConversationMessage[] = [
-    {
-      id: userMessageId,
-      projectId,
-      chapterId,
-      kind: 'user',
-      order: nextOrder,
-      createdAt: now,
-      text,
-      turnId,
-    },
-    {
-      id: createId('message'),
-      projectId,
-      chapterId,
-      kind: 'notice',
-      order: nextOrder + 1,
-      createdAt: now + 1,
-      text: writingNoticeText(illustrationMode),
-      status: 'pending',
-      userMessageId,
-      turnId,
-    },
-  ]
-
-  await storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.projects], async () => {
+  let messages: ConversationMessage[] = []
+  await storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.projects, storyDatabase.writingCandidates], async () => {
+    const existing = await storyDatabase.messages.where('projectId').equals(projectId).sortBy('order')
+    const pendingUsers = existing.filter((message) => message.kind === 'user' && message.pendingRevisionText)
+    if (pendingUsers.length) {
+      await storyDatabase.messages.bulkUpdate(pendingUsers.map((message) => ({ key: message.id, changes: { pendingRevisionText: undefined } })))
+    }
+    await storyDatabase.writingCandidates.where('projectId').equals(projectId).filter((candidate) => candidate.status === 'ready').delete()
+    const nextOrder = (existing.at(-1)?.order ?? 0) + 1
+    messages = [
+      { id: userMessageId, projectId, chapterId, kind: 'user', order: nextOrder, createdAt: now, text, turnId },
+      { id: createId('message'), projectId, chapterId, kind: 'notice', order: nextOrder + 1, createdAt: now + 1, text: writingNoticeText(illustrationMode), status: 'pending', userMessageId, turnId },
+    ]
     await storyDatabase.messages.bulkAdd(messages)
     await storyDatabase.projects.update(projectId, { illustrationMode, updatedAt: now })
   })
@@ -2072,6 +2080,11 @@ export async function adoptWritingCandidate(projectId: string, turnId: string) {
       if (target.baseChapterHash !== candidate.baseChapterHash || target.baseChapterContent !== candidate.baseChapterContent) {
         throw new Error('章节正文已经变化，请保留当前版本并重新生成候选稿')
       }
+      const requestedUserText = target.user.pendingRevisionText ?? target.user.text
+      const candidateUserText = candidate.sourceUserText ?? target.user.text
+      if (!requestedUserText || candidateUserText !== requestedUserText) {
+        throw new Error('发送内容已修改，请重新生成候选稿')
+      }
 
       const project = await storyDatabase.projects.get(projectId)
       if (!project) throw new Error('当前作品不存在')
@@ -2096,7 +2109,11 @@ export async function adoptWritingCandidate(projectId: string, turnId: string) {
         updatedAt: now,
       }
       await storyDatabase.chapters.put(nextChapter)
-      await storyDatabase.messages.update(target.user.id, { chapterId: nextChapter.id })
+      await storyDatabase.messages.update(target.user.id, {
+        chapterId: nextChapter.id,
+        text: requestedUserText,
+        pendingRevisionText: undefined,
+      })
       await storyDatabase.messages.update(target.notice.id, {
         chapterId: nextChapter.id,
         text: result.assistantNote,
@@ -2230,11 +2247,11 @@ export async function cancelWritingTurn(noticeId: string) {
  * Updates the newest retryable user request. The database, not the UI, owns
  * the guard so a stale screen cannot edit a completed or superseded turn.
  */
-export async function updateLatestRetryableWritingUserMessage(projectId: string, userMessageId: string, text: string) {
+export async function saveLatestUserMessageRevision(projectId: string, userMessageId: string, text: string): Promise<{ mode: 'retry' | 'pending'; text: string }> {
   const userText = text.trim()
   if (!userText) throw new Error('已发送内容不能为空')
   const now = Date.now()
-  return storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.projects], async () => {
+  return storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.projects, storyDatabase.writingCandidates, storyDatabase.chapters, storyDatabase.summaryVersions], async () => {
     const messages = await storyDatabase.messages.where('projectId').equals(projectId).sortBy('order')
     const userMessage = messages.find((message) => message.id === userMessageId)
     if (!userMessage || userMessage.kind !== 'user') throw new Error('用户消息不存在或不属于当前作品')
@@ -2242,18 +2259,26 @@ export async function updateLatestRetryableWritingUserMessage(projectId: string,
       throw new Error('只能编辑最新一轮已发送内容')
     }
     const notice = messages.find((message) => message.kind === 'notice' && message.userMessageId === userMessageId)
-    if (!notice || (notice.status !== 'failed' && notice.status !== 'cancelled')) {
-      throw new Error('只有失败或已停止的最新回合才能编辑')
+    if (notice && (notice.status === 'failed' || notice.status === 'cancelled')) {
+      const hasSuccessfulProse = Boolean(notice.turnId) && messages.some((message) => (
+        message.kind === 'prose' && message.turnId === notice.turnId && message.status !== 'failed'
+      ))
+      if (hasSuccessfulProse) throw new Error('已完成正文的回合不能再编辑')
+      await storyDatabase.messages.update(userMessageId, { text: userText, pendingRevisionText: undefined })
+      if (notice.turnId) await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([projectId, notice.turnId]).delete()
+      await storyDatabase.projects.update(projectId, { updatedAt: now })
+      return { mode: 'retry' as const, text: userText }
     }
-    const hasSuccessfulProse = Boolean(notice.turnId) && messages.some((message) => (
-      message.kind === 'prose'
-      && message.turnId === notice.turnId
-      && message.status !== 'failed'
-    ))
-    if (hasSuccessfulProse) throw new Error('已完成正文的回合不能再编辑')
-    await storyDatabase.messages.update(userMessageId, { text: userText })
+
+    const target = await getLatestRegenerableWritingTurn(projectId)
+    if (!target || target.user.id !== userMessageId) {
+      throw new Error('只有失败、已停止或最近一轮可重新生成正文才能编辑')
+    }
+    const pendingRevisionText = userText === userMessage.text ? undefined : userText
+    await storyDatabase.messages.update(userMessageId, { pendingRevisionText })
+    await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([projectId, target.prose.turnId!]).delete()
     await storyDatabase.projects.update(projectId, { updatedAt: now })
-    return userText
+    return { mode: 'pending' as const, text: userText }
   })
 }
 
@@ -2266,6 +2291,14 @@ export async function getLatestRetryableWritingUserMessage(projectId: string) {
   if (!notice || (notice.status !== 'failed' && notice.status !== 'cancelled')) return undefined
   const hasSuccessfulProse = Boolean(notice.turnId) && messages.some((message) => message.kind === 'prose' && message.turnId === notice.turnId && message.status !== 'failed')
   return hasSuccessfulProse ? undefined : user
+}
+
+/** Returns the one latest user message that can retry directly or revise a regenerable prose turn. */
+export async function getLatestEditableWritingUserMessage(projectId: string) {
+  const retryable = await getLatestRetryableWritingUserMessage(projectId)
+  if (retryable) return retryable
+  const target = await getLatestRegenerableWritingTurn(projectId)
+  return target?.user
 }
 
 /**
