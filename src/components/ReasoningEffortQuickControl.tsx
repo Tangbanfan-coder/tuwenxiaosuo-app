@@ -1,6 +1,7 @@
 import { Brain, Check, ChevronDown } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { ReasoningEffort } from '../providers/types'
+import { usePresence } from '../hooks/usePresence'
 
 interface Props {
   value: ReasoningEffort | undefined
@@ -19,6 +20,7 @@ export default function ReasoningEffortQuickControl({ value, onChange }: Props) 
   const triggerRef = useRef<HTMLButtonElement>(null)
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [open, setOpen] = useState(false)
+  const { present: menuPresent, closing: menuClosing } = usePresence(open, () => {}, 150)
   const current = value ?? 'auto'
   const currentOption = OPTIONS.find((option) => option.value === current) ?? OPTIONS[0]
 
@@ -86,8 +88,8 @@ export default function ReasoningEffortQuickControl({ value, onChange }: Props) 
         <span className="reasoning-effort-quick-value">{currentOption.label}</span>
         <ChevronDown size={14} aria-hidden="true" />
       </button>
-      {open && (
-        <div className="reasoning-effort-quick-menu" role="menu" aria-label="文本模型思考等级">
+      {menuPresent && (
+        <div className={`reasoning-effort-quick-menu${menuClosing ? ' closing' : ''}`} role="menu" aria-label="文本模型思考等级">
           {OPTIONS.map((option, index) => {
             const selected = option.value === current
             return (

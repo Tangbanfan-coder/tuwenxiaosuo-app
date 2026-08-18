@@ -41,6 +41,7 @@ export default function Composer({
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [illustrationModeOpen, setIllustrationModeOpen] = useState(false)
+  const [menuFlipped, setMenuFlipped] = useState(false)
   const illustrationModeControlRef = useRef<HTMLDivElement>(null)
   const illustrationModeTriggerRef = useRef<HTMLButtonElement>(null)
   const generating = generationPhase === 'starting' || generationPhase === 'running'
@@ -64,6 +65,18 @@ export default function Composer({
       document.removeEventListener('pointerdown', closeOnOutsidePointer)
       window.removeEventListener('keydown', closeOnEscape)
     }
+  }, [illustrationModeOpen])
+
+  // 智能方向检测：当上方空间不足时自动向下展开
+  useEffect(() => {
+    if (!illustrationModeOpen || !illustrationModeTriggerRef.current) return
+    const trigger = illustrationModeTriggerRef.current
+    const rect = trigger.getBoundingClientRect()
+    // 菜单预估高度：3 项 × (min-height 48px + gap 2px) + padding 5px × 2 ≈ 162px + 间距 8px
+    const menuHeight = 170
+    const spaceAbove = rect.top - 8 // 上方可用空间（留 8px 边距）
+    const spaceBelow = window.innerHeight - rect.bottom - 8 // 下方可用空间
+    setMenuFlipped(spaceAbove < menuHeight && spaceBelow >= menuHeight)
   }, [illustrationModeOpen])
 
   const submit = async () => {
@@ -100,7 +113,7 @@ export default function Composer({
               <button ref={illustrationModeTriggerRef} className="composer-tool-button auto-illustrate-button" type="button" aria-expanded={illustrationModeOpen} aria-haspopup="menu" aria-label={`配图模式：${illustrationMode === 'none' ? '无图' : illustrationMode === 'manual' ? '按需' : '自动'}`} onClick={() => setIllustrationModeOpen((open) => !open)}>
                 <ImagePlus size={17} aria-hidden="true" /><span>配图</span><strong>{illustrationMode === 'none' ? '无图' : illustrationMode === 'manual' ? '按需' : '自动'}</strong>
               </button>
-              {illustrationModeOpen && <div className="illustration-mode-menu" role="menu" aria-label="选择配图模式">
+              {illustrationModeOpen && <div className={`illustration-mode-menu${menuFlipped ? ' illustration-mode-menu-flipped' : ''}`} role="menu" aria-label="选择配图模式">
                 {([['none', '无图', '只写正文'], ['manual', '按需', '保存建议，手动生成'], ['auto', '自动', '自动生成插画']] as const).map(([mode, label, description]) => (
                   <button key={mode} type="button" role="menuitemradio" aria-checked={illustrationMode === mode} onClick={() => { onIllustrationModeChange(mode); setIllustrationModeOpen(false); illustrationModeTriggerRef.current?.focus() }}>
                     <span><strong>{label}</strong><small>{description}</small></span>{illustrationMode === mode && <Check size={15} aria-hidden="true" />}

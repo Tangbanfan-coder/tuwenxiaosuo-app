@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, BookText, Brain, Brush, Check, ChevronDown, ChevronRight, FileText, Gauge, History, Image, Moon, ScrollText, Sun, X } from 'lucide-react'
+import { BookText, Brain, Brush, Check, ChevronDown, ChevronRight, FileText, Gauge, History, Image, Moon, ScrollText, Sun, X } from 'lucide-react'
 import { contextUsageSummary } from './ContextUsage'
 import type { ContextUsageState } from '../domain/contextUsage'
 import { ILLUSTRATION_STYLE_PRESETS, getIllustrationStylePreset } from '../domain/illustrationStyles'
@@ -83,11 +83,11 @@ export default function SettingsDrawer({
   onAppearanceChange,
 }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
-  const backButtonRef = useRef<HTMLButtonElement>(null)
   const wasOpenRef = useRef(false)
   const themeSelectRef = useRef<HTMLDivElement>(null)
   const styleSelectRef = useRef<HTMLDivElement>(null)
   const [page, setPage] = useState<SettingsPage>('home')
+  const [pageTransitionKey, setPageTransitionKey] = useState(0)
   const [openSelect, setOpenSelect] = useState<'theme' | 'style' | null>(null)
   const [customStyleEditorOpen, setCustomStyleEditorOpen] = useState(false)
   const [customStylePrompt, setCustomStylePrompt] = useState(activeCustomStylePrompt)
@@ -114,7 +114,8 @@ export default function SettingsDrawer({
   useEffect(() => {
     if (page === 'home') return
     setOpenSelect(null)
-    backButtonRef.current?.focus()
+    setPageTransitionKey(k => k + 1)
+    closeButtonRef.current?.focus()
   }, [page])
 
   useEffect(() => {
@@ -170,27 +171,16 @@ export default function SettingsDrawer({
         data-suspended={suspended ? 'true' : 'false'}
       >
         <header className="drawer-header">
-          {page !== 'home' && (
-            <button
-              ref={backButtonRef}
-              className="icon-button drawer-back-button"
-              type="button"
-              aria-label="返回设置"
-              onClick={() => setPage('home')}
-            >
-              <ArrowLeft size={19} />
-            </button>
-          )}
           <div>
             <h2 id="settings-drawer-title">{PAGE_TITLES[page]}</h2>
             <p>当前作品 · {projectTitle}</p>
           </div>
-          <button ref={closeButtonRef} className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}>
+          <button ref={closeButtonRef} className="icon-button" type="button" aria-label={page !== 'home' ? '返回设置' : '关闭设置'} onClick={() => { if (page !== 'home') setPage('home'); else onClose() }}>
             <X size={20} />
           </button>
         </header>
 
-        <div className="settings-content">
+        <div className="settings-content" key={pageTransitionKey}>
           {page === 'home' && (
             <>
               <section className="settings-section" aria-labelledby="settings-app-appearance">
@@ -414,26 +404,24 @@ export default function SettingsDrawer({
                   </div>
                 )}
               </div>
-              {customStyleEditorOpen && (
-                <form className="custom-style-editor" onSubmit={(event) => {
-                  event.preventDefault()
-                  if (!customStylePrompt.trim()) return
-                  void onIllustrationStyleChange('custom', customStylePrompt.trim())
-                    .then(() => setCustomStyleEditorOpen(false))
-                    .catch(() => undefined)
-                }}>
-                  <label htmlFor="custom-illustration-style">描述整体画风</label>
-                  <textarea
-                    id="custom-illustration-style"
-                    rows={3}
-                    maxLength={500}
-                    value={customStylePrompt}
-                    placeholder="例如：清透的国风工笔画，细线勾勒，淡雅矿物色，保留纸张纹理。"
-                    onChange={(event) => setCustomStylePrompt(event.target.value)}
-                  />
-                  <div><span>{customStylePrompt.length}/500</span><button className="primary-button" type="submit" disabled={!customStylePrompt.trim()}>应用画风</button></div>
-                </form>
-              )}
+              <form className={`custom-style-editor${customStyleEditorOpen ? ' custom-style-editor--open' : ''}`} onSubmit={(event) => {
+                event.preventDefault()
+                if (!customStylePrompt.trim()) return
+                void onIllustrationStyleChange('custom', customStylePrompt.trim())
+                  .then(() => setCustomStyleEditorOpen(false))
+                  .catch(() => undefined)
+              }}>
+                <label htmlFor="custom-illustration-style">描述整体画风</label>
+                <textarea
+                  id="custom-illustration-style"
+                  rows={3}
+                  maxLength={500}
+                  value={customStylePrompt}
+                  placeholder="例如：清透的国风工笔画，细线勾勒，淡雅矿物色，保留纸张纹理。"
+                  onChange={(event) => setCustomStylePrompt(event.target.value)}
+                />
+                <div><span>{customStylePrompt.length}/500</span><button className="primary-button" type="submit" disabled={!customStylePrompt.trim()}>应用画风</button></div>
+              </form>
                 <p className="settings-help">会用于之后生成的定妆照和剧情插画。</p>
               </section>
             </>

@@ -547,6 +547,9 @@ label {
   background: rgba(6, 6, 5, 0.56);
   animation: overlay-in 180ms ease-out;
 }
+.context-usage-surface.closing { animation: overlay-out var(--motion-exit) var(--motion-exit-ease) forwards; }
+.context-usage-surface.closing .context-usage-dialog { animation: dialog-out var(--motion-exit) var(--motion-exit-ease) forwards; }
+.context-usage-surface--sheet.closing .context-usage-dialog { animation: sheet-out var(--motion-exit) var(--motion-exit-ease) forwards; }
 
 .context-usage-dialog {
   width: 100%;
@@ -655,6 +658,7 @@ label {
 
 .illustration-mode-control { position: relative; flex: none; }
 .illustration-mode-menu { width: min(252px, calc(100vw - 24px)); position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 34; display: grid; gap: 2px; padding: 5px; border: 1px solid #484740; border-radius: 9px; background: #151513; box-shadow: 0 12px 26px rgba(0, 0, 0, 0.3); }
+.illustration-mode-menu-flipped { bottom: auto; top: calc(100% + 8px); box-shadow: 0 8px 26px rgba(0, 0, 0, 0.3); }
 .illustration-mode-menu button { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 9px; border: 0; border-radius: 6px; background: transparent; color: #aaa79e; text-align: left; }
 .illustration-mode-menu button:hover, .illustration-mode-menu button[aria-checked="true"] { background: #2b271d; color: #f1e6c9; }
 .illustration-mode-menu button:focus-visible { outline: 2px solid #d7c18d; outline-offset: -2px; }
@@ -673,10 +677,13 @@ label {
 .reasoning-effort-quick-menu button:hover,
 .reasoning-effort-quick-menu button[aria-checked="true"] { background: #2b271d; color: #f1e6c9; }
 .reasoning-effort-quick-menu button:focus-visible { outline: 2px solid #d7c18d; outline-offset: -2px; }
+.reasoning-effort-quick-menu.closing { animation: theme-menu-out var(--motion-exit) var(--motion-exit-ease) forwards; }
 
 .composer-assets-menu { flex: none; }
 .composer-assets-menu-surface { position: fixed; z-index: 32; inset: 0; display: grid; place-items: end center; padding: max(18px, env(safe-area-inset-top)) 0 0; background: rgba(6, 6, 5, 0.56); animation: overlay-in 180ms ease-out; }
 .composer-assets-menu-dialog { width: min(100%, 720px); overflow: hidden; border: 1px solid #484740; border-bottom: 0; border-radius: 14px 14px 0 0; background: #1b1b18; box-shadow: 0 22px 60px rgba(0, 0, 0, 0.46); animation: sheet-in 260ms cubic-bezier(0.16, 1, 0.3, 1); }
+.composer-assets-menu-surface.closing { animation: overlay-out var(--motion-exit) var(--motion-exit-ease) forwards; }
+.composer-assets-menu-surface.closing .composer-assets-menu-dialog { animation: sheet-out var(--motion-exit) var(--motion-exit-ease) forwards; }
 .composer-assets-menu-dialog > header { min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 12px 12px 18px; border-bottom: 1px solid #33332f; }
 .composer-assets-menu-dialog h2 { margin: 0; color: #f2f0e9; font-size: 17px; }
 .composer-assets-menu-dialog p { margin: 4px 0 0; color: #99968d; font-size: 11px; }
@@ -964,7 +971,7 @@ label {
 .primary-button:hover, .save-button:hover { background: #ead39d; }
 .primary-button:disabled, .save-button:disabled { background: #45443f; color: #7a7871; }
 
-.settings-content { flex: 1; min-height: 0; padding: 18px 18px max(22px, env(safe-area-inset-bottom)); overflow-y: auto; }
+.settings-content { flex: 1; min-height: 0; padding: 18px 18px max(22px, env(safe-area-inset-bottom)); overflow-y: auto; animation: settings-page-in var(--motion-panel) var(--motion-enter-ease); }
 .settings-section + .settings-section { margin-top: 24px; padding-top: 20px; border-top: 1px solid #30302c; }
 .settings-section h3 { margin: 0 0 12px; color: #e4e1d8; font-size: 13px; letter-spacing: -0.01em; }
 .control-heading { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; color: #cbc8be; font-size: 12px; font-weight: 650; }
@@ -1021,7 +1028,8 @@ label {
 .illustration-style-pixel-art { background: #8a77a8; }
 .illustration-style-custom { background: #a18b52; }
 
-.custom-style-editor { display: grid; gap: 8px; margin-top: 8px; padding: 11px; border: 1px solid #3f3e38; border-radius: 9px; background: #171715; }
+.custom-style-editor { display: grid; gap: 8px; margin-top: 8px; padding: 11px; border: 1px solid #3f3e38; border-radius: 9px; background: #171715; max-height: 0; opacity: 0; overflow: hidden; padding-top: 0; padding-bottom: 0; margin-top: 0; transition: max-height var(--motion-panel) var(--motion-enter-ease), opacity var(--motion-panel) var(--motion-enter-ease), padding var(--motion-panel) var(--motion-enter-ease), margin var(--motion-panel) var(--motion-enter-ease); }
+.custom-style-editor--open { max-height: 260px; opacity: 1; padding: 11px; margin-top: 8px; }
 .custom-style-editor label { color: #aaa79e; font-size: 11px; font-weight: 650; }
 .custom-style-editor textarea { width: 100%; min-height: 84px; resize: vertical; padding: 9px 10px; border: 1px solid #484740; border-radius: 8px; outline: 0; background: #11110f; color: #efede7; font-size: 12px; line-height: 1.55; }
 .custom-style-editor textarea:focus { border-color: #9e8c5e; box-shadow: 0 0 0 2px rgba(215, 193, 141, 0.12); }
@@ -1607,8 +1615,10 @@ label {
 @keyframes nested-sheet-in { from { transform: translateY(10px); } to { transform: translateY(0); } }
 @keyframes sheet-out { from { transform: translateY(0); opacity: 1; } to { transform: translateY(100%); opacity: 0.85; } }
 @keyframes theme-menu-in { from { transform: translateY(-4px); opacity: 0.7; } to { transform: translateY(0); opacity: 1; } }
+@keyframes theme-menu-out { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-4px); opacity: 0.7; } }
 @keyframes toast-in { from { transform: translate(-50%, 16px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
 @keyframes message-in { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes settings-page-in { from { transform: translateX(12px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
 @media (max-width: 480px) {
   .story-meta { padding: 19px 17px 14px; }
