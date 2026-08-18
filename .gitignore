@@ -30,6 +30,9 @@ AGENTS.md
 .impeccable/
 PRODUCT.md
 
+# WorkBuddy project data
+.workbuddy/
+
 # Android local configuration and generated output
 android/.gradle/
 android/.idea/

@@ -88,6 +88,7 @@ export default function SettingsDrawer({
   const styleSelectRef = useRef<HTMLDivElement>(null)
   const [page, setPage] = useState<SettingsPage>('home')
   const [pageTransitionKey, setPageTransitionKey] = useState(0)
+  const [pageExiting, setPageExiting] = useState(false)
   const [openSelect, setOpenSelect] = useState<'theme' | 'style' | null>(null)
   const [customStyleEditorOpen, setCustomStyleEditorOpen] = useState(false)
   const [customStylePrompt, setCustomStylePrompt] = useState(activeCustomStylePrompt)
@@ -97,6 +98,26 @@ export default function SettingsDrawer({
   const styleMenuOpen = openSelect === 'style'
   const writingInstructionsPreview = activeWritingInstructions.trim().replace(/\s+/g, ' ')
   const globalWritingPreview = globalWritingInstructions?.trim().replace(/\s+/g, ' ')
+  const pendingPageRef = useRef<SettingsPage | null>(null)
+
+  function navigateToPage(next: SettingsPage) {
+    if (next === page) return
+    // 所有切换都先播当前页的退出动画，再切到目标页
+    pendingPageRef.current = next
+    setPageExiting(true)
+  }
+
+  useEffect(() => {
+    if (!pageExiting || !pendingPageRef.current) return
+    const timer = window.setTimeout(() => {
+      setPageExiting(false)
+      if (pendingPageRef.current) {
+        setPage(pendingPageRef.current)
+        pendingPageRef.current = null
+      }
+    }, 160) // 与 --motion-exit 匹配
+    return () => window.clearTimeout(timer)
+  }, [pageExiting])
 
   useEffect(() => {
     if (!open) {
@@ -114,9 +135,11 @@ export default function SettingsDrawer({
   useEffect(() => {
     if (page === 'home') return
     setOpenSelect(null)
-    setPageTransitionKey(k => k + 1)
-    closeButtonRef.current?.focus()
-  }, [page])
+    if (!pageExiting) {
+      setPageTransitionKey(k => k + 1)
+      closeButtonRef.current?.focus()
+    }
+  }, [page, pageExiting])
 
   useEffect(() => {
     if (!open || suspended) return
@@ -131,7 +154,7 @@ export default function SettingsDrawer({
         return
       }
       if (page !== 'home') {
-        setPage('home')
+        navigateToPage('home')
         return
       }
       onClose()
@@ -175,12 +198,12 @@ export default function SettingsDrawer({
             <h2 id="settings-drawer-title">{PAGE_TITLES[page]}</h2>
             <p>当前作品 · {projectTitle}</p>
           </div>
-          <button ref={closeButtonRef} className="icon-button" type="button" aria-label={page !== 'home' ? '返回设置' : '关闭设置'} onClick={() => { if (page !== 'home') setPage('home'); else onClose() }}>
+          <button ref={closeButtonRef} className="icon-button" type="button" aria-label={page !== 'home' ? '返回设置' : '关闭设置'} onClick={() => { if (page !== 'home') navigateToPage('home'); else onClose() }}>
             <X size={20} />
           </button>
         </header>
 
-        <div className="settings-content" key={pageTransitionKey}>
+        <div className={`settings-content${pageExiting ? ' settings-content--exiting' : ''}`} key={pageTransitionKey}>
           {page === 'home' && (
             <>
               <section className="settings-section" aria-labelledby="settings-app-appearance">
@@ -195,22 +218,22 @@ export default function SettingsDrawer({
               <section className="settings-section" aria-labelledby="settings-categories">
                 <h3 id="settings-categories">分类</h3>
                 <div className="settings-navigation-list">
-                  <button type="button" onClick={() => setPage('writing')}>
+                  <button type="button" onClick={() => navigateToPage('writing')}>
                     <ScrollText size={18} aria-hidden="true" />
                     <span><strong>写作</strong><small>创作设定、风格语料库与文风优化数据</small></span>
                     <ChevronRight size={17} aria-hidden="true" />
                   </button>
-                  <button type="button" onClick={() => setPage('memory')}>
+                  <button type="button" onClick={() => navigateToPage('memory')}>
                     <Brain size={18} aria-hidden="true" />
                     <span><strong>记忆与上下文</strong><small>上下文长度、本轮用量与摘要历史</small></span>
                     <ChevronRight size={17} aria-hidden="true" />
                   </button>
-                  <button type="button" onClick={() => setPage('appearance')}>
+                  <button type="button" onClick={() => navigateToPage('appearance')}>
                     <Brush size={18} aria-hidden="true" />
                     <span><strong>外观</strong><small>{getIllustrationStylePreset(activeIllustrationStyleId).label} · 插画与故事样式</small></span>
                     <ChevronRight size={17} aria-hidden="true" />
                   </button>
-                  <button type="button" onClick={() => setPage('providers')}>
+                  <button type="button" onClick={() => navigateToPage('providers')}>
                     <FileText size={18} aria-hidden="true" />
                     <span><strong>模型服务</strong><small>{providerSummary(providerSettings.text)}</small></span>
                     <ChevronRight size={17} aria-hidden="true" />
@@ -237,6 +260,21 @@ export default function SettingsDrawer({
                 <p className="settings-help">所有作品都会携带，本作品的局部设定可以临时覆盖。</p>
               </section>
 
+              <section className="settings-section" aria-labelledby="current-project-writing-settings">
+                <h3 id="current-project-writing-settings">当前作品</h3>
+                <div className="settings-navigation-list">
+                  <button type="button" onClick={onEditWritingInstructions}>
+                    <ScrollText size={18} aria-hidden="true" />
+                    <span>
+                      <strong>局部创作设定</strong>
+                      <small>{writingInstructionsPreview || '设置视角、文风、篇幅和长期禁忌'}</small>
+                    </span>
+                    <ChevronRight size={17} aria-hidden="true" />
+                  </button>
+                </div>
+                <p className="settings-help">每轮写作都会携带，本轮明确要求可以临时覆盖。</p>
+              </section>
+
               <section className="settings-section" aria-labelledby="writing-tools-settings">
                 <h3 id="writing-tools-settings">创作辅助</h3>
                 <div className="settings-navigation-stack">
@@ -251,21 +289,6 @@ export default function SettingsDrawer({
                     <ChevronRight size={17} aria-hidden="true" />
                   </button>
                 </div>
-              </section>
-
-              <section className="settings-section" aria-labelledby="current-project-writing-settings">
-                <h3 id="current-project-writing-settings">当前作品</h3>
-                <div className="settings-navigation-list">
-                  <button type="button" onClick={onEditWritingInstructions}>
-                    <ScrollText size={18} aria-hidden="true" />
-                    <span>
-                      <strong>局部创作设定</strong>
-                      <small>{writingInstructionsPreview || '设置视角、文风、篇幅和长期禁忌'}</small>
-                    </span>
-                    <ChevronRight size={17} aria-hidden="true" />
-                  </button>
-                </div>
-                <p className="settings-help">每轮写作都会携带，本轮明确要求可以临时覆盖。</p>
               </section>
             </>
           )}
