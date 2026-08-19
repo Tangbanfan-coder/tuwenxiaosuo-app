@@ -79,6 +79,8 @@ export interface BuildContextBudgetPlanInput {
   userMessage: string
   /** The exact serialized context system-message content sent to the provider, when available. */
   serializedContext?: string
+  /** Pre-computed token count for `serializedContext`; avoids re-encoding the longest string when the caller already measured it (e.g. for contextRetainedTokens). */
+  serializedContextTokens?: number
   /**
    * The untrimmed, normal-context demand measured with the active tokenizer.
    * When absent, the serialized context is its own demand for compatibility
@@ -153,9 +155,44 @@ const CONTEXT_BUDGET_SECTION_LABELS: Record<ContextBudgetSectionKey, string> = {
   userMessage: '用户消息',
 }
 
+const TOKEN_COUNT_CACHE_LIMIT = 4096
+const tokenCountCache = new Map<string, number>()
+
+/**
+ * Token counts are deterministic per (tokenizer behavior, text): the shared
+ * o200k_base encoder is a singleton and the fallback paths are pure char
+ * math. Caching by `source + text` collapses repeated measures inside a
+ * single turn (a flexible section's allowance measure plus the matching
+ * measure inside truncateTextToBudget, the two build passes,
+ * serialized-context re-count) and across turns for unchanged history,
+ * without coupling to estimator instance identity.
+ *
+ * Assumption: `source` uniquely identifies the tokenize behavior. True for
+ * the three built-in estimators ('o200k_base' / 'chars-per-token' /
+ * 'conservative'). A future registerTokenEstimator adapter must not reuse an
+ * existing `source` string unless its token counts are provably identical,
+ * or the cache would return counts from the other tokenizer.
+ */
 export function estimatedTokenCount(estimator: ResolvedTokenEstimator, text: string) {
+  if (!text) return 0
+  const cacheKey = `${estimator.source}\u0000${text}`
+  const cached = tokenCountCache.get(cacheKey)
+  if (cached !== undefined) {
+    // Refresh insertion order: Map.set leaves an existing key in place, so a
+    // plain get+return degrades eviction to FIFO and would drop stable
+    // history (re-accessed every turn) in favor of one-off long strings.
+    tokenCountCache.delete(cacheKey)
+    tokenCountCache.set(cacheKey, cached)
+    return cached
+  }
   const count = estimator.estimator.estimate(text)
-  return Number.isFinite(count) && count > 0 ? Math.ceil(count) : 0
+  const value = Number.isFinite(count) && count > 0 ? Math.ceil(count) : 0
+  if (tokenCountCache.size >= TOKEN_COUNT_CACHE_LIMIT) {
+    const firstKey = tokenCountCache.keys().next().value
+    if (firstKey !== undefined) tokenCountCache.delete(firstKey)
+  }
+  tokenCountCache.set(cacheKey, value)
+  return value
 }
 
 export function buildContextBudgetPlan(input: BuildContextBudgetPlanInput): ContextBudgetPlan {
@@ -177,9 +214,10 @@ export function buildContextBudgetPlan(input: BuildContextBudgetPlanInput): Cont
     .filter((section) => section.key !== 'systemPrompt' && section.key !== 'userMessage')
     .reduce((sum, section) => sum + section.tokens, 0)
   const serializedContext = input.serializedContext
-  const serializedContextTokens = serializedContext === undefined
-    ? rawContextTokens
-    : estimatedTokenCount(input.estimator, serializedContext)
+  const serializedContextTokens = input.serializedContextTokens
+    ?? (serializedContext === undefined
+      ? rawContextTokens
+      : estimatedTokenCount(input.estimator, serializedContext))
   const systemPromptTokens = rawSectionTokens.find((section) => section.key === 'systemPrompt')?.tokens ?? 0
   const userMessageTokens = rawSectionTokens.find((section) => section.key === 'userMessage')?.tokens ?? 0
   const windowTokens = Math.max(0, Math.floor(input.windowTokens))
