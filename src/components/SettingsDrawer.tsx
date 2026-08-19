@@ -8,6 +8,7 @@ import type { AppearanceMode, ContextBudget, IllustrationStylePresetId, ThemePre
 import type { ProviderConfig, ProviderSettings, ProviderSlot } from '../providers/types'
 import type { ContextBudgetPlan } from '../providers/writing'
 import { usePresence } from '../hooks/usePresence'
+import { TokenEstimatorProbe } from './TokenEstimatorProbe'
 
 interface Props {
   open: boolean
@@ -240,6 +241,8 @@ export default function SettingsDrawer({
                   </button>
                 </div>
               </section>
+
+              <TokenEstimatorProbe />
             </>
           )}
 

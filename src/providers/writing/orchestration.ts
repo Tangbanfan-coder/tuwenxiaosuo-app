@@ -4,30 +4,18 @@ import {
   listRetrievableProjectParagraphs,
   loadProjectScenes,
 } from '../../data/storyDatabase'
-import { resolveTokenEstimator } from '../tokenEstimator'
 import type { HttpTransport, ProviderConfig } from '../types'
 import { normalizeBaseUrl } from '../openAiCompatible'
 import { resolveCapabilities, resolveWritingStructuredOutput } from '../providerCapabilities'
 import { buildChatCompletionPayload, extractTextResponse, resolveTextTransport } from '../chatCompatibility'
 import { BigramBm25Retriever, type Retriever } from '../retriever'
-import {
-  assertContextCapacity,
-  buildContextBudgetPlan,
-  contextCompressionStageForPressure,
-  contextPlanForRequest,
-  contextPressureRatioForDemand,
-  estimatedTokenCount,
-  type ContextBudgetPlan,
-} from './budget'
-import {
-  buildParagraphRetrievalQuery,
-  CONTEXT_COMPRESSION_PROFILES,
-  buildProjectContextForTokenBudget,
-  buildUntrimmedProjectContextForDemand,
-} from './context'
+import { assertContextCapacity, type ContextBudgetPlan } from './budget'
+import { buildParagraphRetrievalQuery, CONTEXT_COMPRESSION_PROFILES } from './context'
 import { systemPromptForIllustrationMode } from './prompt'
 import { parseWritingResult, writingResponseFormatForIllustrationMode } from './result'
 import { retrieveStyleExamples } from './styleCorpus'
+import { computeWritingTurnContext } from './writingTurnContext'
+import { sendPrepareToWorker } from './writingTurnWorker'
 
 const defaultParagraphRetriever = new BigramBm25Retriever()
 
@@ -98,11 +86,6 @@ async function prepareWritingTurnContext(
   config: ProviderConfig,
   options: GenerateWritingTurnOptions,
 ): Promise<PreparedWritingTurnContext> {
-  const contextBudget = workspace.project.contextBudget ?? 'standard'
-  const systemPrompt = systemPromptForIllustrationMode(resolveIllustrationMode(workspace.project))
-  const estimator = resolveTokenEstimator({ protocol: config.protocol, providerId: config.id, model: config.model, tokenizerStrategy: resolveCapabilities(config).tokenizerStrategy })
-  const initialPlan = contextPlanForRequest(config, contextBudget, userRequest, estimator, systemPrompt)
-
   const [storedScenes, storedParagraphs, preferenceSignals, styleExamples] = await Promise.all([
     loadProjectScenes(workspace.project.id),
     listRetrievableProjectParagraphs(workspace.project.id),
@@ -129,52 +112,27 @@ async function prepareWritingTurnContext(
     paragraphs,
     topK: CONTEXT_COMPRESSION_PROFILES.normal.retrievalTopK,
   })
-  // Measure the rich, untrimmed normal context before deciding which material
-  // to tighten. This is intentionally based on tokenizer output, never text
-  // length or the already-trimmed final payload.
-  const rawContext = buildUntrimmedProjectContextForDemand(
+  const input = {
     workspace,
     scenes,
-    userRequest,
-    estimator,
     retrievedParagraphs,
-    [],
-    styleExamples.map((item) => item.fragment),
-    { excludeUserMessageId: options.excludeUserMessageId, preferenceSignals },
-  )
-  const contextDemandTokens = estimatedTokenCount(estimator, `当前作品资料：${rawContext.context}`)
-  const compressionStage = contextCompressionStageForPressure(
-    contextPressureRatioForDemand(contextDemandTokens, initialPlan.contextContentBudgetTokens),
-  )
-  const { context, rulesTruncated, contextSections } = buildProjectContextForTokenBudget(
-    workspace,
-    scenes,
-    initialPlan.contextContentBudgetTokens,
+    preferenceSignals,
+    styleCorpusFragments: styleExamples.map((item) => item.fragment),
+    config,
     userRequest,
-    estimator,
-    retrievedParagraphs,
-    { compressionStage, preferenceSignals, styleCorpusFragments: styleExamples.map((item) => item.fragment), excludeUserMessageId: options.excludeUserMessageId },
-  )
-  const contextMessage = `当前作品资料：${context}`
-  const finalPlan = buildContextBudgetPlan({
-    windowTokens: initialPlan.windowTokens,
-    contextBudget,
-    outputReserveTokens: initialPlan.outputReserveTokens,
-    safetyMarginTokens: initialPlan.safetyMarginTokens,
-    systemPrompt,
-    projectWorkspace: contextSections.projectWorkspace,
-    coreMemory: contextSections.coreMemory,
-    timelineRetrievedContext: contextSections.timelineRetrievedContext,
-    recentMessages: contextSections.recentMessages,
-    feedback: contextSections.feedback,
-    userMessage: userRequest,
-    serializedContext: contextMessage,
-    contextDemandTokens,
-    contextRetainedTokens: estimatedTokenCount(estimator, contextMessage),
-    estimator,
-  })
-
-  return { initialPlan, finalPlan, contextMessage, rulesTruncated, styleFragmentIds: styleExamples.map((item) => item.fragment.id) }
+    excludeUserMessageId: options.excludeUserMessageId,
+  }
+  // Prefer the worker so the tokenizer-bound computation stays off the main
+  // thread. Falls back to in-thread computeWritingTurnContext when the worker
+  // is unavailable (capability miss) or crashes mid-request (rebuilt next call).
+  try {
+    const workerResult = await sendPrepareToWorker(input)
+    if (workerResult) return workerResult
+  } catch {
+    // Transient worker failure: this request falls back to main thread.
+    // Worker instance is rebuilt on next call; capability is NOT downgraded.
+  }
+  return computeWritingTurnContext(input)
 }
 
 /**
