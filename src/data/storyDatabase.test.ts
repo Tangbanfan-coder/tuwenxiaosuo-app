@@ -3,7 +3,7 @@ import Dexie from 'dexie'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Chapter, ConversationMessage, FeedbackTargetInput, StoryProject, SummaryVersion, UpsertFeedbackInput, WritingProseResult, WritingSceneNotes, WritingTurnResult } from '../domain/models'
 import { collectOpenForeshadowings } from '../domain/foreshadowing'
-import { createParagraphFingerprint, normalizeText } from '../domain/paragraphs'
+import { createParagraphFingerprint, hasWritingContentOverlap, normalizeText } from '../domain/paragraphs'
 import { PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
 import {
   StoryDatabase,
@@ -235,6 +235,13 @@ describe('paragraph fingerprint', () => {
     expect(normalizeText(withFormatting)).toBe(canonical)
     expect(createParagraphFingerprint(withFormatting)).toBe(createParagraphFingerprint(canonical))
     expect(createParagraphFingerprint(' \t\n ')).toBe(hashText(''))
+  })
+
+  it('rejects a long replaced turn even when a candidate prefixes a short lead-in', () => {
+    const replaced = ['旧版正文第一段。'.repeat(10), '旧版正文第二段。'].join('\n\n')
+    const existingChapter = `${replaced}\n\n章节尾部哨兵。`
+    const generated = ['模型先说明几句。', replaced, '这是追加的新稿。']
+    expect(hasWritingContentOverlap(existingChapter, generated, replaced.split('\n\n'))).toBe(true)
   })
 })
 
@@ -851,6 +858,26 @@ describe('paragraph persistence', () => {
     expect(messageParagraphs.every((paragraph) => paragraph.messageId === proseMessage?.id)).toBe(true)
   })
 
+  it('rejects a continuation that repeats the existing chapter prose before appending anything', async () => {
+    const repeated = '这是一段已经写入章节的旧正文，用来验证普通续写不会再次追加相同内容。'.repeat(4)
+    const [firstUser, firstNotice] = await beginWritingTurn(project.id, '先写入旧正文', false)
+    await completeWritingTurn(project.id, firstUser.id, firstNotice.id, {
+      ...writingResultWithSceneNotes(sceneNotes(), 'new', [repeated]),
+    }, false)
+    const chapterBefore = (await storyDatabase.chapters.where('projectId').equals(project.id).first())
+    if (!chapterBefore) throw new Error('预期已创建章节')
+
+    const [secondUser, secondNotice] = await beginWritingTurn(project.id, '继续写作', false)
+    await expect(completeWritingTurn(project.id, secondUser.id, secondNotice.id, {
+      ...writingResultWithSceneNotes(sceneNotes(), 'continue', [repeated]),
+    }, false)).rejects.toThrow('生成内容与已有正文高度重合')
+
+    expect(await storyDatabase.chapters.get(chapterBefore.id)).toEqual(chapterBefore)
+    expect(await storyDatabase.messages.where('projectId').equals(project.id).filter((message) => message.kind === 'prose').count()).toBe(1)
+    expect(await storyDatabase.scenes.where('projectId').equals(project.id).count()).toBe(1)
+    expect(await storyDatabase.messages.get(secondNotice.id)).toMatchObject({ status: 'pending' })
+  })
+
   it('rolls the prose message back when its paragraph write fails', async () => {
     const [userMessage, notice] = await beginWritingTurn(project.id, '请开始写作', false)
     const paragraphWrite = vi.spyOn(storyDatabase.paragraphs, 'bulkPut').mockRejectedValueOnce(new Error('paragraph write failed'))
@@ -1224,6 +1251,28 @@ describe('latest prose regeneration candidates', () => {
     expect(await storyDatabase.feedback.where('messageId').equals(target.prose.id).count()).toBe(0)
     expect(await storyDatabase.preferenceSignals.where('feedbackId').equals(feedback.id).count()).toBe(0)
     expect((await getWritingCandidate(project.id, target.prose.turnId!))).toBeUndefined()
+  })
+
+  it('rejects a regeneration candidate that prefixes the original turn before adding new prose', async () => {
+    const target = await seedLatestTurnWithIllustration()
+    const originalParagraphs = target.prose.paragraphs ?? []
+    await expect(saveWritingCandidate({
+      projectId: project.id,
+      turnId: target.prose.turnId!,
+      proseMessageId: target.prose.id,
+      chapterId: target.chapter.id,
+      baseChapterHash: target.baseChapterHash,
+      baseChapterContent: target.baseChapterContent,
+      sourceUserText: target.user.text!,
+      result: {
+        ...writingResult,
+        chapterAction: 'continue',
+        paragraphs: [...originalParagraphs, '模型在旧正文后追加的新段。'],
+      },
+    })).rejects.toThrow('生成内容与已有正文高度重合')
+
+    expect(await getWritingCandidate(project.id, target.prose.turnId!)).toBeUndefined()
+    expect(await storyDatabase.writingCandidates.where('projectId').equals(project.id).count()).toBe(0)
   })
 
   it('rejects a stale candidate without overwriting manual chapter changes', async () => {

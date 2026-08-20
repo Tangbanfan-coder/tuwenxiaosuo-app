@@ -299,6 +299,9 @@ function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEva
   const [selectedVerdict, setSelectedVerdict] = useState<FeedbackVerdict>('up')
   const [storedParagraphs, setStoredParagraphs] = useState<StoredParagraph[]>([])
   const [rewriteParagraph, setRewriteParagraph] = useState<StoredParagraph>()
+  const [rewriteOpen, setRewriteOpen] = useState(false)
+  const rewriteTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const rewriteCloseRequestedRef = useRef(false)
 
   const refreshFeedback = useCallback(async () => {
     setLoading(true)
@@ -330,12 +333,36 @@ function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEva
     void refreshFeedback()
   }
 
+  function openRewrite(paragraph: StoredParagraph, trigger: HTMLButtonElement) {
+    rewriteTriggerRef.current = trigger
+    rewriteCloseRequestedRef.current = false
+    setRewriteParagraph(paragraph)
+    setRewriteOpen(true)
+  }
+
+  function requestCloseRewrite() {
+    if (!rewriteParagraph || !rewriteOpen || rewriteCloseRequestedRef.current) return
+    rewriteCloseRequestedRef.current = true
+    onProseEvaluation?.({ type: 'rewrite_kept_original', message, paragraph: rewriteParagraph })
+    setRewriteOpen(false)
+  }
+
+  function finishCloseRewrite() {
+    setRewriteParagraph(undefined)
+    rewriteCloseRequestedRef.current = false
+    window.setTimeout(() => {
+      const trigger = rewriteTriggerRef.current
+      if (trigger?.isConnected) trigger.focus()
+      rewriteTriggerRef.current = null
+    }, 0)
+  }
+
   return (
     <article className="story-prose">
       {message.paragraphs?.map((paragraph, index) => {
         const stored = storedParagraphs.find((item) => item.index === index && item.text === paragraph)
         const issueCount = stored?.styleIssues?.length ?? 0
-        return <div className="prose-paragraph" key={`${message.id}-${index}`}><p>{paragraph}</p>{issueCount > 0 && <button className="prose-optimize-trigger" type="button" aria-label={`优化第 ${index + 1} 段，${issueCount} 个建议`} onClick={() => { if (stored) onProseEvaluation?.({ type: 'rewrite_opened', message, paragraph: stored }); setRewriteParagraph(stored) }}><WandSparkles size={14} />可优化 {issueCount}</button>}</div>
+        return <div className="prose-paragraph" key={`${message.id}-${index}`}><p>{paragraph}</p>{issueCount > 0 && <button className="prose-optimize-trigger" type="button" aria-label={`优化第 ${index + 1} 段，${issueCount} 个建议`} onClick={(event) => { if (!stored) return; openRewrite(stored, event.currentTarget); onProseEvaluation?.({ type: 'rewrite_opened', message, paragraph: stored }) }}><WandSparkles size={14} />可优化 {issueCount}</button>}</div>
       })}
       <div className="message-feedback-actions" aria-label="正文反馈">
         <button
@@ -385,27 +412,77 @@ function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEva
           onAnalyzeFeedbackPreference={onAnalyzeFeedbackPreference}
         />
       )}
-      {rewriteParagraph && <RewritePanel message={message} paragraph={rewriteParagraph} onClose={() => { onProseEvaluation?.({ type: 'rewrite_kept_original', message, paragraph: rewriteParagraph }); setRewriteParagraph(undefined) }} onRewrite={onRewriteParagraph} onApply={async (rewrittenText) => { await onApplyRewrite?.({ message, paragraph: rewriteParagraph, rewrittenText }); setRewriteParagraph(undefined) }} />}
+      {rewriteParagraph && <RewritePanel open={rewriteOpen} message={message} paragraph={rewriteParagraph} onClose={requestCloseRewrite} onExited={finishCloseRewrite} onRewrite={onRewriteParagraph} onApply={async (rewrittenText) => { await onApplyRewrite?.({ message, paragraph: rewriteParagraph, rewrittenText }); setRewriteOpen(false); rewriteCloseRequestedRef.current = true }} />}
     </article>
   )
 }
 
-function RewritePanel({ message, paragraph, onClose, onRewrite, onApply }: { message: ConversationMessage; paragraph: StoredParagraph; onClose: () => void; onRewrite?: (input: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) => Promise<string>; onApply: (text: string) => Promise<void> }) {
+function RewritePanel({ open, message, paragraph, onClose, onExited, onRewrite, onApply }: { open: boolean; message: ConversationMessage; paragraph: StoredParagraph; onClose: () => void; onExited: () => void; onRewrite?: (input: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) => Promise<string>; onApply: (text: string) => Promise<void> }) {
   const [strength, setStrength] = useState<RewriteStrength>('balanced')
   const [suggestion, setSuggestion] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [applying, setApplying] = useState(false)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const closeRequestedRef = useRef(false)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const { present, closing } = usePresence(open, onExited, 220)
   const issues: ProseStyleIssue[] = paragraph.styleIssues ?? []
-  async function generate() { if (!onRewrite) return; setBusy(true); setError(''); try { setSuggestion(await onRewrite({ message, paragraph, strength })) } catch (cause) { setError(cause instanceof Error ? cause.message : '建议稿生成失败') } finally { setBusy(false) } }
-  return <div className="rewrite-panel" role="dialog" aria-label="段落优化建议">
-    <header><strong>段落优化</strong><button className="feedback-close" type="button" aria-label="关闭段落优化" onClick={onClose}><X size={16} /></button></header>
-    <div className="rewrite-issues">{issues.map((issue) => <span key={issue.ruleId}>{issue.explanation}</span>)}</div>
-    <div className="rewrite-strength" role="radiogroup" aria-label="改写强度">{([['light','轻度'],['balanced','均衡'],['strong','强力']] as const).map(([value,label]) => <button key={value} type="button" role="radio" aria-checked={strength === value} disabled={busy || applying} onClick={() => { setStrength(value); setSuggestion(''); setError('') }}>{label}</button>)}</div>
-    <div className="rewrite-comparison"><section><h4>原文</h4><p>{paragraph.text}</p></section><section><h4>建议稿</h4>{suggestion ? <p>{suggestion}</p> : <p className="feedback-hint">生成后会显示在这里。</p>}</section></div>
-    {error && <p className="feedback-error" role="alert">{error}</p>}
-    <footer><button type="button" disabled={busy || applying} onClick={onClose}>保留原文</button>{suggestion ? <button className="primary" type="button" disabled={busy || applying} onClick={() => void (async () => { setApplying(true); setError(''); try { await onApply(suggestion) } catch (cause) { setError(cause instanceof Error ? cause.message : '建议稿应用失败') } finally { setApplying(false) } })()}>{applying ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{applying ? '应用中…' : '采用建议稿'}</button> : <button className="primary" type="button" disabled={busy || applying || !onRewrite} onClick={() => void generate()}>{busy ? <LoaderCircle className="spin" size={16} /> : <WandSparkles size={16} />}生成建议稿</button>}</footer>
-  </div>
+  useEffect(() => {
+    if (!open) return
+    closeRequestedRef.current = false
+    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || closeRequestedRef.current) return
+      event.preventDefault()
+      closeRequestedRef.current = true
+      onCloseRef.current()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.clearTimeout(focusTimer)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  if (!present) return null
+
+  function requestClose() {
+    if (closeRequestedRef.current) return
+    closeRequestedRef.current = true
+    onClose()
+  }
+
+  async function generate() {
+    if (!onRewrite || busy || applying) return
+    setBusy(true)
+    setError('')
+    try { setSuggestion(await onRewrite({ message, paragraph, strength })) } catch (cause) { setError(cause instanceof Error ? cause.message : '建议稿生成失败') } finally { setBusy(false) }
+  }
+
+  const panel = (
+    <div
+      className={`rewrite-backdrop${closing ? ' closing' : ''}`}
+      role="presentation"
+      onMouseDown={(event) => { if (event.currentTarget === event.target) requestClose() }}
+      onClick={(event) => { if (event.currentTarget === event.target) requestClose() }}
+    >
+      <section className="rewrite-panel rewrite-sheet" role="dialog" aria-modal="true" aria-label="段落优化建议" aria-busy={busy || applying}>
+        <div className="rewrite-sheet-handle" aria-hidden="true" />
+        <header className="rewrite-sheet-header"><strong>段落优化</strong><button ref={closeButtonRef} className="feedback-close" type="button" aria-label="关闭段落优化" onClick={requestClose}><X size={16} /></button></header>
+        <div className="rewrite-sheet-content">
+          <div className="rewrite-issues">{issues.map((issue) => <span key={issue.ruleId}>{issue.explanation}</span>)}</div>
+          <div className="rewrite-strength" role="radiogroup" aria-label="改写强度">{([['light','轻度'],['balanced','均衡'],['strong','强力']] as const).map(([value,label]) => <button key={value} type="button" role="radio" aria-checked={strength === value} disabled={busy || applying} onClick={() => { setStrength(value); setSuggestion(''); setError('') }}>{label}</button>)}</div>
+          <div className="rewrite-comparison"><section><h4>原文</h4><p>{paragraph.text}</p></section><section><h4>建议稿</h4>{suggestion ? <p>{suggestion}</p> : <p className="feedback-hint">生成后会显示在这里。</p>}</section></div>
+          {error && <p className="feedback-error" role="alert">{error}</p>}
+        </div>
+        <footer><button type="button" disabled={busy || applying} onClick={requestClose}>保留原文</button>{suggestion ? <button className="primary" type="button" disabled={busy || applying} onClick={() => void (async () => { setApplying(true); setError(''); try { await onApply(suggestion); setApplying(false) } catch (cause) { setError(cause instanceof Error ? cause.message : '建议稿应用失败'); setApplying(false) } })()}>{applying ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{applying ? '应用中…' : '采用建议稿'}</button> : <button className="primary" type="button" disabled={busy || applying || !onRewrite} onClick={() => void generate()}>{busy ? <LoaderCircle className="spin" size={16} /> : <WandSparkles size={16} />}生成建议稿</button>}</footer>
+      </section>
+    </div>
+  )
+
+  return createPortal(panel, document.querySelector('.story-stage') ?? document.querySelector('.app-shell') ?? document.body)
 }
 
 function FeedbackPanel({

@@ -39,7 +39,7 @@ import type {
 import { DEFAULT_ILLUSTRATION_STYLE_ID, getIllustrationStylePreset } from '../domain/illustrationStyles'
 import { resolveIllustrationReferences } from '../domain/illustrationReferences'
 import { materializeWritingSceneNotes, reconcileForeshadowing } from '../domain/foreshadowing'
-import { createParagraphFingerprint, hashText as hashTextImpl, normalizeText as normalizeParagraphText } from '../domain/paragraphs'
+import { createParagraphFingerprint, hasWritingContentOverlap, hashText as hashTextImpl, normalizeText as normalizeParagraphText } from '../domain/paragraphs'
 import { loadGlobalWritingInstructions } from '../providers/config'
 import { detectProseStyleIssues, PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
 
@@ -1279,13 +1279,46 @@ export type SaveWritingCandidateInput = Omit<WritingCandidate, 'id' | 'status' |
 export async function saveWritingCandidate(input: SaveWritingCandidateInput) {
   const now = Date.now()
   const candidate: WritingCandidate = { ...input, id: createId('candidate'), status: 'ready', createdAt: now, updatedAt: now }
-  await storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.writingCandidates], async () => {
+  await storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.chapters, storyDatabase.writingCandidates], async () => {
     const user = await storyDatabase.messages.where('projectId').equals(input.projectId)
       .filter((message) => message.kind === 'user' && message.turnId === input.turnId).first()
     const currentRequest = user?.pendingRevisionText ?? user?.text
     if (!user || !currentRequest || !input.sourceUserText || currentRequest !== input.sourceUserText) {
       throw new Error('发送内容已修改，请重新生成候选稿')
     }
+
+    // Read the replaced prose and its chapter in this same transaction as the
+    // candidate write.  A stale regeneration response must not be allowed to
+    // pass the user-text check while another tab changes the original turn or
+    // its chapter between validation and persistence.
+    const prose = await storyDatabase.messages.get(input.proseMessageId)
+    const chapter = await storyDatabase.chapters.get(input.chapterId)
+    const proseText = (prose?.paragraphs ?? []).join('\n\n')
+    const currentBaseContent = prose && chapter && proseText
+      && chapter.content.endsWith(proseText)
+      ? chapter.content.slice(0, chapter.content.length - proseText.length).trimEnd()
+      : undefined
+    if (
+      !prose
+      || prose.projectId !== input.projectId
+      || prose.kind !== 'prose'
+      || prose.turnId !== input.turnId
+      || prose.chapterId !== input.chapterId
+      // Older persisted prose messages did not carry a status; treat the
+      // missing value as the legacy equivalent of ready.
+      || prose.status !== undefined && prose.status !== 'ready'
+      || !prose.paragraphs?.length
+      || !chapter
+      || chapter.projectId !== input.projectId
+      || hashTextImpl(chapter.content) !== input.baseChapterHash
+      || currentBaseContent !== input.baseChapterContent
+    ) {
+      throw new Error('章节正文已经变化，请保留当前版本并重新生成候选稿')
+    }
+    if (hasWritingContentOverlap(chapter.content, input.result.paragraphs, prose.paragraphs)) {
+      throw new Error('生成内容与已有正文高度重合，未追加。请调整要求后重试。')
+    }
+
     await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([input.projectId, input.turnId]).delete()
     await storyDatabase.writingCandidates.add(candidate)
   })
@@ -1951,10 +1984,7 @@ export async function completeWritingTurn(
       // copy of its tail. Exact paragraph and long normalized suffix matches
       // are rejected before any side effect in this transaction.
       if (!forceNewChapter && result.chapterAction === 'continue' && activeChapter?.content) {
-        const existing = normalizeParagraphText(activeChapter.content)
-        const generated = normalizeParagraphText(result.paragraphs.join('\n\n'))
-        const tail = existing.slice(-Math.min(existing.length, 1_200))
-        if (generated.length >= 80 && (existing.includes(generated) || tail.length >= 80 && generated.includes(tail))) {
+        if (hasWritingContentOverlap(activeChapter.content, result.paragraphs)) {
           throw new Error('生成内容与已有正文高度重合，未追加。请调整要求后重试。')
         }
       }
@@ -2089,6 +2119,9 @@ export async function adoptWritingCandidate(projectId: string, turnId: string) {
       const project = await storyDatabase.projects.get(projectId)
       if (!project) throw new Error('当前作品不存在')
       const result = candidate.result
+      if (hasWritingContentOverlap(target.chapter.content, result.paragraphs, target.prose.paragraphs ?? [])) {
+        throw new Error('生成内容与已有正文高度重合，未追加。请调整要求后重试。')
+      }
       const generatedSummary = result.chapterSummary?.trim() || undefined
       const chapterTitle = result.chapterTitle || target.chapter.title
       const chapterContent = [candidate.baseChapterContent.trim(), result.paragraphs.join('\n\n')].filter(Boolean).join('\n\n')

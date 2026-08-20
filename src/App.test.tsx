@@ -813,6 +813,53 @@ describe('prose feedback UI', () => {
     expect(screen.queryByRole('dialog', { name: '正文反馈面板' })).toBeNull()
   })
 
+  it('将段落优化建议放入全宽底部抽屉并在关闭后恢复触发按钮焦点', async () => {
+    const user = userEvent.setup()
+    const paragraph = {
+      id: 'paragraph-message-message-1-0', projectId: project.id, sourceType: 'message' as const,
+      messageId: proseMessage.id, chapterId: 'chapter-1', index: 0, text: proseMessage.paragraphs[0],
+      fingerprint: createParagraphFingerprint(proseMessage.paragraphs[0]), createdAt: 2,
+      styleIssues: [{ ruleId: 'stock-physical-reaction', category: 'stock-reaction' as const, severity: 'warning' as const, explanation: '动作反应过于模板化', rewriteGoal: '保留关键动作' }],
+    }
+    databaseMocks.listMessageParagraphsWithCurrentStyleIssues.mockResolvedValue([paragraph])
+    renderProse()
+    const trigger = await screen.findByRole('button', { name: '优化第 1 段，1 个建议' })
+    await user.click(trigger)
+
+    const dialog = await screen.findByRole('dialog', { name: '段落优化建议' })
+    expect(dialog.classList.contains('rewrite-sheet')).toBe(true)
+    expect(dialog.parentElement?.classList.contains('rewrite-backdrop')).toBe(true)
+    expect(dialog.closest('.story-prose')).toBeNull()
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: '关闭段落优化' })))
+
+    await user.click(screen.getByRole('button', { name: '关闭段落优化' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '段落优化建议' })).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(trigger), { timeout: 1000 })
+  })
+
+  it('生成中仍可用 Escape 关闭段落优化抽屉', async () => {
+    const user = userEvent.setup()
+    providerSettings.text = { ...providerSettings.text, baseUrl: 'https://api.test/v1', model: 'rewrite-model' }
+    const paragraph = {
+      id: 'paragraph-message-message-1-0', projectId: project.id, sourceType: 'message' as const,
+      messageId: proseMessage.id, chapterId: 'chapter-1', index: 0, text: proseMessage.paragraphs[0],
+      fingerprint: createParagraphFingerprint(proseMessage.paragraphs[0]), createdAt: 2,
+      styleIssues: [{ ruleId: 'stock-physical-reaction', category: 'stock-reaction' as const, severity: 'warning' as const, explanation: '动作反应过于模板化', rewriteGoal: '保留关键动作' }],
+    }
+    databaseMocks.listMessageParagraphsWithCurrentStyleIssues.mockResolvedValue([paragraph])
+    let resolveRewrite: (text: string) => void = () => undefined
+    writingMocks.rewriteProseParagraph.mockReturnValue(new Promise<string>((resolve) => { resolveRewrite = resolve }))
+    renderProse()
+    await user.click(await screen.findByRole('button', { name: '优化第 1 段，1 个建议' }))
+    await user.click(screen.getByRole('button', { name: /生成建议稿/ }))
+    const generateButton = screen.getByRole('button', { name: '生成建议稿' })
+    await waitFor(() => expect((generateButton as HTMLButtonElement).disabled).toBe(true))
+
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '段落优化建议' })).toBeNull())
+    resolveRewrite('后台完成的建议稿')
+  })
+
   it('可选择段落、填写点踩原因和说明，并提交稳定段落锚点', async () => {
     const user = userEvent.setup()
     databaseMocks.toggleFeedbackBatch.mockResolvedValue([
@@ -978,7 +1025,7 @@ describe('prose feedback UI', () => {
     await user.click(await screen.findByRole('button', { name: '优化第 1 段，1 个建议' }))
     await user.click(screen.getByRole('button', { name: '保留原文' }))
     expect(databaseMocks.applyParagraphRewrite).not.toHaveBeenCalled()
-    expect(screen.queryByRole('dialog', { name: '段落优化建议' })).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '段落优化建议' })).toBeNull())
   })
 
   it('切换强度清空旧建议，采用失败时保留面板并显示错误', async () => {
