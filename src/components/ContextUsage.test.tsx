@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -78,7 +78,8 @@ describe('ContextUsage', () => {
     render(<ContextUsage plan={plan()} state="ready" />)
 
     await user.click(screen.getByRole('button', { name: /上下文.*1,950.*14,500/ }))
-    expect(screen.getByRole('dialog', { name: '本轮上下文用量' })).toBeDefined()
+    // 弹层由 usePresence 管理：打开后下一帧才挂载，需异步等待
+    expect(await screen.findByRole('dialog', { name: '本轮上下文用量' })).toBeDefined()
     expect(screen.getByText('系统提示')).toBeDefined()
     expect(screen.getByText('项目/工作区')).toBeDefined()
     expect(screen.getByText('反馈（预留）')).toBeDefined()
@@ -92,7 +93,8 @@ describe('ContextUsage', () => {
     expect(contextUsageStyles).toContain(`scaleX(var(${CONTEXT_USAGE_SECTION_SCALE_PROPERTY}))`)
 
     await user.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull()
+    // 退出动画 180ms 期间弹层仍保留，需等待卸载
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull())
   })
 
   it('keeps the compact trigger inside the composer and supports the close button', async () => {
@@ -100,8 +102,9 @@ describe('ContextUsage', () => {
     const { container } = render(<ContextUsage plan={plan()} state="ready" />)
 
     await user.click(screen.getByRole('button', { name: /查看本轮上下文用量明细/ }))
-    await user.click(screen.getByRole('button', { name: '关闭上下文用量明细' }))
-    expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull()
+    await user.click(await screen.findByRole('button', { name: '关闭上下文用量明细' }))
+    // 退出动画 180ms 期间弹层仍保留，需等待卸载
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull())
     expect(container.querySelector('.context-usage-trigger')?.textContent).toContain('1.9k / 14.5k')
   })
 

@@ -78,9 +78,10 @@ describe('SettingsDrawer', () => {
     renderDrawer({ onOpenSummaryHistory })
 
     await user.click(screen.getByRole('button', { name: /记忆与上下文/ }))
-    expect(screen.getByRole('heading', { name: '记忆与上下文' })).toBeDefined()
-    expect(screen.getByText('上下文与记忆')).toBeDefined()
-    await user.click(screen.getByRole('button', { name: /摘要版本历史/ }))
+    // 页面切换带 160ms 退出动画，需等待目标页渲染完成
+    expect(await screen.findByRole('heading', { name: '记忆与上下文' })).toBeDefined()
+    expect(await screen.findByText('上下文与记忆')).toBeDefined()
+    await user.click(await screen.findByRole('button', { name: /摘要版本历史/ }))
     expect(onOpenSummaryHistory).toHaveBeenCalledTimes(1)
   })
 
@@ -96,13 +97,13 @@ describe('SettingsDrawer', () => {
     })
 
     await user.click(screen.getByRole('button', { name: /写作/ }))
-    expect(screen.getByRole('heading', { name: '写作' })).toBeDefined()
+    expect(await screen.findByRole('heading', { name: '写作' })).toBeDefined()
 
-    const globalHeading = screen.getByRole('heading', { name: '全局创作设定' })
+    const globalHeading = await screen.findByRole('heading', { name: '全局创作设定' })
     const globalSection = globalHeading.closest('section')
-    const toolsHeading = screen.getByRole('heading', { name: '创作辅助' })
+    const toolsHeading = await screen.findByRole('heading', { name: '创作辅助' })
     const toolsSection = toolsHeading.closest('section')
-    const localButton = screen.getByRole('button', { name: /局部创作设定/ })
+    const localButton = await screen.findByRole('button', { name: /局部创作设定/ })
     expect(globalSection?.querySelector('button')?.textContent).toContain('全局创作设定')
     expect(globalSection?.textContent).not.toContain('风格语料库')
     expect(globalSection?.textContent).not.toContain('文风优化数据')
@@ -116,8 +117,8 @@ describe('SettingsDrawer', () => {
     expect(onEditWritingInstructions).toHaveBeenCalledTimes(1)
 
     await user.click(screen.getByRole('button', { name: '返回设置' }))
-    expect(screen.getByRole('heading', { name: '设置' })).toBeDefined()
-    expect(screen.getByRole('button', { name: /模型服务/ })).toBeDefined()
+    expect(await screen.findByRole('heading', { name: '设置' })).toBeDefined()
+    expect(await screen.findByRole('button', { name: /模型服务/ })).toBeDefined()
   })
 
   it('opens the global style corpus from the writing page', async () => {
@@ -129,7 +130,9 @@ describe('SettingsDrawer', () => {
     })
 
     await user.click(screen.getByRole('button', { name: /写作/ }))
-    const button = screen.getByRole('button', { name: /风格语料库/ })
+    // 先等页面切换完成（home 入口卸载），避免 /风格语料库/ 匹配到 home 页"写作"入口
+    await screen.findByRole('heading', { name: '写作' })
+    const button = await screen.findByRole('button', { name: /风格语料库/ })
     expect(button.textContent).toContain('2 个来源 · 8 个片段')
     await user.click(button)
     expect(onOpenStyleCorpus).toHaveBeenCalledTimes(1)
@@ -140,14 +143,14 @@ describe('SettingsDrawer', () => {
     renderDrawer()
 
     await user.click(screen.getByRole('button', { name: /写作/ }))
-    expect(screen.getByRole('button', { name: /全局创作设定/ }).closest('.settings-navigation-list')).toBeNull()
-    expect(screen.getByRole('button', { name: /风格语料库/ }).closest('.settings-navigation-list')).toBeNull()
-    expect(screen.getByRole('button', { name: /文风优化数据/ }).closest('.settings-navigation-list')).toBeNull()
+    expect(await screen.findByRole('button', { name: /全局创作设定/ }).then((element) => element.closest('.settings-navigation-list'))).toBeNull()
+    expect(await screen.findByRole('button', { name: /风格语料库/ }).then((element) => element.closest('.settings-navigation-list'))).toBeNull()
+    expect(await screen.findByRole('button', { name: /文风优化数据/ }).then((element) => element.closest('.settings-navigation-list'))).toBeNull()
 
     await user.click(screen.getByRole('button', { name: '返回设置' }))
-    await user.click(screen.getByRole('button', { name: /记忆与上下文/ }))
-    expect(screen.getByRole('button', { name: /查看本轮上下文用量/ }).closest('.settings-navigation-list')).toBeNull()
-    expect(screen.getByRole('button', { name: /摘要版本历史/ }).closest('.settings-navigation-list')).toBeNull()
+    await user.click(await screen.findByRole('button', { name: /记忆与上下文/ }))
+    expect(await screen.findByRole('button', { name: /查看本轮上下文用量/ }).then((element) => element.closest('.settings-navigation-list'))).toBeNull()
+    expect(await screen.findByRole('button', { name: /摘要版本历史/ }).then((element) => element.closest('.settings-navigation-list'))).toBeNull()
   })
 
   it('shows the story theme selector inside the appearance page', async () => {
@@ -155,8 +158,8 @@ describe('SettingsDrawer', () => {
     renderDrawer()
 
     await user.click(screen.getByRole('button', { name: /外观/ }))
-    expect(screen.getByRole('heading', { name: '作品氛围' })).toBeDefined()
-    expect(screen.getByRole('button', { name: /中性纸墨/ })).toBeDefined()
+    expect(await screen.findByRole('heading', { name: '作品氛围' })).toBeDefined()
+    expect(await screen.findByRole('button', { name: /中性纸墨/ })).toBeDefined()
   })
 
   it('returns to the active category after an external settings page closes', async () => {
@@ -165,14 +168,14 @@ describe('SettingsDrawer', () => {
     const { rerender } = render(<SettingsDrawer {...props} />)
 
     await user.click(screen.getByRole('button', { name: /写作/ }))
-    expect(screen.getByRole('heading', { name: '写作' })).toBeDefined()
+    expect(await screen.findByRole('heading', { name: '写作' })).toBeDefined()
 
     rerender(<SettingsDrawer {...props} suspended />)
     expect(screen.getByRole('dialog', { hidden: true }).getAttribute('data-suspended')).toBe('true')
     rerender(<SettingsDrawer {...props} suspended={false} />)
 
-    expect(screen.getByRole('heading', { name: '写作' })).toBeDefined()
-    expect(screen.getByRole('button', { name: /局部创作设定/ })).toBeDefined()
+    expect(await screen.findByRole('heading', { name: '写作' })).toBeDefined()
+    expect(await screen.findByRole('button', { name: /局部创作设定/ })).toBeDefined()
   })
 
   it('opens provider settings from the model service page', async () => {
@@ -181,7 +184,7 @@ describe('SettingsDrawer', () => {
     renderDrawer({ onOpenProviderSettings })
 
     await user.click(screen.getByRole('button', { name: /模型服务/ }))
-    await user.click(screen.getByRole('button', { name: /图片模型/ }))
+    await user.click(await screen.findByRole('button', { name: /图片模型/ }))
     expect(onOpenProviderSettings).toHaveBeenCalledWith('image')
   })
 
@@ -191,9 +194,9 @@ describe('SettingsDrawer', () => {
     renderDrawer({ onClose })
 
     await user.click(screen.getByRole('button', { name: /外观/ }))
-    expect(screen.getByRole('heading', { name: '外观' })).toBeDefined()
+    expect(await screen.findByRole('heading', { name: '外观' })).toBeDefined()
     await user.keyboard('{Escape}')
-    expect(screen.getByRole('heading', { name: '设置' })).toBeDefined()
+    expect(await screen.findByRole('heading', { name: '设置' })).toBeDefined()
     expect(onClose).not.toHaveBeenCalled()
     await user.keyboard('{Escape}')
     expect(onClose).toHaveBeenCalledTimes(1)
