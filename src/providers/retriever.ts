@@ -67,7 +67,7 @@ export function tokenizeForBm25(text: string, includeHanUnigrams = false) {
   return tokens
 }
 
-function isUsableParagraph(paragraph: StoredParagraph): boolean {
+function hasUsableParagraphShape(paragraph: StoredParagraph): boolean {
   return Boolean(
     paragraph
     && (paragraph.sourceType === 'chapter' || paragraph.sourceType === 'message')
@@ -82,8 +82,23 @@ function isUsableParagraph(paragraph: StoredParagraph): boolean {
     && typeof paragraph.text === 'string'
     && paragraph.text.trim().length > 0
     && typeof paragraph.fingerprint === 'string'
-    && paragraph.fingerprint === createParagraphFingerprint(paragraph.text),
+    && paragraph.fingerprint.length > 0,
   )
+}
+
+/** 严格校验：结构 + fingerprint 与文本哈希一致。用于不可信输入（外部注入的 Retriever、测试构造段落）。 */
+export function isUsableParagraph(paragraph: StoredParagraph): boolean {
+  return hasUsableParagraphShape(paragraph) && paragraph.fingerprint === createParagraphFingerprint(paragraph.text)
+}
+
+/**
+ * 结构可用性校验（不重算指纹哈希）：用于段落来自本地 DB 的检索路径（写入
+ * 时 fingerprint 已权威计算并存库），避免每轮对全量段落做 O(文本长度) 的
+ * 归一化 + FNV-1a 重算——12000 段作品的哈希开销可观，会抵消增量收益。
+ * 保留 fingerprint 非空作为数据完整性底线。
+ */
+export function isUsableParagraphTrusted(paragraph: StoredParagraph): boolean {
+  return hasUsableParagraphShape(paragraph)
 }
 
 function termCounts(tokens: readonly string[]) {
@@ -145,6 +160,46 @@ function toRetrievedParagraph(paragraph: StoredParagraph, score: number): Retrie
   }
 }
 
+/**
+ * Synchronous core of BigramBm25Retriever.retrieve, extracted so the same
+ * filtering + scoring + truncation logic can run inside a Web Worker (with
+ * the ParagraphBm25Index incremental cache) and on the main-thread fallback
+ * path without duplicating behavior. Deterministic given the same input.
+ *
+ * trustFingerprint: 段落来自本地 DB 时跳过指纹哈希重算（与 worker 索引路径
+ * 的信任策略一致）；默认保持严格校验，BigramBm25Retriever 行为不变。
+ */
+export function retrieveParagraphsSync(
+  request: RetrievalRequest,
+  k1 = 1.2,
+  b = 0.75,
+  options: { trustFingerprint?: boolean } = {},
+): RetrievedParagraph[] {
+  const { query, paragraphs } = request
+  const isUsable = options.trustFingerprint ? isUsableParagraphTrusted : isUsableParagraph
+  const documents: Array<Bm25Document<StoredParagraph>> = []
+  for (const [sourceIndex, paragraph] of paragraphs.entries()) {
+    if (!isUsable(paragraph)) continue
+    documents.push({ value: paragraph, text: paragraph.text, sourceIndex })
+  }
+  const scored = scoreBigramBm25(query, documents, k1, b)
+
+  const topK = request.topK === undefined ? 5 : Math.max(0, Math.floor(request.topK))
+  const maxTotalCharacters = request.maxTotalCharacters === undefined
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, Math.floor(request.maxTotalCharacters))
+  const results: RetrievedParagraph[] = []
+  let usedCharacters = 0
+  for (const item of scored) {
+    if (results.length >= topK) break
+    const textLength = item.value.text.length
+    if (usedCharacters + textLength > maxTotalCharacters) continue
+    results.push(toRetrievedParagraph(item.value, item.score))
+    usedCharacters += textLength
+  }
+  return results
+}
+
 /** Zero-dependency BM25 retriever for the local paragraph store. */
 export class BigramBm25Retriever implements Retriever {
   constructor(
@@ -153,26 +208,6 @@ export class BigramBm25Retriever implements Retriever {
   ) {}
 
   async retrieve(request: RetrievalRequest): Promise<RetrievedParagraph[]> {
-    const documents: Array<Bm25Document<StoredParagraph>> = []
-    for (const [sourceIndex, paragraph] of request.paragraphs.entries()) {
-      if (!isUsableParagraph(paragraph)) continue
-      documents.push({ value: paragraph, text: paragraph.text, sourceIndex })
-    }
-    const scored = scoreBigramBm25(request.query, documents, this.k1, this.b)
-
-    const topK = request.topK === undefined ? 5 : Math.max(0, Math.floor(request.topK))
-    const maxTotalCharacters = request.maxTotalCharacters === undefined
-      ? Number.POSITIVE_INFINITY
-      : Math.max(0, Math.floor(request.maxTotalCharacters))
-    const results: RetrievedParagraph[] = []
-    let usedCharacters = 0
-    for (const item of scored) {
-      if (results.length >= topK) break
-      const textLength = item.value.text.length
-      if (usedCharacters + textLength > maxTotalCharacters) continue
-      results.push(toRetrievedParagraph(item.value, item.score))
-      usedCharacters += textLength
-    }
-    return results
+    return retrieveParagraphsSync(request, this.k1, this.b)
   }
 }

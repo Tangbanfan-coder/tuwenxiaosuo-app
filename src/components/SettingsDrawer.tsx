@@ -113,8 +113,12 @@ export default function SettingsDrawer({
     const timer = window.setTimeout(() => {
       setPageExiting(false)
       if (pendingPageRef.current) {
-        setPage(pendingPageRef.current)
+        const next = pendingPageRef.current
         pendingPageRef.current = null
+        // 目标页与进入动画 key 在同一批更新：避免先渲染旧 key 内容再递增
+        // key 导致二次挂载（会产生 detached DOM 竞态，UI 也会闪两下）。
+        setPageTransitionKey(k => k + 1)
+        setPage(next)
       }
     }, 160) // 与 --motion-exit 匹配
     return () => window.clearTimeout(timer)
@@ -137,7 +141,6 @@ export default function SettingsDrawer({
     if (page === 'home') return
     setOpenSelect(null)
     if (!pageExiting) {
-      setPageTransitionKey(k => k + 1)
       closeButtonRef.current?.focus()
     }
   }, [page, pageExiting])

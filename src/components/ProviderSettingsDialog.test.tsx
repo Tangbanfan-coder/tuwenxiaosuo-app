@@ -110,14 +110,16 @@ describe('ProviderSettingsDialog layering', () => {
     await waitFor(() => expect(secretStoreMocks.get).toHaveBeenCalled())
   })
 
-  it('hands the first frame from settings to the nested provider page without exposing the app below', () => {
+  it('hands the first frame from settings to the nested provider page without exposing the app below', async () => {
     const { container } = render(<SettingsProviderHandoff />)
 
     fireEvent.click(screen.getByRole('button', { name: /模型服务/ }))
+    // SettingsDrawer 页面切换带 160ms 退出动画，等 providers 页渲染后再进入
+    await waitFor(() => expect(screen.getByRole('button', { name: /文本模型/ })).toBeDefined())
     fireEvent.click(screen.getByRole('button', { name: /文本模型/ }))
 
     const settingsDrawer = container.querySelector('.settings-drawer')
-    const providerDialog = screen.getByRole('dialog', { name: '模型接口' })
+    const providerDialog = await screen.findByRole('dialog', { name: '模型接口' })
     expect(settingsDrawer?.getAttribute('data-suspended')).toBe('true')
     expect(container.querySelector('.settings-backdrop')).not.toBeNull()
     expect(providerDialog.classList.contains('nested-provider-dialog')).toBe(true)

@@ -8,16 +8,14 @@ import type { HttpTransport, ProviderConfig } from '../types'
 import { normalizeBaseUrl } from '../openAiCompatible'
 import { resolveCapabilities, resolveWritingStructuredOutput } from '../providerCapabilities'
 import { buildChatCompletionPayload, extractTextResponse, resolveTextTransport } from '../chatCompatibility'
-import { BigramBm25Retriever, type Retriever } from '../retriever'
+import type { Retriever } from '../retriever'
 import { assertContextCapacity, type ContextBudgetPlan } from './budget'
 import { buildParagraphRetrievalQuery, CONTEXT_COMPRESSION_PROFILES } from './context'
 import { systemPromptForIllustrationMode } from './prompt'
 import { parseWritingResult, writingResponseFormatForIllustrationMode } from './result'
 import { retrieveStyleExamples } from './styleCorpus'
-import { computeWritingTurnContext } from './writingTurnContext'
+import { computeWritingTurnContextWithRetrieval } from './writingTurnContext'
 import { sendPrepareToWorker } from './writingTurnWorker'
-
-const defaultParagraphRetriever = new BigramBm25Retriever()
 
 /** Lets a future semantic retriever replace BM25 without changing prompt data. */
 export interface GenerateWritingTurnOptions {
@@ -107,24 +105,32 @@ async function prepareWritingTurnContext(
       )
     ))
     : storedParagraphs
-  const retrievedParagraphs = await (options.retriever ?? defaultParagraphRetriever).retrieve({
-    query: buildParagraphRetrievalQuery(workspace, scenes, userRequest),
-    paragraphs,
-    topK: CONTEXT_COMPRESSION_PROFILES.normal.retrievalTopK,
-  })
+  const retrievalQuery = buildParagraphRetrievalQuery(workspace, scenes, userRequest)
+  const retrievalTopK = CONTEXT_COMPRESSION_PROFILES.normal.retrievalTopK
+  // Default retrieval (Bigram BM25 over all paragraphs) runs inside the worker
+  // with an incremental index; only an explicitly injected custom Retriever is
+  // called on the main thread so tests and future semantic retrieval keep the
+  // same injection seam. The two paths never both contribute to the input.
+  const injectedRetriever = options.retriever
+  const customRetrievedParagraphs = injectedRetriever
+    ? await injectedRetriever.retrieve({ query: retrievalQuery, paragraphs, topK: retrievalTopK })
+    : undefined
   const input = {
     workspace,
     scenes,
-    retrievedParagraphs,
     preferenceSignals,
     styleCorpusFragments: styleExamples.map((item) => item.fragment),
     config,
     userRequest,
     excludeUserMessageId: options.excludeUserMessageId,
+    ...(injectedRetriever
+      ? { retrievedParagraphs: customRetrievedParagraphs }
+      : { paragraphs, retrievalQuery, retrievalTopK }),
   }
-  // Prefer the worker so the tokenizer-bound computation stays off the main
-  // thread. Falls back to in-thread computeWritingTurnContext when the worker
-  // is unavailable (capability miss) or crashes mid-request (rebuilt next call).
+  // Prefer the worker so the retrieval + tokenizer-bound computation stays off
+  // the main thread. Falls back to in-thread computeWritingTurnContextWith
+  // Retrieval when the worker is unavailable (capability miss) or crashes
+  // mid-request (rebuilt next call).
   try {
     const workerResult = await sendPrepareToWorker(input)
     if (workerResult) return workerResult
@@ -132,7 +138,7 @@ async function prepareWritingTurnContext(
     // Transient worker failure: this request falls back to main thread.
     // Worker instance is rebuilt on next call; capability is NOT downgraded.
   }
-  return computeWritingTurnContext(input)
+  return computeWritingTurnContextWithRetrieval(input)
 }
 
 /**

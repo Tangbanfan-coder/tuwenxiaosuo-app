@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import ReasoningEffortQuickControl from './ReasoningEffortQuickControl'
@@ -15,16 +15,18 @@ describe('ReasoningEffortQuickControl', () => {
 
     const trigger = screen.getByRole('button', { name: '文本模型思考等级：自动' })
     await user.click(trigger)
-    await user.click(screen.getByRole('menuitemradio', { name: '高' }))
+    // 菜单由 usePresence 管理：打开后下一帧才挂载
+    await user.click(await screen.findByRole('menuitemradio', { name: '高' }))
     expect(onChange).toHaveBeenCalledWith('high')
-    expect(screen.queryByRole('menu')).toBeNull()
+    // 选中后菜单带退出动画，需等待卸载
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
 
     await user.click(trigger)
     await user.keyboard('{Escape}')
-    expect(screen.queryByRole('menu')).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
 
     await user.click(trigger)
     await user.click(screen.getByRole('button', { name: '外部' }))
-    expect(screen.queryByRole('menu')).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
   })
 })

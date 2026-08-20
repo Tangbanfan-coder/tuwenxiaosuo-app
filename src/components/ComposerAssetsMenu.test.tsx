@@ -16,7 +16,8 @@ describe('ComposerAssetsMenu', () => {
 
     const trigger = screen.getByRole('button', { name: '素材' })
     await user.click(trigger)
-    expect(screen.getByRole('dialog', { name: '添加素材' })).toBeDefined()
+    // 弹层由 usePresence 管理：打开后下一帧才挂载，需异步等待
+    expect(await screen.findByRole('dialog', { name: '添加素材' })).toBeDefined()
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: /人物资产/ })))
     await user.tab({ shift: true })
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '关闭素材菜单' }))
@@ -25,15 +26,16 @@ describe('ComposerAssetsMenu', () => {
     await user.tab()
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '关闭素材菜单' }))
     await user.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog', { name: '添加素材' })).toBeNull()
+    // 退出动画期间弹层仍保留，需等待卸载
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '添加素材' })).toBeNull())
     expect(document.activeElement).toBe(trigger)
 
     await user.click(trigger)
-    await user.click(screen.getByRole('button', { name: /人物资产/ }))
+    await user.click(await screen.findByRole('button', { name: /人物资产/ }))
     expect(onOpenCharacterAssets).toHaveBeenCalledOnce()
 
     await user.click(trigger)
-    await user.click(screen.getByRole('button', { name: /参考图/ }))
+    await user.click(await screen.findByRole('button', { name: /参考图/ }))
     expect(onOpenReferenceImage).toHaveBeenCalledOnce()
   })
 })
