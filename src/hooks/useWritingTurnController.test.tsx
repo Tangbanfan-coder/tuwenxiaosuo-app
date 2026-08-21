@@ -30,6 +30,35 @@ const writingMocks = vi.hoisted(() => ({
   markStyleCorpusFragmentsUsed: vi.fn(),
   parseBackgroundWritingResponse: vi.fn(),
   prepareBackgroundWritingRequest: vi.fn(),
+  previewWritingTurnBudget: vi.fn(async () => ({
+    estimator: { source: 'bpe', isFallback: false },
+    windowTokens: 128_000,
+    contextBudget: 'standard',
+    contextBudgetRatio: 0.5,
+    contextNarrowingFactor: 1,
+    outputReserveTokens: 4_096,
+    safetyMarginTokens: 12_800,
+    requestOverheadTokens: 0,
+    inputLimitTokens: 111_104,
+    contextCapacityTokens: 111_104,
+    contextTargetTokens: 111_104,
+    contextAllocationTokens: 111_104,
+    contextSerializationGuardTokens: 0,
+    contextContentBudgetTokens: 111_104,
+    compressionStage: 'normal',
+    contextDemandTokens: 100,
+    contextRetainedTokens: 100,
+    contextPressureRatio: 0.001,
+    serializedContextTokens: 100,
+    contextSerializationTokens: 100,
+    estimatedInputTokens: 100,
+    usedTokens: 100,
+    remainingTokens: 111_004,
+    isOverLimit: false,
+    windowUsageRatio: 0.001,
+    inputUsageRatio: 0.001,
+    sections: [],
+  })),
   projectStreamingProse: vi.fn((text: string) => text),
 }))
 const secretStoreMocks = vi.hoisted(() => ({ has: vi.fn() }))
@@ -104,6 +133,63 @@ describe('useWritingTurnController', () => {
       nextWorkspace: workspace,
       illustrationMode: 'manual',
     }))
+  })
+
+  it('recomputes the context budget in the worker when a project is opened', async () => {
+    databaseMocks.getLatestRegenerableWritingTurn.mockResolvedValue(undefined)
+    databaseMocks.getWritingCandidate.mockResolvedValue(undefined)
+    secretStoreMocks.has.mockResolvedValue(true)
+
+    let controller: ReturnType<typeof useWritingTurnController> | undefined
+    function Probe() {
+      controller = useWritingTurnController({
+        workspace,
+        providerSettings,
+        setWorkspace: vi.fn() as never,
+        refreshWorkspace: vi.fn(),
+        refreshProjects: vi.fn(),
+        showToast: vi.fn(),
+        openTextProviderSettings: vi.fn(),
+        onWritingCompleted: vi.fn(),
+      })
+      return null
+    }
+    render(<Probe />)
+
+    await waitFor(() => {
+      expect(controller!.activeContextUsageState).toBe('ready')
+    })
+    expect(controller!.activeContextUsagePlan?.windowTokens).toBe(128_000)
+    expect(controller!.activeContextUsagePlan?.isOverLimit).toBe(false)
+    expect(writingMocks.previewWritingTurnBudget).toHaveBeenCalled()
+  })
+
+  it('keeps the context usage pending when the text provider is not configured', async () => {
+    databaseMocks.getLatestRegenerableWritingTurn.mockResolvedValue(undefined)
+    databaseMocks.getWritingCandidate.mockResolvedValue(undefined)
+    secretStoreMocks.has.mockResolvedValue(false)
+    writingMocks.previewWritingTurnBudget.mockClear()
+
+    let controller: ReturnType<typeof useWritingTurnController> | undefined
+    function Probe() {
+      controller = useWritingTurnController({
+        workspace,
+        providerSettings,
+        setWorkspace: vi.fn() as never,
+        refreshWorkspace: vi.fn(),
+        refreshProjects: vi.fn(),
+        showToast: vi.fn(),
+        openTextProviderSettings: vi.fn(),
+        onWritingCompleted: vi.fn(),
+      })
+      return null
+    }
+    render(<Probe />)
+
+    await act(async () => { await Promise.resolve() })
+    expect(controller!.activeContextUsageState).toBe('pending')
+    expect(controller!.activeContextUsagePlan).toBeUndefined()
+    expect(writingMocks.previewWritingTurnBudget).not.toHaveBeenCalled()
   })
 
   it('generates a foreground candidate from the pre-turn workspace and persists it without replacing prose', async () => {

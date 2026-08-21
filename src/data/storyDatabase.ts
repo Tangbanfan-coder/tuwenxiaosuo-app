@@ -1541,7 +1541,12 @@ export async function initializeStoryDatabase() {
 }
 
 export async function listProjects() {
-  return storyDatabase.projects.orderBy('lastOpenedAt').reverse().toArray()
+  // Content activity drives ordering. updatedAt is bumped only by real
+  // content interaction (sending/editing/retrying a turn, completing prose,
+  // adopting a candidate, applying a rewrite); opening a project or changing
+  // settings (theme, style, illustration mode, writing instructions,
+  // context budget, rename, manual character creation) never reorders.
+  return storyDatabase.projects.orderBy('updatedAt').reverse().toArray()
 }
 
 export async function loadProjectWorkspace(projectId: string): Promise<ProjectWorkspace | null> {
@@ -1616,9 +1621,8 @@ export async function renameProject(projectId: string, title: string) {
   const normalizedTitle = title.trim()
   if (!normalizedTitle) throw new Error('请填写作品名称')
   if (normalizedTitle.length > 60) throw new Error('作品名称不能超过 60 个字')
-  const now = Date.now()
   await storyDatabase.transaction('rw', [storyDatabase.projects], async () => {
-    await storyDatabase.projects.update(projectId, { title: normalizedTitle, updatedAt: now })
+    await storyDatabase.projects.update(projectId, { title: normalizedTitle })
   })
   return normalizedTitle
 }
@@ -1653,9 +1657,8 @@ export async function createCharacterDraft(projectId: string, name: string, role
     updatedAt: now,
   }
 
-  await storyDatabase.transaction('rw', [storyDatabase.characters, storyDatabase.projects], async () => {
+  await storyDatabase.transaction('rw', [storyDatabase.characters], async () => {
     await storyDatabase.characters.add(character)
-    await storyDatabase.projects.update(projectId, { updatedAt: now })
   })
   return character
 }
@@ -1694,7 +1697,9 @@ export async function markProjectOpened(projectId: string) {
 export async function updateProjectTheme(projectId: string, themeId: ThemePresetId) {
   const now = Date.now()
   await storyDatabase.transaction('rw', [storyDatabase.projects, storyDatabase.styles], async () => {
-    await storyDatabase.projects.update(projectId, { themeId, updatedAt: now })
+    // Settings changes must not bump project.updatedAt: the list orders by
+    // content activity, so theme/style/mode edits never push a project up.
+    await storyDatabase.projects.update(projectId, { themeId })
     const style = await storyDatabase.styles.where('projectId').equals(projectId).first()
     if (style) await storyDatabase.styles.update(style.id, { presetId: themeId, updatedAt: now })
   })
@@ -1709,7 +1714,7 @@ export async function updateIllustrationStyle(projectId: string, styleId: Illust
 
   const visualPrompt = styleId === 'custom' ? normalizedCustomPrompt : preset.visualPrompt
   const style = await storyDatabase.styles.where('projectId').equals(projectId).first()
-  await storyDatabase.transaction('rw', [storyDatabase.projects, storyDatabase.styles], async () => {
+  await storyDatabase.transaction('rw', [storyDatabase.styles], async () => {
     if (style) {
       await storyDatabase.styles.update(style.id, {
         illustrationStyleId: styleId,
@@ -1730,12 +1735,11 @@ export async function updateIllustrationStyle(projectId: string, styleId: Illust
         updatedAt: now,
       })
     }
-    await storyDatabase.projects.update(projectId, { updatedAt: now })
   })
 }
 
 export async function updateIllustrationMode(projectId: string, illustrationMode: IllustrationMode) {
-  await storyDatabase.projects.update(projectId, { illustrationMode, updatedAt: Date.now() })
+  await storyDatabase.projects.update(projectId, { illustrationMode })
 }
 
 export async function updateWritingInstructions(projectId: string, writingInstructions: string) {
@@ -1744,7 +1748,6 @@ export async function updateWritingInstructions(projectId: string, writingInstru
   await storyDatabase.projects.update(projectId, {
     writingInstructions: normalized,
     writingStructure: '',
-    updatedAt: Date.now(),
   })
 }
 
@@ -1764,7 +1767,6 @@ export async function updateWritingStructure(projectId: string, writingStructure
   }
   await storyDatabase.projects.update(projectId, {
     writingStructure: stored,
-    updatedAt: Date.now(),
   })
 }
 
@@ -1775,7 +1777,6 @@ export async function loadProjectScenes(projectId: string) {
 export async function updateContextBudget(projectId: string, contextBudget: ContextBudget) {
   await storyDatabase.projects.update(projectId, {
     contextBudget,
-    updatedAt: Date.now(),
   })
 }
 
@@ -1916,6 +1917,45 @@ function materializeSceneNotesForResult(result: WritingProseResult, priorScenes:
     sceneNotes.unresolvedThreads = [...sceneNotes.unresolvedThreads, '需核对：本轮出现了未提供场景证据的既往事件引用。']
   }
   return sceneNotes
+}
+
+/**
+ * Text-only mode still tracks who appears in the story so the character
+ * count and the asset drawer stay accurate even though no visual plan is
+ * produced. Names come from the scene notes; the user can upload a reference
+ * image or generate a portrait later. Existing characters are left untouched
+ * because text-only mode has no richer data to merge in.
+ */
+async function materializeCharactersFromSceneNotes(input: {
+  projectId: string
+  charactersPresent: readonly string[]
+  turnId: string | undefined
+  now: number
+}) {
+  const { projectId, charactersPresent, turnId, now } = input
+  const names = charactersPresent.map((name) => name.trim()).filter(Boolean)
+  if (!names.length) return
+  const existingCharacters = await storyDatabase.characters.where('projectId').equals(projectId).toArray()
+  const existingByName = new Map(existingCharacters.map((character) => [character.name.toLocaleLowerCase(), character]))
+  for (const name of names) {
+    if (existingByName.has(name.toLocaleLowerCase())) continue
+    const character: CharacterAsset = {
+      id: createId('character'),
+      projectId,
+      name,
+      role: '角色',
+      identity: { ageAndBuild: '', fixedTraits: [] },
+      appearance: { defaultLook: '', wardrobe: '' },
+      continuity: { revision: 0, referenceStyleMode: 'project' },
+      portraitStatus: 'planned',
+      status: 'draft',
+      createdAt: now,
+      updatedAt: now,
+      turnId,
+    }
+    await storyDatabase.characters.add(character)
+    existingByName.set(name.toLocaleLowerCase(), character)
+  }
 }
 
 async function materializeVisualPlanForTurn(input: {
@@ -2128,6 +2168,17 @@ export async function completeWritingTurn(
         excerpt: result.paragraphs.join('\n\n').slice(-6_000),
         turnId: notice.turnId,
       })
+
+      // Text-only mode never carries a visual plan, so scene notes are the
+      // only signal of who appears in the story; keep the asset drawer in sync.
+      if (illustrationMode === 'none') {
+        await materializeCharactersFromSceneNotes({
+          projectId,
+          charactersPresent: sceneNotes.charactersPresent,
+          turnId: notice.turnId,
+          now,
+        })
+      }
 
       await storyDatabase.messages.update(userMessageId, { chapterId: targetChapter.id })
       await storyDatabase.messages.update(noticeId, {

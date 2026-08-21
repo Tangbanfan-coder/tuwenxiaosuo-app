@@ -29,10 +29,13 @@ import {
   listMessageFeedback,
   listMessageParagraphsWithCurrentStyleIssues,
   listProjectParagraphs,
+  listProjects,
   listRecentProjectFeedback,
   listRecentPreferenceSignals,
   loadProjectScenes,
+  markProjectOpened,
   removeFeedback,
+  renameProject,
   restoreChapterSummaryVersion,
   restoreIllustrationsBlockedByReference,
   retryWritingTurn,
@@ -49,6 +52,9 @@ import {
   upsertFeedback,
   upsertChapterParagraphs,
   updateCharacterProfile,
+  updateContextBudget,
+  updateIllustrationMode,
+  updateProjectTheme,
   upsertPreferenceSignal,
 } from './storyDatabase'
 
@@ -156,6 +162,37 @@ describe('project defaults', () => {
     await initializeStoryDatabase()
 
     expect(await storyDatabase.projects.count()).toBe(0)
+  })
+
+  it('orders projects by content activity, never by when they were opened or by settings changes', async () => {
+    await clearStoryDatabase()
+    await storyDatabase.projects.bulkAdd([
+      { id: 'older-content', title: '较早更新', themeId: 'neutral', illustrationMode: 'none', createdAt: 1, updatedAt: 10, lastOpenedAt: 30 },
+      { id: 'newer-content', title: '较晚更新', themeId: 'neutral', illustrationMode: 'none', createdAt: 1, updatedAt: 20, lastOpenedAt: 5 },
+    ])
+
+    // Opening refreshes only lastOpenedAt; the list must keep content order.
+    await markProjectOpened('older-content')
+    let projects = await listProjects()
+    expect(projects.map((project) => project.id)).toEqual(['newer-content', 'older-content'])
+    expect(projects.find((project) => project.id === 'older-content')?.lastOpenedAt).toBeGreaterThan(30)
+
+    // Settings/metadata changes (rename, theme, illustration mode, budget,
+    // manual character creation) must not reorder the list either.
+    await renameProject('older-content', '改名不置顶')
+    await updateProjectTheme('older-content', 'warm')
+    await updateIllustrationMode('older-content', 'manual')
+    await updateContextBudget('older-content', 'long')
+    await createCharacterDraft('older-content', '手动角色', '配角')
+    projects = await listProjects()
+    expect(projects.map((project) => project.id)).toEqual(['newer-content', 'older-content'])
+    expect(projects.find((project) => project.id === 'older-content')).toMatchObject({ title: '改名不置顶', updatedAt: 10 })
+
+    // Real content activity (a writing turn) pushes the project to the top.
+    const [userMessage, notice] = await beginWritingTurn('older-content', '继续写', 'none')
+    await completeWritingTurn('older-content', userMessage.id, notice.id, { ...writingResult, sceneNotes: sceneNotes() }, 'none')
+    projects = await listProjects()
+    expect(projects.map((project) => project.id)).toEqual(['older-content', 'newer-content'])
   })
 
   it('creates new projects with the unconstrained illustration style', async () => {
@@ -763,6 +800,29 @@ describe('paragraph persistence', () => {
     expect(await storyDatabase.characters.where('projectId').equals(project.id).count()).toBe(0)
     expect(await storyDatabase.illustrations.where('projectId').equals(project.id).count()).toBe(0)
     expect((await storyDatabase.messages.where('projectId').equals(project.id).toArray()).some((message) => message.kind === 'illustration')).toBe(false)
+  })
+
+  it('creates draft characters from scene notes in text-only mode and deduplicates by name', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '请开始写作', 'none')
+    await completeWritingTurn(project.id, userMessage.id, notice.id, writingResultWithSceneNotes(sceneNotes({ charactersPresent: ['林昭', '阿远'] })), 'none')
+    const characters = await storyDatabase.characters.where('projectId').equals(project.id).toArray()
+    expect(characters).toHaveLength(2)
+    expect(characters.map((character) => character.name)).toEqual(expect.arrayContaining(['林昭', '阿远']))
+    expect(characters[0]).toMatchObject({ role: '角色', status: 'draft', portraitStatus: 'planned' })
+    expect(characters[0].identity).toEqual({ ageAndBuild: '', fixedTraits: [] })
+
+    // A later turn reusing the same names must not duplicate records.
+    const [secondUserMessage, secondNotice] = await beginWritingTurn(project.id, '继续写作', 'none')
+    await completeWritingTurn(project.id, secondUserMessage.id, secondNotice.id, writingResultWithSceneNotes(sceneNotes({ charactersPresent: ['林昭', '新角色'] })), 'none')
+    const after = await storyDatabase.characters.where('projectId').equals(project.id).toArray()
+    expect(after).toHaveLength(3)
+    expect(after.filter((character) => character.name === '林昭')).toHaveLength(1)
+  })
+
+  it('does not derive characters from scene notes when illustration mode is enabled', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '请开始写作', 'auto')
+    await completeWritingTurn(project.id, userMessage.id, notice.id, writingResultWithSceneNotes(sceneNotes({ charactersPresent: ['林昭'] })), 'auto')
+    expect(await storyDatabase.characters.where('projectId').equals(project.id).count()).toBe(0)
   })
 
   it('keeps visual plans and characters when automatic illustration is disabled', async () => {

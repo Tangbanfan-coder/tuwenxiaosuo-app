@@ -38,6 +38,7 @@ import {
   PROSE_MODEL_ANALYSIS_VERSION,
   parseBackgroundWritingResponse,
   prepareBackgroundWritingRequest,
+  previewWritingTurnBudget,
   projectStreamingProse,
   type ContextBudgetPlan,
 } from '../providers/writing'
@@ -121,13 +122,39 @@ export function useWritingTurnController({
   const generationRef = useRef<GenerationControl>({ attemptId: 0, cancelled: false, phase: 'idle' })
   const streamingRawRef = useRef('')
   const contextUsageReminderTiersRef = useRef(new Map<string, ContextUsageReminderTier>())
+  /** Bumped every time a real writing request publishes its own plan, so a stale boot-time recompute never overwrites it. */
+  const contextPlanEpochRef = useRef(0)
 
   useEffect(() => {
     if (!workspace || contextUsageProjectId === workspace.project.id) return
     setContextUsagePlan(undefined)
     setContextUsageError('')
     setContextUsageState('pending')
-  }, [contextUsageProjectId, workspace?.project.id])
+    // Recompute the budget when a project is opened so the toolbar never
+    // stays on "待计算" after a cold start. The tokenizer-bound work runs in
+    // the writing worker; only the DB reads happen on the main thread.
+    let cancelled = false
+    const projectId = workspace.project.id
+    const textProvider = providerSettings.text
+    const epoch = contextPlanEpochRef.current
+    void (async () => {
+      try {
+        // Mirrors the sendMessage admission check: without a configured text
+        // provider there is nothing to estimate, so "待计算" is the honest state.
+        if (!textProvider.baseUrl.trim() || !textProvider.model.trim() || !(await secretStore.has(textProvider.secretRef))) return
+        const latestUserMessage = [...workspace.messages].reverse().find((message) => message.kind === 'user')
+        const plan = await previewWritingTurnBudget(workspace, latestUserMessage?.pendingRevisionText ?? latestUserMessage?.text ?? '', textProvider)
+        if (cancelled || contextPlanEpochRef.current !== epoch) return
+        setContextUsageProjectId(projectId)
+        setContextUsagePlan(plan)
+        setContextUsageError('')
+        setContextUsageState(plan.isOverLimit ? 'over-limit' : plan.estimator.isFallback ? 'fallback' : 'ready')
+      } catch {
+        if (!cancelled) setContextUsageError('上下文估算暂不可用')
+      }
+    })()
+    return () => { cancelled = true }
+  }, [contextUsageProjectId, workspace?.project.id, providerSettings.text.baseUrl, providerSettings.text.model, providerSettings.text.secretRef])
 
   useEffect(() => {
     let cancelled = false
@@ -188,6 +215,7 @@ export function useWritingTurnController({
         excludeUserMessageId: userMessageId,
         onStyleFragmentsSelected: (fragmentIds: string[]) => { selectedStyleFragmentIds = fragmentIds },
         onContextPlan: (plan: ContextBudgetPlan) => {
+          contextPlanEpochRef.current += 1
           setContextUsagePlan(plan)
           setContextUsageProjectId(projectId)
           setContextUsageError('')
@@ -444,6 +472,7 @@ export function useWritingTurnController({
         excludeUserMessageId: target.user.id,
         onStyleFragmentsSelected: (fragmentIds) => { selectedStyleFragmentIds = fragmentIds },
         onContextPlan: (plan) => {
+          contextPlanEpochRef.current += 1
           setContextUsagePlan(plan)
           setContextUsageProjectId(workspace.project.id)
           setContextUsageError('')
