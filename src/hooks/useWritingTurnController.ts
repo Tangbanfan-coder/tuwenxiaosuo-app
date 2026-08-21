@@ -10,6 +10,7 @@ import {
   getWritingCandidate,
   keepOriginalWritingCandidate,
   recordProseEvaluationEvent,
+  saveModelProseAnalysis,
   retryWritingTurn,
   saveWritingCandidate,
   setWritingTurnBackgroundTask,
@@ -33,6 +34,8 @@ import {
   explicitlyRequestsNewChapter,
   generateWritingTurn,
   markStyleCorpusFragmentsUsed,
+  analyzeProseStyle,
+  PROSE_MODEL_ANALYSIS_VERSION,
   parseBackgroundWritingResponse,
   prepareBackgroundWritingRequest,
   projectStreamingProse,
@@ -76,6 +79,22 @@ function contextUsageReminderTier(plan: ContextBudgetPlan): ContextUsageReminder
   if (usage >= 80) return 80
   if (usage >= 60) return 60
   return 0
+}
+
+/** Semantic analysis is auxiliary: it never delays or invalidates a saved turn. */
+function scheduleModelProseAnalysis(projectId: string, nextWorkspace: ProjectWorkspace, textProvider: ProviderSettings['text'], refreshWorkspace: (projectId: string) => Promise<ProjectWorkspace | null | undefined>) {
+  const proseMessage = [...nextWorkspace.messages].reverse().find((message) => message.kind === 'prose')
+  if (!proseMessage?.paragraphs?.length) return
+  void analyzeProseStyle({ paragraphs: proseMessage.paragraphs }, textProvider, browserTransport)
+    .then((issuesByParagraph) => saveModelProseAnalysis({
+      projectId,
+      messageId: proseMessage.id,
+      paragraphs: proseMessage.paragraphs ?? [],
+      issuesByParagraph,
+      modelAnalysisVersion: PROSE_MODEL_ANALYSIS_VERSION,
+    }))
+    .then(() => refreshWorkspace(projectId))
+    .catch(() => undefined)
 }
 
 /** Owns the writing transaction, streaming lifecycle, and context usage state. */
@@ -261,6 +280,7 @@ export function useWritingTurnController({
       setStreamingText('')
       const nextWorkspace = await refreshWorkspace(projectId)
       await refreshProjects()
+      if (result.kind === 'prose' && nextWorkspace) scheduleModelProseAnalysis(projectId, nextWorkspace, textProvider, refreshWorkspace)
       if (nextWorkspace) await onWritingCompleted({ result, nextWorkspace, previousIllustrationIds, illustrationMode })
       else if (result.kind === 'prose') showToast('正文已保存')
       if (contextReminder) showToast(contextReminder.text, contextReminder.kind)
@@ -481,6 +501,7 @@ export function useWritingTurnController({
 
   async function adoptCandidateProse(message: ConversationMessage) {
     if (!workspace || generationPhase !== 'idle' || message.kind !== 'prose' || !message.turnId || writingCandidate?.proseMessageId !== message.id) return
+    const textProvider = providerSettings.text
     const attemptId = ++generationRef.current.attemptId
     generationRef.current = { attemptId, cancelled: false, phase: 'saving' }
     setGenerationPhase('saving')
@@ -490,6 +511,7 @@ export function useWritingTurnController({
       setWritingCandidate(undefined)
       const nextWorkspace = await refreshWorkspace(workspace.project.id)
       await refreshProjects()
+      if (nextWorkspace) scheduleModelProseAnalysis(workspace.project.id, nextWorkspace, textProvider, refreshWorkspace)
       if (nextWorkspace) await onWritingCompleted({
         result: adopted.result,
         nextWorkspace,

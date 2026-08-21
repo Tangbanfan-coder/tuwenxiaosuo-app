@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import Dexie from 'dexie'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Chapter, ConversationMessage, FeedbackTargetInput, StoryProject, SummaryVersion, UpsertFeedbackInput, WritingProseResult, WritingSceneNotes, WritingTurnResult } from '../domain/models'
+import type { Chapter, ConversationMessage, FeedbackTargetInput, ProseStyleIssue, StoryProject, SummaryVersion, UpsertFeedbackInput, WritingProseResult, WritingSceneNotes, WritingTurnResult } from '../domain/models'
 import { collectOpenForeshadowings } from '../domain/foreshadowing'
 import { createParagraphFingerprint, hasWritingContentOverlap, normalizeText } from '../domain/paragraphs'
 import { PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
@@ -37,6 +37,7 @@ import {
   restoreIllustrationsBlockedByReference,
   retryWritingTurn,
   saveLatestUserMessageRevision,
+  saveModelProseAnalysis,
   saveStyleCorpusImport,
   saveWritingCandidate,
   splitStyleCorpusText,
@@ -1019,6 +1020,61 @@ describe('humanized prose persistence', () => {
     const refreshed = await listMessageParagraphsWithCurrentStyleIssues(project.id, prose!.id)
     expect(refreshed[0]).toMatchObject({ id: stored!.id, createdAt: stored!.createdAt, styleRuleVersion: PROSE_STYLE_RULE_VERSION })
     expect(refreshed[0].styleIssues?.map((issue) => issue.ruleId)).toContain('stock-physical-reaction')
+  })
+
+  it('merges model diagnostics into the existing UI issue field and writes idempotently', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写', false)
+    await completeWritingTurn(project.id, userMessage.id, notice.id, {
+      ...writingResult,
+      paragraphs: ['她呼吸一滞，眸光一闪，指节泛白。', '门外没有脚步。'],
+    }, false)
+    const prose = await storyDatabase.messages.where('projectId').equals(project.id).filter((message) => message.kind === 'prose').first()
+    const first = await storyDatabase.paragraphs.where('[projectId+messageId]').equals([project.id, prose!.id]).filter((row) => row.index === 0).first()
+    const modelIssue: ProseStyleIssue = {
+      ruleId: 'model-scene-detachment', category: 'scene-detachment', severity: 'warning',
+      explanation: '抽象判断替代了可观察的现场动作。', rewriteGoal: '补出当前场景中的动作或物件变化。',
+      source: 'text-model', confidence: 0.86,
+    }
+    const saved = await saveModelProseAnalysis({
+      projectId: project.id, messageId: prose!.id, paragraphs: prose!.paragraphs!,
+      issuesByParagraph: [[modelIssue], []], modelAnalysisVersion: 1,
+    })
+    expect(saved[0].modelStyleIssues).toEqual([modelIssue])
+    expect(saved[0].styleIssues?.map((issue) => issue.ruleId)).toEqual(['stock-physical-reaction', 'model-scene-detachment'])
+
+    await saveModelProseAnalysis({
+      projectId: project.id, messageId: prose!.id, paragraphs: prose!.paragraphs!,
+      issuesByParagraph: [[modelIssue], []], modelAnalysisVersion: 1,
+    })
+    const repeated = await storyDatabase.paragraphs.get(first!.id)
+    expect(repeated?.modelStyleIssues).toHaveLength(1)
+    expect(repeated?.styleIssues?.filter((issue) => issue.ruleId === 'model-scene-detachment')).toHaveLength(1)
+  })
+
+  it('rejects stale model results without overwriting a newer version or changed paragraph', async () => {
+    const [userMessage, notice] = await beginWritingTurn(project.id, '继续写', false)
+    await completeWritingTurn(project.id, userMessage.id, notice.id, writingResult, false)
+    const prose = await storyDatabase.messages.where('projectId').equals(project.id).filter((message) => message.kind === 'prose').first()
+    const modelIssue: ProseStyleIssue = {
+      ruleId: 'model-rhythm', category: 'rhythm', severity: 'hint',
+      explanation: '句子节奏过于均匀。', rewriteGoal: '让句长和动作推进出现变化。',
+      source: 'text-model', confidence: 0.8,
+    }
+    await saveModelProseAnalysis({
+      projectId: project.id, messageId: prose!.id, paragraphs: prose!.paragraphs!,
+      issuesByParagraph: [[modelIssue], []], modelAnalysisVersion: 2,
+    })
+    await expect(saveModelProseAnalysis({
+      projectId: project.id, messageId: prose!.id, paragraphs: prose!.paragraphs!,
+      issuesByParagraph: [[], []], modelAnalysisVersion: 1,
+    })).rejects.toThrow('版本已过期')
+    await expect(saveModelProseAnalysis({
+      projectId: project.id, messageId: prose!.id, paragraphs: ['被篡改的正文', prose!.paragraphs![1]!],
+      issuesByParagraph: [[], []], modelAnalysisVersion: 3,
+    })).rejects.toThrow('已发生变化')
+    const current = await storyDatabase.paragraphs.where('[projectId+messageId]').equals([project.id, prose!.id]).filter((row) => row.index === 0).first()
+    expect(current?.modelAnalysisVersion).toBe(2)
+    expect(current?.modelStyleIssues?.[0]?.ruleId).toBe('model-rhythm')
   })
 })
 

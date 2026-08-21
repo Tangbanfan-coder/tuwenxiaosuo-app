@@ -16,6 +16,7 @@ const databaseMocks = vi.hoisted(() => ({
   getWritingCandidate: vi.fn(),
   keepOriginalWritingCandidate: vi.fn(),
   recordProseEvaluationEvent: vi.fn(),
+  saveModelProseAnalysis: vi.fn(() => Promise.resolve()),
   retryWritingTurn: vi.fn(),
   saveWritingCandidate: vi.fn(),
   setWritingTurnBackgroundTask: vi.fn(),
@@ -23,6 +24,8 @@ const databaseMocks = vi.hoisted(() => ({
 }))
 const writingMocks = vi.hoisted(() => ({
   explicitlyRequestsNewChapter: vi.fn(),
+  analyzeProseStyle: vi.fn(() => Promise.resolve([])),
+  PROSE_MODEL_ANALYSIS_VERSION: 1,
   generateWritingTurn: vi.fn(),
   markStyleCorpusFragmentsUsed: vi.fn(),
   parseBackgroundWritingResponse: vi.fn(),

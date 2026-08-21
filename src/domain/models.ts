@@ -58,15 +58,31 @@ export type ProseStyleRuleCategory =
   | 'concept-label'
   | 'defensive-reframing'
 
+/**
+ * Broad semantic categories returned by the optional text-model analyzer.
+ * These are deliberately separate from local rule categories: a model issue
+ * is an explainable review signal, not a newly invented deterministic rule.
+ */
+export type ProseModelRiskCategory =
+  | 'template-pattern'
+  | 'abstractness'
+  | 'scene-detachment'
+  | 'voice-mismatch'
+  | 'rhythm'
+
 export type ProseStyleSeverity = 'hint' | 'warning' | 'strong'
 
 export interface ProseStyleIssue {
   ruleId: string
-  category: ProseStyleRuleCategory
+  category: ProseStyleRuleCategory | ProseModelRiskCategory
   severity: ProseStyleSeverity
   explanation: string
   rewriteGoal: string
   matchedText?: string
+  /** Local rules remain the default; text-model issues carry their source explicitly. */
+  source?: 'local-rule' | 'text-model'
+  /** Calibrated model confidence. Local deterministic rules may omit it. */
+  confidence?: number
 }
 
 export interface StyleCorpusLabels {
@@ -195,6 +211,9 @@ export interface StoredParagraph {
   /** Local editorial diagnostics for this exact paragraph version. */
   styleIssues?: ProseStyleIssue[]
   styleRuleVersion?: number
+  /** Model-only issues are retained separately so local rule revisions can be re-run safely. */
+  modelStyleIssues?: ProseStyleIssue[]
+  modelAnalysisVersion?: number
   createdAt: number
 }
 

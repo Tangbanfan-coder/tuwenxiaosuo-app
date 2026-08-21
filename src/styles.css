@@ -379,24 +379,30 @@ label {
 .feedback-panel-actions button:disabled { opacity: .6; cursor: wait; }
 .feedback-hint { margin: 8px 0 0; color: var(--story-muted); font-size: 12px; }
 .feedback-error { margin: 8px 0 0; color: #d77f84; font-size: 12px; }
-.writing-candidate-panel { margin: 14px 0 18px; padding: 14px; border: 1px solid var(--story-border); border-radius: 8px; background: color-mix(in srgb, var(--story-surface) 94%, transparent); color: var(--story-text); font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.65; }
-.writing-candidate-panel > header, .writing-candidate-panel > footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.writing-candidate-panel > header { padding-bottom: 10px; border-bottom: 1px solid var(--story-border); }
-.writing-candidate-panel > header span { color: var(--story-muted); font-size: 12px; text-align: right; }
-.writing-candidate-comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0; margin: 12px 0; }
-.writing-candidate-comparison section { min-width: 0; padding: 0 12px; overflow-wrap: anywhere; }
+.writing-candidate-backdrop { position: fixed; inset: 0; z-index: 45; display: grid; place-items: end center; background: rgba(6, 6, 5, 0.58); overscroll-behavior: contain; animation: overlay-in var(--motion-feedback) ease-out; }
+.writing-candidate-backdrop.closing { pointer-events: none; animation: overlay-out var(--motion-exit) var(--motion-exit-ease) forwards; }
+.writing-candidate-sheet { width: 100%; max-width: 100%; max-height: min(88svh, 760px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--story-border); border-bottom: 0; border-radius: 16px 16px 0 0; background: var(--story-surface); color: var(--story-text); box-shadow: 0 22px 60px rgba(0, 0, 0, 0.46); animation: sheet-in var(--motion-drawer) var(--motion-enter-ease); }
+.writing-candidate-backdrop.closing .writing-candidate-sheet { animation: sheet-out var(--motion-exit) var(--motion-exit-ease) forwards; }
+.writing-candidate-sheet-handle { width: 38px; height: 4px; flex: none; margin: 8px auto 0; border-radius: 999px; background: color-mix(in srgb, var(--story-muted) 72%, transparent); }
+.writing-candidate-sheet-header { min-height: 52px; flex: none; display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 8px max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left)); border-bottom: 1px solid var(--story-border); }
+.writing-candidate-sheet-heading { min-width: 0; display: grid; gap: 4px; padding-top: 6px; }
+.writing-candidate-sheet-heading strong { color: var(--story-text); font-family: system-ui, sans-serif; font-size: 14px; }
+.writing-candidate-sheet-heading span { color: var(--story-muted); font-family: system-ui, sans-serif; font-size: 12px; line-height: 1.45; }
+.writing-candidate-close { width: 40px; height: 40px; flex: none; border-radius: 8px; }
+.writing-candidate-sheet-content { min-width: 0; min-height: 0; flex: 1; padding: 14px max(14px, env(safe-area-inset-right)) 16px max(14px, env(safe-area-inset-left)); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.65; }
+.writing-candidate-comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0; }
+.writing-candidate-comparison section { min-width: 0; padding: 0 14px; overflow-wrap: anywhere; }
 .writing-candidate-comparison section:first-child { padding-left: 0; border-right: 1px solid var(--story-border); }
 .writing-candidate-comparison section:last-child { padding-right: 0; }
 .writing-candidate-comparison h4 { margin: 0 0 8px; color: var(--story-muted); font-size: 12px; }
-.writing-candidate-comparison p { margin: 0 0 10px; }
-.writing-candidate-panel > footer { justify-content: flex-end; padding-top: 10px; border-top: 1px solid var(--story-border); }
-.writing-candidate-panel > footer button { min-height: 42px; padding: 0 13px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--story-border); border-radius: 8px; background: var(--story-bg); color: var(--story-muted); font: inherit; cursor: pointer; }
-.writing-candidate-panel > footer button.primary { border-color: var(--story-accent); background: var(--story-accent); color: var(--story-bg); }
-.writing-candidate-panel > footer button:disabled { opacity: .58; cursor: wait; }
+.writing-candidate-comparison p { margin: 0 0 10px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.writing-candidate-sheet > footer { flex: none; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 10px max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); border-top: 1px solid var(--story-border); }
+.writing-candidate-sheet > footer button { min-height: 44px; padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--story-border); border-radius: 8px; background: var(--story-bg); color: var(--story-muted); font: inherit; font-family: system-ui, sans-serif; font-size: 12px; cursor: pointer; }
+.writing-candidate-sheet > footer button.primary { border-color: var(--story-accent); background: var(--story-accent); color: var(--story-bg); }
+.writing-candidate-sheet > footer button:disabled { opacity: .58; cursor: wait; }
 
 @media (max-width: 620px) {
-  .writing-candidate-panel > header { align-items: flex-start; flex-direction: column; }
-  .writing-candidate-panel > header span { text-align: left; }
+  .writing-candidate-sheet-header { align-items: flex-start; }
   .writing-candidate-comparison { grid-template-columns: 1fr; }
   .writing-candidate-comparison section { padding: 10px 0; }
   .writing-candidate-comparison section:first-child { border-right: 0; border-bottom: 1px solid var(--story-border); }
@@ -1765,6 +1771,10 @@ label {
 .app-shell[data-appearance="light"] .rewrite-strength button[aria-checked="true"],
 .app-shell[data-appearance="light"] .evaluation-options button[aria-checked="true"] { border-color: #b7a66f; background: #f3edda; color: #28251d; }
 .app-shell[data-appearance="light"] .rewrite-sheet-handle { background: #b8bcb5; }
+.app-shell[data-appearance="light"] .writing-candidate-sheet { border-color: #c9cdc6; background: #fffdf8; box-shadow: 0 22px 60px rgba(43, 47, 42, 0.19); }
+.app-shell[data-appearance="light"] .writing-candidate-sheet-handle { background: #b8bcb5; }
+.app-shell[data-appearance="light"] .writing-candidate-sheet > footer button { border-color: #c4c8c1; background: #f8f9f6; color: #555c55; }
+.app-shell[data-appearance="light"] .writing-candidate-sheet > footer button.primary { border-color: #8f7a4e; background: #8f7a4e; color: #ffffff; }
 .app-shell[data-appearance="light"] .style-corpus-source button:hover { color: #a8444b; }
 .app-shell[data-appearance="light"] .evaluation-danger .danger-button { border-color: #c9848a; color: #a8444b; }
 .app-shell[data-appearance="light"] .evaluation-danger .danger-button:hover { background: #fae9eb; color: #9e424b; }
@@ -1800,7 +1810,9 @@ label {
 .app-shell[data-appearance="light"] .user-message-edit-sheet-actions button { border-color: #c4c8c1; color: #555c55; }
 .app-shell[data-appearance="light"] .user-message-edit-sheet-actions button.primary { border-color: #8f7a4e; background: #8f7a4e; color: #ffffff; }
 .user-message-pending-revision { overflow-wrap: anywhere; font-size: 12px; line-height: 1.35; color: color-mix(in srgb, var(--story-user-text) 72%, transparent); }
-.feedback-panel, .writing-candidate-panel, .visual-prompt { animation: inline-panel-in var(--motion-panel) var(--motion-enter-ease); }
+.feedback-panel, .visual-prompt { animation: inline-panel-in var(--motion-panel) var(--motion-enter-ease); }
+.writing-candidate-backdrop .writing-candidate-sheet { animation-duration: var(--motion-drawer); animation-timing-function: var(--motion-enter-ease); }
+.writing-candidate-backdrop.closing .writing-candidate-sheet { animation-duration: var(--motion-exit); animation-timing-function: var(--motion-exit-ease); }
 .rewrite-backdrop .rewrite-panel { animation-duration: var(--motion-drawer); animation-timing-function: var(--motion-enter-ease); }
 .rewrite-backdrop.closing .rewrite-panel { animation-duration: var(--motion-exit); animation-timing-function: var(--motion-exit-ease); }
 .illustration-mode-menu, .reasoning-effort-quick-menu { animation: theme-menu-in var(--motion-panel) var(--motion-enter-ease); }

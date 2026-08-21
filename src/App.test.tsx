@@ -22,6 +22,7 @@ const databaseMocks = vi.hoisted(() => ({
   getWritingCandidate: vi.fn(),
   getStyleCorpusSummary: vi.fn().mockResolvedValue({ sourceCount: 0, fragmentCount: 0 }),
   recordProseEvaluationEvent: vi.fn(() => Promise.resolve()),
+  saveModelProseAnalysis: vi.fn(() => Promise.resolve()),
   applyParagraphRewrite: vi.fn(),
   getActiveProjectId: vi.fn(),
   initializeStoryDatabase: vi.fn(),
@@ -68,6 +69,8 @@ const databaseMocks = vi.hoisted(() => ({
 
 const writingMocks = vi.hoisted(() => ({
   analyzeFeedbackPreference: vi.fn(),
+  analyzeProseStyle: vi.fn(() => Promise.resolve([])),
+  PROSE_MODEL_ANALYSIS_VERSION: 1,
   explicitlyRequestsNewChapter: vi.fn(),
   generateWritingTurn: vi.fn(),
   projectStreamingProse: vi.fn(),
@@ -1078,7 +1081,7 @@ describe('latest prose regeneration UI', () => {
     expect(screen.getByText('修改待重新生成，尚未应用')).toBeDefined()
   })
 
-  it('只在最近一轮正文显示候选比较，并可保留原版', async () => {
+  it('候选稿只显示对比入口，打开底部抽屉后可保留原版并恢复焦点', async () => {
     const user = userEvent.setup()
     const prose = {
       id: 'prose-latest', projectId: project.id, chapterId: 'chapter-1', kind: 'prose' as const,
@@ -1098,10 +1101,23 @@ describe('latest prose regeneration UI', () => {
 
     render(<App />)
 
-    expect(await screen.findByRole('button', { name: '重新生成' })).toBeDefined()
-    expect(await screen.findByRole('dialog', { name: '正文版本比较' })).toBeDefined()
+    const trigger = await screen.findByRole('button', { name: '对比新旧内容' })
+    expect(screen.queryByRole('dialog', { name: '正文版本比较' })).toBeNull()
+    await user.click(trigger)
+
+    const dialog = await screen.findByRole('dialog', { name: '正文版本比较' })
+    expect(dialog.classList.contains('writing-candidate-sheet')).toBe(true)
+    expect(dialog.parentElement?.classList.contains('writing-candidate-backdrop')).toBe(true)
+    expect(dialog.getAttribute('aria-modal')).toBe('true')
+    expect(dialog.closest('.story-prose')).toBeNull()
     expect(screen.getAllByText('原版正文。')).toHaveLength(2)
     expect(screen.getByText('新版正文。')).toBeDefined()
+
+    await user.click(screen.getByRole('button', { name: '关闭正文版本比较' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '正文版本比较' })).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(trigger), { timeout: 1000 })
+
+    await user.click(trigger)
     await user.click(screen.getByRole('button', { name: '保留原版' }))
     await waitFor(() => expect(databaseMocks.keepOriginalWritingCandidate).toHaveBeenCalledWith(project.id, 'turn-latest'))
   })

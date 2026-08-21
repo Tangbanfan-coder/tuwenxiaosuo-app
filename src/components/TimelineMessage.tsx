@@ -302,6 +302,10 @@ function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEva
   const [rewriteOpen, setRewriteOpen] = useState(false)
   const rewriteTriggerRef = useRef<HTMLButtonElement | null>(null)
   const rewriteCloseRequestedRef = useRef(false)
+  const [candidateOpen, setCandidateOpen] = useState(false)
+  const candidateTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const candidateCloseRequestedRef = useRef(false)
+  const candidateId = writingCandidate?.id
 
   const refreshFeedback = useCallback(async () => {
     setLoading(true)
@@ -326,6 +330,15 @@ function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEva
     }).catch(() => undefined)
     return () => { cancelled = true }
   }, [message])
+
+  // A candidate arriving from a completed regeneration is intentionally only
+  // a new affordance. It must not open a comparison sheet by itself. Reset the
+  // local open state whenever the candidate identity changes so a discarded
+  // candidate cannot make a later candidate appear open on mount.
+  useEffect(() => {
+    setCandidateOpen(false)
+    candidateCloseRequestedRef.current = false
+  }, [candidateId])
 
   function openPanel(verdict: FeedbackVerdict) {
     setSelectedVerdict(verdict)
@@ -357,6 +370,28 @@ function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEva
     }, 0)
   }
 
+  function openCandidateComparison(trigger: HTMLButtonElement) {
+    if (!writingCandidate) return
+    candidateTriggerRef.current = trigger
+    candidateCloseRequestedRef.current = false
+    setCandidateOpen(true)
+  }
+
+  function requestCloseCandidate() {
+    if (!writingCandidate || !candidateOpen || candidateCloseRequestedRef.current) return
+    candidateCloseRequestedRef.current = true
+    setCandidateOpen(false)
+  }
+
+  function finishCloseCandidate() {
+    candidateCloseRequestedRef.current = false
+    window.setTimeout(() => {
+      const trigger = candidateTriggerRef.current
+      if (trigger?.isConnected) trigger.focus()
+      candidateTriggerRef.current = null
+    }, 0)
+  }
+
   return (
     <article className="story-prose">
       {message.paragraphs?.map((paragraph, index) => {
@@ -380,25 +415,20 @@ function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEva
           onClick={() => openPanel('down')}
         ><ThumbsDown size={15} aria-hidden="true" />点踩</button>
         {canRegenerate && onRegenerateProse && (
-          <button className="feedback-trigger prose-regenerate-trigger" type="button" disabled={writingBusy} onClick={() => onRegenerateProse(message)}>
+          <button
+            ref={writingCandidate ? candidateTriggerRef : undefined}
+            className="feedback-trigger prose-regenerate-trigger"
+            type="button"
+            disabled={writingBusy}
+            aria-expanded={writingCandidate ? candidateOpen : undefined}
+            onClick={(event) => writingCandidate ? openCandidateComparison(event.currentTarget) : onRegenerateProse(message)}
+          >
             {regenerationBusy ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : <RefreshCcw size={15} aria-hidden="true" />}
-            {regenerationBusy ? '生成中…' : '重新生成'}
+            {regenerationBusy ? '生成中…' : writingCandidate ? '对比新旧内容' : '重新生成'}
           </button>
         )}
       </div>
-      {writingCandidate && (
-        <div className="writing-candidate-panel" role="dialog" aria-label="正文版本比较" aria-modal="false">
-          <header><strong>比较最近一轮正文</strong><span>原版仍在使用，采用前不会覆盖</span></header>
-          <div className="writing-candidate-comparison">
-            <section><h4>原版</h4>{message.paragraphs?.map((paragraph, index) => <p key={`original-${index}`}>{paragraph}</p>)}</section>
-            <section><h4>新版</h4>{writingCandidate.result.paragraphs.map((paragraph, index) => <p key={`candidate-${index}`}>{paragraph}</p>)}</section>
-          </div>
-          <footer>
-            <button type="button" disabled={writingBusy} onClick={() => void onKeepOriginalProse?.(message)}>保留原版</button>
-            <button className="primary" type="button" disabled={writingBusy} onClick={() => void onAdoptCandidateProse?.(message)}><Check size={16} aria-hidden="true" />采用新版</button>
-          </footer>
-        </div>
-      )}
+      {writingCandidate && <WritingCandidatePanel open={candidateOpen} message={message} candidate={writingCandidate} onClose={requestCloseCandidate} onExited={finishCloseCandidate} onKeepOriginal={onKeepOriginalProse} onAdoptCandidate={onAdoptCandidateProse} writingBusy={writingBusy} />}
       {panelOpen && (
         <FeedbackPanel
           message={message}
@@ -415,6 +445,68 @@ function FeedbackProse({ message, onRewriteParagraph, onApplyRewrite, onProseEva
       {rewriteParagraph && <RewritePanel open={rewriteOpen} message={message} paragraph={rewriteParagraph} onClose={requestCloseRewrite} onExited={finishCloseRewrite} onRewrite={onRewriteParagraph} onApply={async (rewrittenText) => { await onApplyRewrite?.({ message, paragraph: rewriteParagraph, rewrittenText }); setRewriteOpen(false); rewriteCloseRequestedRef.current = true }} />}
     </article>
   )
+}
+
+function WritingCandidatePanel({ open, message, candidate, onClose, onExited, onKeepOriginal, onAdoptCandidate, writingBusy }: { open: boolean; message: ConversationMessage; candidate: WritingCandidate; onClose: () => void; onExited: () => void; onKeepOriginal?: (message: ConversationMessage) => Promise<void>; onAdoptCandidate?: (message: ConversationMessage) => Promise<void>; writingBusy?: boolean }) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const closeRequestedRef = useRef(false)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const { present, closing } = usePresence(open, onExited, 220)
+
+  useEffect(() => {
+    if (!open) return
+    closeRequestedRef.current = false
+    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || closeRequestedRef.current) return
+      event.preventDefault()
+      closeRequestedRef.current = true
+      onCloseRef.current()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.clearTimeout(focusTimer)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  if (!present) return null
+
+  function requestClose() {
+    if (closeRequestedRef.current) return
+    closeRequestedRef.current = true
+    onClose()
+  }
+
+  const panel = (
+    <div
+      className={`writing-candidate-backdrop${closing ? ' closing' : ''}`}
+      role="presentation"
+      onMouseDown={(event) => { if (event.currentTarget === event.target) requestClose() }}
+      onClick={(event) => { if (event.currentTarget === event.target) requestClose() }}
+    >
+      <section className="writing-candidate-sheet" role="dialog" aria-modal="true" aria-label="正文版本比较" aria-busy={writingBusy}>
+        <div className="writing-candidate-sheet-handle" aria-hidden="true" />
+        <header className="writing-candidate-sheet-header">
+          <div className="writing-candidate-sheet-heading"><strong>比较最近一轮正文</strong><span>原版仍在使用，采用前不会覆盖</span></div>
+          <button ref={closeButtonRef} className="feedback-close writing-candidate-close" type="button" aria-label="关闭正文版本比较" onClick={requestClose}><X size={16} aria-hidden="true" /></button>
+        </header>
+        <div className="writing-candidate-sheet-content">
+          <div className="writing-candidate-comparison">
+            <section><h4>原版</h4>{message.paragraphs?.map((paragraph, index) => <p key={`original-${index}`}>{paragraph}</p>)}</section>
+            <section><h4>新版</h4>{candidate.result.paragraphs.map((paragraph, index) => <p key={`candidate-${index}`}>{paragraph}</p>)}</section>
+          </div>
+        </div>
+        <footer>
+          <button type="button" disabled={writingBusy} onClick={() => void onKeepOriginal?.(message)}>保留原版</button>
+          <button className="primary" type="button" disabled={writingBusy} onClick={() => void onAdoptCandidate?.(message)}><Check size={16} aria-hidden="true" />采用新版</button>
+        </footer>
+      </section>
+    </div>
+  )
+
+  return createPortal(panel, document.querySelector('.story-stage') ?? document.querySelector('.app-shell') ?? document.body)
 }
 
 function RewritePanel({ open, message, paragraph, onClose, onExited, onRewrite, onApply }: { open: boolean; message: ConversationMessage; paragraph: StoredParagraph; onClose: () => void; onExited: () => void; onRewrite?: (input: { message: ConversationMessage; paragraph: StoredParagraph; strength: RewriteStrength }) => Promise<string>; onApply: (text: string) => Promise<void> }) {

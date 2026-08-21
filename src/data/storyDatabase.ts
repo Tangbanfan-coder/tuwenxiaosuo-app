@@ -21,6 +21,7 @@ import type {
   ProjectStyle,
   ProseEvaluationEvent,
   ProjectWorkspace,
+  ProseStyleIssue,
   ReferenceStyleMode,
   SceneNotes,
   StyleCorpusBinding,
@@ -41,7 +42,7 @@ import { resolveIllustrationReferences } from '../domain/illustrationReferences'
 import { materializeWritingSceneNotes, reconcileForeshadowing } from '../domain/foreshadowing'
 import { createParagraphFingerprint, hasWritingContentOverlap, hashText as hashTextImpl, normalizeText as normalizeParagraphText } from '../domain/paragraphs'
 import { loadGlobalWritingInstructions } from '../providers/config'
-import { detectProseStyleIssues, PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
+import { detectProseStyleIssues, mergeProseStyleIssues, PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
 
 export { hashText, normalizeText } from '../domain/paragraphs'
 
@@ -680,13 +681,109 @@ export async function listMessageParagraphsWithCurrentStyleIssues(projectId: str
         && current.index === paragraph.index
         && current.text === paragraph.text
         && current.fingerprint === paragraph.fingerprint
-      return exact && current.styleRuleVersion === PROSE_STYLE_RULE_VERSION
-        ? current
-        : { ...paragraph, createdAt: exact ? current.createdAt : paragraph.createdAt }
+      if (exact && current.styleRuleVersion === PROSE_STYLE_RULE_VERSION) return current
+      if (exact) {
+        return {
+          ...paragraph,
+          createdAt: current.createdAt,
+          modelStyleIssues: current.modelStyleIssues,
+          modelAnalysisVersion: current.modelAnalysisVersion,
+          styleIssues: mergeProseStyleIssues(paragraph.styleIssues, current.modelStyleIssues),
+        }
+      }
+      return { ...paragraph, createdAt: paragraph.createdAt }
     })
     const staleRows = rows.filter((row, index) => row !== stored[index])
     if (staleRows.length) await storyDatabase.paragraphs.bulkPut(staleRows)
     return rows
+  })
+}
+
+/**
+ * Persists semantic model findings for one exact prose message version. Local
+ * rules remain the canonical deterministic layer; model findings are merged
+ * into the same display field but retained separately for safe re-analysis.
+ */
+export async function saveModelProseAnalysis(input: {
+  projectId: string
+  messageId: string
+  paragraphs: readonly string[]
+  issuesByParagraph: readonly (readonly ProseStyleIssue[])[]
+  modelAnalysisVersion: number
+}) {
+  if (!input || typeof input.projectId !== 'string' || !input.projectId.trim() || typeof input.messageId !== 'string' || !input.messageId.trim()) {
+    throw new Error('文风分析缺少作品或消息标识')
+  }
+  if (!Number.isInteger(input.modelAnalysisVersion) || input.modelAnalysisVersion < 1) throw new Error('文风分析版本无效')
+  if (!Array.isArray(input.paragraphs) || !Array.isArray(input.issuesByParagraph) || input.paragraphs.length !== input.issuesByParagraph.length) {
+    throw new Error('文风分析段落数量已过期')
+  }
+  if (input.paragraphs.length > 24) throw new Error('一次文风分析最多支持 24 段')
+  input.paragraphs.forEach((text) => {
+    if (typeof text !== 'string' || !text.trim() || text.length > 50_000) throw new Error('文风分析段落内容无效')
+  })
+
+  const modelCategories = new Set(['template-pattern', 'abstractness', 'scene-detachment', 'voice-mismatch', 'rhythm'])
+  const modelSeverities = new Set(['hint', 'warning', 'strong'])
+  const validateModelIssues = (issues: readonly ProseStyleIssue[], paragraphText: string) => {
+    if (!Array.isArray(issues) || issues.length > 2) throw new Error('每段文风分析问题不得超过两项')
+    const seen = new Set<string>()
+    return issues.map((issue) => {
+      if (!issue || typeof issue !== 'object' || issue.source !== 'text-model' || typeof issue.ruleId !== 'string' || !issue.ruleId.startsWith('model-')) {
+        throw new Error('文风分析包含非模型问题')
+      }
+      if (typeof issue.category !== 'string' || !modelCategories.has(issue.category)) throw new Error('文风分析包含未知风险类别')
+      if (typeof issue.severity !== 'string' || !modelSeverities.has(issue.severity)) throw new Error('文风分析严重度无效')
+      if (typeof issue.confidence !== 'number' || !Number.isFinite(issue.confidence) || issue.confidence < 0 || issue.confidence > 1) throw new Error('文风分析置信度无效')
+      if (typeof issue.explanation !== 'string' || !issue.explanation.trim() || issue.explanation.length > 120) throw new Error('文风分析解释无效')
+      if (typeof issue.rewriteGoal !== 'string' || !issue.rewriteGoal.trim() || issue.rewriteGoal.length > 120) throw new Error('文风分析重写目标无效')
+      if (issue.matchedText !== undefined) {
+        if (typeof issue.matchedText !== 'string' || issue.matchedText.length > 80 || !paragraphText.includes(issue.matchedText)) throw new Error('文风分析证据片段无效')
+      }
+      if (seen.has(issue.ruleId)) throw new Error('文风分析包含重复问题')
+      seen.add(issue.ruleId)
+      return { ...issue }
+    })
+  }
+
+  return storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.paragraphs], async () => {
+    const message = await storyDatabase.messages.get(input.messageId)
+    if (!message || message.projectId !== input.projectId || message.kind !== 'prose' || !message.chapterId || !message.paragraphs) {
+      throw new Error('正文消息不存在或不属于当前作品')
+    }
+    if (message.paragraphs.length !== input.paragraphs.length || input.issuesByParagraph.length !== input.paragraphs.length) {
+      throw new Error('文风分析段落数量已过期')
+    }
+    const expected = createMessageParagraphRecords(message)
+    const stored = await storyDatabase.paragraphs.bulkGet(expected.map((paragraph) => paragraph.id))
+    const updates = expected.map((paragraph, index) => {
+      const current = stored[index]
+      if (
+        !current
+        || current.projectId !== input.projectId
+        || current.messageId !== input.messageId
+        || current.chapterId !== message.chapterId
+        || current.index !== index
+        || current.text !== message.paragraphs![index]
+        || current.text !== input.paragraphs[index]
+        || current.fingerprint !== createParagraphFingerprint(input.paragraphs[index])
+      ) throw new Error('正文已发生变化，文风分析结果已过期')
+      if (current.modelAnalysisVersion !== undefined && current.modelAnalysisVersion > input.modelAnalysisVersion) {
+        throw new Error('文风分析结果版本已过期')
+      }
+      const modelIssues = validateModelIssues(input.issuesByParagraph[index], input.paragraphs[index])
+      return {
+        ...current,
+        modelStyleIssues: modelIssues,
+        modelAnalysisVersion: input.modelAnalysisVersion,
+        styleIssues: mergeProseStyleIssues(
+          (current.styleIssues ?? []).filter((issue) => issue.source !== 'text-model' && !issue.ruleId.startsWith('model-')),
+          modelIssues,
+        ),
+      }
+    })
+    if (updates.length) await storyDatabase.paragraphs.bulkPut(updates)
+    return updates
   })
 }
 
