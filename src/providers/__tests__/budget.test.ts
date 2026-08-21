@@ -12,7 +12,7 @@ const textProvider: ProviderConfig = {
   id: 'test',
   name: 'Test',
   baseUrl: 'https://example/v1',
-  model: 'deepseek-chat',
+  model: 'deepseek-v4-flash',
   protocol: 'openai-compatible',
   secretRef: 'provider:text',
 }

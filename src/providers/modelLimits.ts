@@ -5,26 +5,89 @@ export interface ModelLimit {
   output?: number
 }
 
+/**
+ * The reasoning controls advertised by models.dev. These values describe
+ * capabilities only; request field names and JSON shapes belong to an
+ * endpoint adapter (see endpointReasoningAdapters.ts).
+ *
+ * The index signature deliberately keeps fields added by models.dev intact
+ * when the table is refreshed. Known fields are still validated at the data
+ * boundary below before they are exposed to the rest of the app.
+ */
+export type ReasoningOption =
+  | ({ type: 'toggle' } & Record<string, unknown>)
+  | ({ type: 'effort'; values: string[] } & Record<string, unknown>)
+  | ({ type: 'budget_tokens'; min?: number; max?: number } & Record<string, unknown>)
+
+export interface ModelReasoningCapabilities {
+  reasoning: boolean
+  options: ReasoningOption[]
+  effortValues?: string[]
+  budgetRange?: { min?: number; max?: number }
+}
+
 export const MODEL_LIMIT_URLS = [
   'https://cdn.jsdelivr.net/gh/Tangbanfan-coder/tuwenxiaosuo-app@main/data/model-limits.min.json',
   'https://raw.githubusercontent.com/Tangbanfan-coder/tuwenxiaosuo-app/main/data/model-limits.min.json',
 ] as const
-const CACHE_KEY = 'illustrated-story-chat.model-limits.cache.v1'
-const CHECKED_KEY = 'illustrated-story-chat.model-limits.checked.v1'
+const CACHE_KEY = 'illustrated-story-chat.model-limits.cache.v2'
+const CHECKED_KEY = 'illustrated-story-chat.model-limits.checked.v2'
 const CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
 
 interface LimitEntry {
   m: string
   c: number
   o?: number
+  p?: string
+  rg?: 0 | 1
+  ro?: ReasoningOption[]
 }
 
 interface LimitsPayload {
+  schemaVersion?: number
   generatedAt?: string
   models: LimitEntry[]
 }
 
-let runtimeModels: LimitEntry[] = embeddedLimits.models
+let runtimeModels: LimitEntry[] = embeddedLimits.models as LimitEntry[]
+
+const EFFORT_VALUES = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isReasoningOption(value: unknown): value is ReasoningOption {
+  if (!isRecord(value) || typeof value.type !== 'string') return false
+  if (value.type === 'toggle') return true
+  if (value.type === 'effort') {
+    return Array.isArray(value.values)
+      && value.values.every((item) => typeof item === 'string' && item.trim().length > 0)
+  }
+  if (value.type === 'budget_tokens') {
+    return (value.min === undefined || (typeof value.min === 'number' && Number.isFinite(value.min) && value.min >= 0))
+      && (value.max === undefined || (typeof value.max === 'number' && Number.isFinite(value.max) && value.max >= 0))
+      && (value.min === undefined || value.max === undefined || value.min <= value.max)
+  }
+  return false
+}
+
+function isLimitEntry(value: unknown): value is LimitEntry {
+  if (!isRecord(value)
+    || typeof value.m !== 'string' || !value.m.trim()
+    || typeof value.c !== 'number' || !Number.isFinite(value.c) || value.c <= 0
+    || (value.o !== undefined && (typeof value.o !== 'number' || !Number.isFinite(value.o) || value.o <= 0))
+    || (value.p !== undefined && (typeof value.p !== 'string' || !value.p.trim()))
+    || (value.rg !== undefined && value.rg !== 0 && value.rg !== 1)
+    || (value.ro !== undefined && (!Array.isArray(value.ro) || !value.ro.every(isReasoningOption)))) {
+    return false
+  }
+  return true
+}
+
+function isValidModelEntries(value: unknown): value is LimitEntry[] {
+  return Array.isArray(value) && value.length > 0 && value.every(isLimitEntry)
+}
 
 function stripVendorPrefix(modelId: string) {
   const slash = modelId.indexOf('/')
@@ -46,6 +109,77 @@ function pickLimit(modelId: string): ModelLimit | undefined {
     }
   }
   return undefined
+}
+
+function modelVariants(modelId: string) {
+  const variants = new Set<string>()
+  const add = (value: string) => {
+    const normalized = value.trim().toLocaleLowerCase()
+    if (!normalized) return
+    variants.add(normalized)
+    const stripped = stripVendorPrefix(normalized)
+    if (stripped) variants.add(stripped)
+  }
+  add(modelId)
+  return [...variants]
+}
+
+function matchesModelId(entryModelId: string, requestedModelId: string) {
+  const candidates = modelVariants(entryModelId)
+  const requested = modelVariants(requestedModelId)
+  for (const candidate of candidates) {
+    for (const normalized of requested) {
+      if (candidate === normalized) return true
+    }
+  }
+  for (const candidate of candidates.sort((left, right) => right.length - left.length)) {
+    for (const normalized of requested) {
+      const exactMatch = normalized.startsWith(candidate)
+        && (normalized[candidate.length] === undefined || /[:/\-._\s]/.test(normalized[candidate.length] ?? ''))
+      const reverseMatch = candidate.startsWith(normalized)
+        && /[:/\-._\s]/.test(candidate[normalized.length] ?? '')
+      if (exactMatch || reverseMatch) return true
+    }
+  }
+  return false
+}
+
+function reasoningCapabilitiesFromEntry(entry: LimitEntry): ModelReasoningCapabilities | undefined {
+  if (entry.rg === undefined) return undefined
+  const options = entry.ro ?? []
+  const effortOption = options.find((option) => option.type === 'effort')
+  const budgetOption = options.find((option) => option.type === 'budget_tokens')
+  const effortValues = effortOption?.type === 'effort'
+    ? effortOption.values.filter((value) => EFFORT_VALUES.has(value.toLocaleLowerCase()))
+    : undefined
+  const budgetRange = budgetOption?.type === 'budget_tokens'
+    ? {
+        ...(budgetOption.min === undefined ? {} : { min: budgetOption.min }),
+        ...(budgetOption.max === undefined ? {} : { max: budgetOption.max }),
+      }
+    : undefined
+  return {
+    reasoning: entry.rg === 1,
+    options,
+    ...(effortValues === undefined ? {} : { effortValues }),
+    ...(budgetRange && Object.keys(budgetRange).length ? { budgetRange } : {}),
+  }
+}
+
+/**
+ * Looks up reasoning capabilities using the models.dev provider ID and model
+ * ID as a joint key. Unlike context-window lookup, this function intentionally
+ * never falls back to an entry belonging to another provider: the same model
+ * name may have different controls and legal values on different routes.
+ */
+export function lookupReasoningCapabilities(providerId: string, modelId: string): ModelReasoningCapabilities | undefined {
+  const provider = providerId.trim().toLocaleLowerCase()
+  if (!provider || !modelId.trim()) return undefined
+  const candidates = runtimeModels
+    .filter((entry) => entry.p?.trim().toLocaleLowerCase() === provider)
+    .sort((left, right) => right.m.length - left.m.length)
+  const match = candidates.find((entry) => matchesModelId(entry.m, modelId))
+  return match ? reasoningCapabilitiesFromEntry(match) : undefined
 }
 
 export function lookupModelLimit(modelId: string): ModelLimit | undefined {
@@ -142,8 +276,8 @@ export function refreshModelLimits(): Promise<void> {
       try {
         const raw = localStorage.getItem(CACHE_KEY)
         if (!raw) return
-        const cached = JSON.parse(raw) as { etag?: string; models?: LimitEntry[] }
-        if (Array.isArray(cached.models) && cached.models.length) runtimeModels = cached.models
+        const cached = JSON.parse(raw) as { schemaVersion?: number; etag?: string; models?: unknown }
+        if (cached.schemaVersion === 2 && isValidModelEntries(cached.models)) runtimeModels = cached.models
       } catch {
         // Corrupted cache; keep the embedded table.
       }
@@ -155,7 +289,10 @@ export function refreshModelLimits(): Promise<void> {
         let etag = ''
         try {
           const raw = localStorage.getItem(CACHE_KEY)
-          if (raw) etag = (JSON.parse(raw) as { etag?: string }).etag ?? ''
+          if (raw) {
+            const cached = JSON.parse(raw) as { schemaVersion?: number; etag?: string }
+            if (cached.schemaVersion === 2) etag = cached.etag ?? ''
+          }
         } catch {
           etag = ''
         }
@@ -185,15 +322,13 @@ export function refreshModelLimits(): Promise<void> {
             } catch {
               continue
             }
-            const valid = Array.isArray(payload.models) && payload.models.length
-              && payload.models.every((model) =>
-                typeof model.m === 'string' && model.m.trim()
-                && typeof model.c === 'number' && Number.isFinite(model.c) && model.c > 0
-                && (model.o === undefined || (typeof model.o === 'number' && Number.isFinite(model.o) && model.o > 0)))
+            const valid = payload.schemaVersion === 2 && isValidModelEntries(payload.models)
             if (!valid) continue
 
             runtimeModels = payload.models
             localStorage.setItem(CACHE_KEY, JSON.stringify({
+              schemaVersion: 2,
+              generatedAt: payload.generatedAt,
               etag: response.headers.get('etag') ?? '',
               models: payload.models,
             }))

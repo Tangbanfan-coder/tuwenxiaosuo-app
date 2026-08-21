@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { heuristicModelContextTokens, isModelKnown, lookupModelLimit, MODEL_LIMIT_URLS, resolveModelWindow, withModelMetadata } from '../modelLimits'
+import { describe, expect, it, vi } from 'vitest'
+import { heuristicModelContextTokens, isModelKnown, lookupModelLimit, lookupReasoningCapabilities, MODEL_LIMIT_URLS, refreshModelLimits, resolveModelWindow, withModelMetadata } from '../modelLimits'
 import type { ProviderConfig } from '../types'
 
 describe('模型窗口匹配', () => {
@@ -38,6 +38,69 @@ describe('模型窗口匹配', () => {
   it('在线模型表优先使用 jsDelivr，并保留 GitHub Raw 回退', () => {
     expect(MODEL_LIMIT_URLS[0]).toContain('cdn.jsdelivr.net')
     expect(MODEL_LIMIT_URLS[1]).toContain('raw.githubusercontent.com')
+  })
+})
+
+describe('思考能力联合键匹配', () => {
+  it('按 providerId 区分同名模型并保留 effort 值域', () => {
+    expect(lookupReasoningCapabilities('zhipuai', 'glm-5.2')?.effortValues).toEqual(['high', 'max'])
+    expect(lookupReasoningCapabilities('alibaba', 'glm-5.2')?.effortValues).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+  })
+
+  it('未知 provider 不跨 provider 回退', () => {
+    expect(lookupReasoningCapabilities('missing-provider', 'glm-5.2')).toBeUndefined()
+  })
+
+  it('保留 budget_tokens 的 min/max 能力边界', () => {
+    const capabilities = lookupReasoningCapabilities('siliconflow', 'deepseek-ai/DeepSeek-V4-Flash')
+    expect(capabilities?.budgetRange).toEqual({ min: 128, max: 32768 })
+    expect(capabilities?.options).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'budget_tokens', min: 128, max: 32768 }),
+    ]))
+  })
+})
+
+describe('模型表缓存版本', () => {
+  it('忽略旧 v1 缓存，即使 v2 已记录本轮检查时间', async () => {
+    const values = new Map<string, string>([
+      ['illustrated-story-chat.model-limits.cache.v1', JSON.stringify({ schemaVersion: 1, models: [{ m: 'legacy-cache-only', c: 123 }] })],
+      ['illustrated-story-chat.model-limits.checked.v2', String(Date.now())],
+    ])
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+      removeItem: (key: string) => { values.delete(key) },
+    })
+    vi.stubGlobal('window', { setTimeout, clearTimeout })
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    try {
+      await refreshModelLimits()
+      expect(lookupModelLimit('legacy-cache-only')).toBeUndefined()
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('拒绝 schemaVersion 1 的远程模型表', async () => {
+    const values = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+      removeItem: (key: string) => { values.delete(key) },
+    })
+    vi.stubGlobal('window', { setTimeout, clearTimeout })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ schemaVersion: 1, models: [{ m: 'v1-remote-only', c: 123 }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })))
+    try {
+      await refreshModelLimits()
+      expect(lookupModelLimit('v1-remote-only')).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

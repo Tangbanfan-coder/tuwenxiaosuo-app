@@ -301,6 +301,20 @@ describe('ProviderSettingsDialog Android streaming', () => {
 })
 
 describe('ProviderSettingsDialog compatibility presets', () => {
+  it('已识别官方 toggle-only 模型明确提示等级不生效', () => {
+    const withToggleOnlyModel: ProviderSettings = {
+      ...settings,
+      text: {
+        ...settings.text,
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+        model: 'glm-4.6',
+      },
+    }
+    render(<ProviderSettingsDialog open settings={withToggleOnlyModel} onClose={vi.fn()} onSave={vi.fn()} />)
+
+    expect(screen.getByText('该模型仅支持开/关思考，低、中、高等级不生效。')).toBeDefined()
+  })
+
   it('旧配置（无 capabilities）默认选中自动兼容，保存时不新增能力字段', async () => {
     const user = userEvent.setup()
     const onSave = vi.fn()
