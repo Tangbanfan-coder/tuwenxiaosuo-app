@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { buildChatCompletionPayload, extractStreamingTextDelta, extractTextResponse, inferOutputTokenParameter, resolveTextTransport } from '../chatCompatibility'
+import { buildChatCompletionPayload, extractStreamingTextDelta, extractTextResponse, inferOutputTokenParameter, resolveReasoningShape, resolveTextTransport } from '../chatCompatibility'
+import { findEndpointReasoningAdapter, inferEndpointReasoningCapabilities } from '../endpointReasoningAdapters'
+import { lookupReasoningCapabilities } from '../modelLimits'
 import type { ProviderConfig } from '../types'
 
 const baseConfig: ProviderConfig = {
@@ -45,6 +47,101 @@ describe('buildChatCompletionPayload', () => {
       model: 'gpt-4o', messages: [], reasoningEffort: 'high', stream: true,
     })
     expect(body.reasoning_effort).toBeUndefined()
+  })
+
+  it('手工 supported 只保留顶层 reasoning_effort，不进入官方端点适配', () => {
+    const body = buildChatCompletionPayload({
+      ...baseConfig,
+      baseUrl: 'https://api.deepseek.com/v1',
+      capabilities: { reasoningEffortParameter: 'supported' },
+    }, {
+      model: 'deepseek-v4-flash', messages: [], reasoningEffort: 'medium', stream: true,
+      extra: { thinking: { type: 'enabled' }, enable_thinking: true },
+    })
+    expect(body.reasoning_effort).toBe('medium')
+    expect(body).not.toHaveProperty('thinking')
+    expect(body).not.toHaveProperty('enable_thinking')
+  })
+
+  it('输入 auto 时即使 extra 带有旧思考字段也全部省略', () => {
+    const body = buildChatCompletionPayload(baseConfig, {
+      model: 'gpt-4o', messages: [], reasoningEffort: 'auto', stream: true,
+      extra: { reasoning_effort: 'high', thinking: { type: 'enabled' }, thinking_budget: 2048 },
+    })
+    expect(body).not.toHaveProperty('reasoning_effort')
+    expect(body).not.toHaveProperty('thinking')
+    expect(body).not.toHaveProperty('thinking_budget')
+  })
+
+  it('DeepSeek 官方端点按模型值域把 medium 向上 clamp 到 high', () => {
+    const body = buildChatCompletionPayload({ ...baseConfig, baseUrl: 'https://api.deepseek.com/v1' }, {
+      model: 'deepseek-v4-flash', messages: [], reasoningEffort: 'medium', stream: true,
+    })
+    expect(body).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' })
+  })
+
+  it('DashScope toggle 模型发送 enable_thinking 与默认预算', () => {
+    const body = buildChatCompletionPayload({ ...baseConfig, baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' }, {
+      model: 'qwen3.5-plus', messages: [], reasoningEffort: 'medium', stream: false,
+    })
+    expect(body.enable_thinking).toBe(true)
+    expect(body.thinking_budget).toBe(8192)
+    expect(body).not.toHaveProperty('reasoning_effort')
+  })
+
+  it('OpenAI 官方端点保持 reasoning_effort passthrough 编码', () => {
+    const body = buildChatCompletionPayload({ ...baseConfig, baseUrl: 'https://api.openai.com/v1' }, {
+      model: 'o3', messages: [], reasoningEffort: 'high', stream: true,
+    })
+    expect(body.reasoning_effort).toBe('high')
+    expect(body).not.toHaveProperty('thinking')
+    expect(body).not.toHaveProperty('enable_thinking')
+  })
+
+  it('同名 glm-5.2 使用 providerId 联合键而不跨厂商回退', () => {
+    const zhipu = lookupReasoningCapabilities('zhipuai', 'glm-5.2')
+    const alibaba = lookupReasoningCapabilities('alibaba', 'glm-5.2')
+    expect(zhipu?.effortValues).toEqual(['high', 'max'])
+    expect(alibaba?.effortValues).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    expect(lookupReasoningCapabilities('unknown-provider', 'glm-5.2')).toBeUndefined()
+  })
+
+  it('伪装官方域名按非官方端点保持顶层 passthrough', () => {
+    expect(findEndpointReasoningAdapter('https://api.deepseek.com.example.org/v1')).toBeUndefined()
+    const body = buildChatCompletionPayload({ ...baseConfig, baseUrl: 'https://api.deepseek.com.example.org/v1' }, {
+      model: 'deepseek-v4-flash', messages: [], reasoningEffort: 'medium', stream: true,
+    })
+    expect(body.reasoning_effort).toBe('medium')
+    expect(body).not.toHaveProperty('thinking')
+  })
+
+  it('resolveReasoningShape 返回官方 clamp 后的 effectiveEffort', () => {
+    expect(resolveReasoningShape({ ...baseConfig, baseUrl: 'https://api.deepseek.com/v1' }, {
+      model: 'deepseek-v4-flash', reasoningEffort: 'medium',
+    })).toMatchObject({ source: 'adapter', effectiveEffort: 'high' })
+  })
+
+  it('同厂商 heuristic 仅覆盖 DeepSeek V4，且 GLM-5.2 fallback 保守使用 high/max', () => {
+    const deepseek = findEndpointReasoningAdapter('https://api.deepseek.com/v1')!
+    expect(inferEndpointReasoningCapabilities(deepseek, 'deepseek-v3.2')).toBeUndefined()
+    expect(inferEndpointReasoningCapabilities(deepseek, 'deepseek-v4-flash')?.effortValues).toEqual(['low', 'high', 'max'])
+
+    const zhipu = findEndpointReasoningAdapter('https://open.bigmodel.cn/api/paas/v4')!
+    expect(inferEndpointReasoningCapabilities(zhipu, 'glm-5.2')?.effortValues).toEqual(['high', 'max'])
+  })
+
+  it('预算 clamp 作用于 DashScope adapter 的实际 thinking_budget 编码', () => {
+    const adapter = findEndpointReasoningAdapter('https://dashscope.aliyuncs.com/compatible-mode/v1')!
+    const encoded = adapter.encode({
+      effort: 'low',
+      modelId: 'qwen3.5-plus',
+      capabilities: {
+        reasoning: true,
+        options: [{ type: 'toggle' }, { type: 'budget_tokens', min: 20_000, max: 20_000 }],
+        budgetRange: { min: 20_000, max: 20_000 },
+      },
+    })
+    expect(encoded.thinking_budget).toBe(20_000)
   })
 
   it('输出参数 auto 时按模型 ID 推断参数名并发送预算值', () => {

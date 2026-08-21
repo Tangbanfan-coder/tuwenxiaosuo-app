@@ -1,5 +1,7 @@
 import type { ProviderConfig, ReasoningEffort } from './types'
 import { resolveCapabilities } from './providerCapabilities'
+import { clampReasoningEffort, findEndpointReasoningAdapter, inferEndpointReasoningCapabilities } from './endpointReasoningAdapters'
+import { lookupReasoningCapabilities, type ModelReasoningCapabilities } from './modelLimits'
 
 /**
  * Unified chat-completions request construction and text response extraction.
@@ -89,12 +91,85 @@ export function inferOutputTokenParameter(modelId: string): 'max_tokens' | 'max_
   return 'max_tokens'
 }
 
+export type ReasoningResolutionSource = 'auto' | 'manual-supported' | 'unsupported' | 'passthrough' | 'adapter' | 'none'
+
+export interface ResolvedReasoningShape {
+  fields: Record<string, unknown>
+  effectiveEffort?: string
+  source: ReasoningResolutionSource
+}
+
+const REASONING_FIELD_NAMES = [
+  'reasoning_effort',
+  'enable_thinking',
+  'thinking',
+  'thinking_budget',
+  'reasoning',
+] as const
+
+function withoutReasoningFields(fields: Record<string, unknown>) {
+  const clean = { ...fields }
+  for (const field of REASONING_FIELD_NAMES) delete clean[field]
+  return clean
+}
+
+function effectiveEffortForCapabilities(requested: ReasoningEffort, capabilities: ModelReasoningCapabilities) {
+  return clampReasoningEffort(requested, capabilities.effortValues)
+}
+
+/**
+ * Resolves the single request-body representation of a user-selected effort.
+ * Manual capability overrides remain authoritative; only automatic capability
+ * mode enters endpoint/model reasoning resolution. An unrecognised endpoint is
+ * deliberately treated as an OpenAI-compatible relay and receives the legacy
+ * top-level field unchanged.
+ */
+export function resolveReasoningShape(config: ProviderConfig, input: Pick<BuildChatCompletionPayloadInput, 'model' | 'reasoningEffort'>): ResolvedReasoningShape {
+  const requested = input.reasoningEffort
+  if (!requested || requested === 'auto') return { fields: {}, source: 'auto' }
+
+  const caps = resolveCapabilities(config)
+  if (caps.reasoningEffortParameter === 'unsupported') return { fields: {}, source: 'unsupported' }
+  if (caps.reasoningEffortParameter === 'supported') {
+    return { fields: { reasoning_effort: requested }, effectiveEffort: requested, source: 'manual-supported' }
+  }
+
+  const adapter = findEndpointReasoningAdapter(config.baseUrl)
+  if (!adapter) {
+    return { fields: { reasoning_effort: requested }, effectiveEffort: requested, source: 'passthrough' }
+  }
+
+  let capabilities: ModelReasoningCapabilities | undefined
+  if (adapter.providerId) capabilities = lookupReasoningCapabilities(adapter.providerId, input.model)
+  if (!capabilities) capabilities = inferEndpointReasoningCapabilities(adapter, input.model)
+  if (!capabilities?.reasoning) return { fields: {}, source: 'none' }
+
+  const effectiveEffort = effectiveEffortForCapabilities(requested, capabilities)
+  // Toggle-only models intentionally send the toggle but have no legal effort
+  // value. The adapter remains responsible for the toggle shape.
+  if (adapter.capabilitiesSource !== 'heuristic-only' && capabilities.effortValues !== undefined && !effectiveEffort) {
+    return { fields: {}, source: 'none' }
+  }
+  const encoded = adapter.encode({
+    effort: effectiveEffort ?? requested,
+    modelId: input.model,
+    capabilities,
+  })
+  if (!Object.keys(encoded).length) return { fields: {}, source: 'none' }
+  return {
+    fields: encoded,
+    ...(effectiveEffort === undefined ? {} : { effectiveEffort }),
+    source: 'adapter',
+  }
+}
+
 /**
  * Builds the exact chat-completions JSON body. Capability decisions live here
  * only; no call site re-derives reasoning/output/stream behavior.
  */
 export function buildChatCompletionPayload(config: ProviderConfig, input: BuildChatCompletionPayloadInput): Record<string, unknown> {
   const caps = resolveCapabilities(config)
+  const reasoning = resolveReasoningShape(config, input)
   const payload: Record<string, unknown> = {
     model: input.model,
     messages: input.messages,
@@ -106,9 +181,7 @@ export function buildChatCompletionPayload(config: ProviderConfig, input: BuildC
   // call sites (structure/rewrite/corpus/vision) must never be flipped.
   payload.stream = input.forceNonStream ? false : input.stream
 
-  if (caps.reasoningEffortParameter !== 'unsupported' && input.reasoningEffort && input.reasoningEffort !== 'auto') {
-    payload.reasoning_effort = input.reasoningEffort
-  }
+  Object.assign(payload, reasoning.fields)
 
   if (input.maxOutputTokens !== undefined && input.maxOutputTokens > 0) {
     const mode = caps.outputTokenParameter === 'auto'
@@ -119,7 +192,16 @@ export function buildChatCompletionPayload(config: ProviderConfig, input: BuildC
     // 'none' sends no output-token parameter.
   }
 
-  return { ...payload, ...(input.extra ?? {}) }
+  // Extra request fields are still supported, but cannot override the
+  // reasoning decision. This keeps `auto` and `unsupported` strict even if a
+  // legacy call site happens to include a stale vendor-specific field.
+  const extra = withoutReasoningFields(input.extra ?? {})
+  const merged = { ...payload, ...extra }
+  if (reasoning.fields.reasoning_effort !== undefined) merged.reasoning_effort = reasoning.fields.reasoning_effort
+  else if (reasoning.source !== 'adapter') {
+    for (const field of REASONING_FIELD_NAMES) delete merged[field]
+  }
+  return merged
 }
 
 /**
