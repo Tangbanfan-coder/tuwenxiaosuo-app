@@ -139,6 +139,21 @@ const rules: RuleMatcher[] = [
 
 export const PROSE_STYLE_RULES: readonly ProseStyleRuleDefinition[] = rules.map(({ detect: _detect, ...rule }) => rule)
 
+/**
+ * Combines deterministic and semantic diagnostics without creating a second
+ * source of truth. Rule ids are stable; a later source replaces an identical
+ * id while preserving the first-seen ordering for a predictable UI.
+ */
+export function mergeProseStyleIssues(...groups: Array<readonly ProseStyleIssue[] | undefined>): ProseStyleIssue[] {
+  const merged = new Map<string, ProseStyleIssue>()
+  for (const group of groups) {
+    for (const issue of group ?? []) {
+      if (!merged.has(issue.ruleId)) merged.set(issue.ruleId, issue)
+    }
+  }
+  return [...merged.values()]
+}
+
 export function detectProseStyleIssues(paragraphs: readonly string[]): ProseStyleIssue[][] {
   return paragraphs.map((paragraph, paragraphIndex) => rules.flatMap((rule) => {
     const detected = rule.detect(paragraph, paragraphs, paragraphIndex)

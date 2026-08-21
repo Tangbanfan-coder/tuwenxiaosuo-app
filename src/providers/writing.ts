@@ -28,6 +28,7 @@ export {
 export { parseWritingResult, projectStreamingProse } from './writing/result'
 export { analyzeFeedbackPreference, type AnalyzedPreference, type FeedbackPreferenceInput } from './writing/feedbackPreference'
 export { detectProseStyleIssues, PROSE_STYLE_RULES } from '../domain/proseStyle'
+export { analyzeProseStyle, parseModelProseAnalysis, PROSE_MODEL_ANALYSIS_VERSION, type ModelProseAnalysisRequest } from './writing/proseAnalysis'
 export { parseRewrittenParagraph, rewriteProseParagraph, type RewriteParagraphRequest } from './writing/rewrite'
 export {
   parseStyleCorpusSuggestions,

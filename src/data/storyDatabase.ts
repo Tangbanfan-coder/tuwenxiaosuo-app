@@ -21,6 +21,7 @@ import type {
   ProjectStyle,
   ProseEvaluationEvent,
   ProjectWorkspace,
+  ProseStyleIssue,
   ReferenceStyleMode,
   SceneNotes,
   StyleCorpusBinding,
@@ -39,9 +40,9 @@ import type {
 import { DEFAULT_ILLUSTRATION_STYLE_ID, getIllustrationStylePreset } from '../domain/illustrationStyles'
 import { resolveIllustrationReferences } from '../domain/illustrationReferences'
 import { materializeWritingSceneNotes, reconcileForeshadowing } from '../domain/foreshadowing'
-import { createParagraphFingerprint, hashText as hashTextImpl, normalizeText as normalizeParagraphText } from '../domain/paragraphs'
+import { createParagraphFingerprint, hasWritingContentOverlap, hashText as hashTextImpl, normalizeText as normalizeParagraphText } from '../domain/paragraphs'
 import { loadGlobalWritingInstructions } from '../providers/config'
-import { detectProseStyleIssues, PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
+import { detectProseStyleIssues, mergeProseStyleIssues, PROSE_STYLE_RULE_VERSION } from '../domain/proseStyle'
 
 export { hashText, normalizeText } from '../domain/paragraphs'
 
@@ -680,13 +681,109 @@ export async function listMessageParagraphsWithCurrentStyleIssues(projectId: str
         && current.index === paragraph.index
         && current.text === paragraph.text
         && current.fingerprint === paragraph.fingerprint
-      return exact && current.styleRuleVersion === PROSE_STYLE_RULE_VERSION
-        ? current
-        : { ...paragraph, createdAt: exact ? current.createdAt : paragraph.createdAt }
+      if (exact && current.styleRuleVersion === PROSE_STYLE_RULE_VERSION) return current
+      if (exact) {
+        return {
+          ...paragraph,
+          createdAt: current.createdAt,
+          modelStyleIssues: current.modelStyleIssues,
+          modelAnalysisVersion: current.modelAnalysisVersion,
+          styleIssues: mergeProseStyleIssues(paragraph.styleIssues, current.modelStyleIssues),
+        }
+      }
+      return { ...paragraph, createdAt: paragraph.createdAt }
     })
     const staleRows = rows.filter((row, index) => row !== stored[index])
     if (staleRows.length) await storyDatabase.paragraphs.bulkPut(staleRows)
     return rows
+  })
+}
+
+/**
+ * Persists semantic model findings for one exact prose message version. Local
+ * rules remain the canonical deterministic layer; model findings are merged
+ * into the same display field but retained separately for safe re-analysis.
+ */
+export async function saveModelProseAnalysis(input: {
+  projectId: string
+  messageId: string
+  paragraphs: readonly string[]
+  issuesByParagraph: readonly (readonly ProseStyleIssue[])[]
+  modelAnalysisVersion: number
+}) {
+  if (!input || typeof input.projectId !== 'string' || !input.projectId.trim() || typeof input.messageId !== 'string' || !input.messageId.trim()) {
+    throw new Error('文风分析缺少作品或消息标识')
+  }
+  if (!Number.isInteger(input.modelAnalysisVersion) || input.modelAnalysisVersion < 1) throw new Error('文风分析版本无效')
+  if (!Array.isArray(input.paragraphs) || !Array.isArray(input.issuesByParagraph) || input.paragraphs.length !== input.issuesByParagraph.length) {
+    throw new Error('文风分析段落数量已过期')
+  }
+  if (input.paragraphs.length > 24) throw new Error('一次文风分析最多支持 24 段')
+  input.paragraphs.forEach((text) => {
+    if (typeof text !== 'string' || !text.trim() || text.length > 50_000) throw new Error('文风分析段落内容无效')
+  })
+
+  const modelCategories = new Set(['template-pattern', 'abstractness', 'scene-detachment', 'voice-mismatch', 'rhythm'])
+  const modelSeverities = new Set(['hint', 'warning', 'strong'])
+  const validateModelIssues = (issues: readonly ProseStyleIssue[], paragraphText: string) => {
+    if (!Array.isArray(issues) || issues.length > 2) throw new Error('每段文风分析问题不得超过两项')
+    const seen = new Set<string>()
+    return issues.map((issue) => {
+      if (!issue || typeof issue !== 'object' || issue.source !== 'text-model' || typeof issue.ruleId !== 'string' || !issue.ruleId.startsWith('model-')) {
+        throw new Error('文风分析包含非模型问题')
+      }
+      if (typeof issue.category !== 'string' || !modelCategories.has(issue.category)) throw new Error('文风分析包含未知风险类别')
+      if (typeof issue.severity !== 'string' || !modelSeverities.has(issue.severity)) throw new Error('文风分析严重度无效')
+      if (typeof issue.confidence !== 'number' || !Number.isFinite(issue.confidence) || issue.confidence < 0 || issue.confidence > 1) throw new Error('文风分析置信度无效')
+      if (typeof issue.explanation !== 'string' || !issue.explanation.trim() || issue.explanation.length > 120) throw new Error('文风分析解释无效')
+      if (typeof issue.rewriteGoal !== 'string' || !issue.rewriteGoal.trim() || issue.rewriteGoal.length > 120) throw new Error('文风分析重写目标无效')
+      if (issue.matchedText !== undefined) {
+        if (typeof issue.matchedText !== 'string' || issue.matchedText.length > 80 || !paragraphText.includes(issue.matchedText)) throw new Error('文风分析证据片段无效')
+      }
+      if (seen.has(issue.ruleId)) throw new Error('文风分析包含重复问题')
+      seen.add(issue.ruleId)
+      return { ...issue }
+    })
+  }
+
+  return storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.paragraphs], async () => {
+    const message = await storyDatabase.messages.get(input.messageId)
+    if (!message || message.projectId !== input.projectId || message.kind !== 'prose' || !message.chapterId || !message.paragraphs) {
+      throw new Error('正文消息不存在或不属于当前作品')
+    }
+    if (message.paragraphs.length !== input.paragraphs.length || input.issuesByParagraph.length !== input.paragraphs.length) {
+      throw new Error('文风分析段落数量已过期')
+    }
+    const expected = createMessageParagraphRecords(message)
+    const stored = await storyDatabase.paragraphs.bulkGet(expected.map((paragraph) => paragraph.id))
+    const updates = expected.map((paragraph, index) => {
+      const current = stored[index]
+      if (
+        !current
+        || current.projectId !== input.projectId
+        || current.messageId !== input.messageId
+        || current.chapterId !== message.chapterId
+        || current.index !== index
+        || current.text !== message.paragraphs![index]
+        || current.text !== input.paragraphs[index]
+        || current.fingerprint !== createParagraphFingerprint(input.paragraphs[index])
+      ) throw new Error('正文已发生变化，文风分析结果已过期')
+      if (current.modelAnalysisVersion !== undefined && current.modelAnalysisVersion > input.modelAnalysisVersion) {
+        throw new Error('文风分析结果版本已过期')
+      }
+      const modelIssues = validateModelIssues(input.issuesByParagraph[index], input.paragraphs[index])
+      return {
+        ...current,
+        modelStyleIssues: modelIssues,
+        modelAnalysisVersion: input.modelAnalysisVersion,
+        styleIssues: mergeProseStyleIssues(
+          (current.styleIssues ?? []).filter((issue) => issue.source !== 'text-model' && !issue.ruleId.startsWith('model-')),
+          modelIssues,
+        ),
+      }
+    })
+    if (updates.length) await storyDatabase.paragraphs.bulkPut(updates)
+    return updates
   })
 }
 
@@ -1279,13 +1376,46 @@ export type SaveWritingCandidateInput = Omit<WritingCandidate, 'id' | 'status' |
 export async function saveWritingCandidate(input: SaveWritingCandidateInput) {
   const now = Date.now()
   const candidate: WritingCandidate = { ...input, id: createId('candidate'), status: 'ready', createdAt: now, updatedAt: now }
-  await storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.writingCandidates], async () => {
+  await storyDatabase.transaction('rw', [storyDatabase.messages, storyDatabase.chapters, storyDatabase.writingCandidates], async () => {
     const user = await storyDatabase.messages.where('projectId').equals(input.projectId)
       .filter((message) => message.kind === 'user' && message.turnId === input.turnId).first()
     const currentRequest = user?.pendingRevisionText ?? user?.text
     if (!user || !currentRequest || !input.sourceUserText || currentRequest !== input.sourceUserText) {
       throw new Error('发送内容已修改，请重新生成候选稿')
     }
+
+    // Read the replaced prose and its chapter in this same transaction as the
+    // candidate write.  A stale regeneration response must not be allowed to
+    // pass the user-text check while another tab changes the original turn or
+    // its chapter between validation and persistence.
+    const prose = await storyDatabase.messages.get(input.proseMessageId)
+    const chapter = await storyDatabase.chapters.get(input.chapterId)
+    const proseText = (prose?.paragraphs ?? []).join('\n\n')
+    const currentBaseContent = prose && chapter && proseText
+      && chapter.content.endsWith(proseText)
+      ? chapter.content.slice(0, chapter.content.length - proseText.length).trimEnd()
+      : undefined
+    if (
+      !prose
+      || prose.projectId !== input.projectId
+      || prose.kind !== 'prose'
+      || prose.turnId !== input.turnId
+      || prose.chapterId !== input.chapterId
+      // Older persisted prose messages did not carry a status; treat the
+      // missing value as the legacy equivalent of ready.
+      || prose.status !== undefined && prose.status !== 'ready'
+      || !prose.paragraphs?.length
+      || !chapter
+      || chapter.projectId !== input.projectId
+      || hashTextImpl(chapter.content) !== input.baseChapterHash
+      || currentBaseContent !== input.baseChapterContent
+    ) {
+      throw new Error('章节正文已经变化，请保留当前版本并重新生成候选稿')
+    }
+    if (hasWritingContentOverlap(chapter.content, input.result.paragraphs, prose.paragraphs)) {
+      throw new Error('生成内容与已有正文高度重合，未追加。请调整要求后重试。')
+    }
+
     await storyDatabase.writingCandidates.where('[projectId+turnId]').equals([input.projectId, input.turnId]).delete()
     await storyDatabase.writingCandidates.add(candidate)
   })
@@ -1951,10 +2081,7 @@ export async function completeWritingTurn(
       // copy of its tail. Exact paragraph and long normalized suffix matches
       // are rejected before any side effect in this transaction.
       if (!forceNewChapter && result.chapterAction === 'continue' && activeChapter?.content) {
-        const existing = normalizeParagraphText(activeChapter.content)
-        const generated = normalizeParagraphText(result.paragraphs.join('\n\n'))
-        const tail = existing.slice(-Math.min(existing.length, 1_200))
-        if (generated.length >= 80 && (existing.includes(generated) || tail.length >= 80 && generated.includes(tail))) {
+        if (hasWritingContentOverlap(activeChapter.content, result.paragraphs)) {
           throw new Error('生成内容与已有正文高度重合，未追加。请调整要求后重试。')
         }
       }
@@ -2089,6 +2216,9 @@ export async function adoptWritingCandidate(projectId: string, turnId: string) {
       const project = await storyDatabase.projects.get(projectId)
       if (!project) throw new Error('当前作品不存在')
       const result = candidate.result
+      if (hasWritingContentOverlap(target.chapter.content, result.paragraphs, target.prose.paragraphs ?? [])) {
+        throw new Error('生成内容与已有正文高度重合，未追加。请调整要求后重试。')
+      }
       const generatedSummary = result.chapterSummary?.trim() || undefined
       const chapterTitle = result.chapterTitle || target.chapter.title
       const chapterContent = [candidate.baseChapterContent.trim(), result.paragraphs.join('\n\n')].filter(Boolean).join('\n\n')
