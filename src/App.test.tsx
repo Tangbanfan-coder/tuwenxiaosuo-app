@@ -1074,7 +1074,7 @@ describe('latest prose regeneration UI', () => {
     const editor = screen.getByRole('textbox', { name: '编辑已发送内容' })
     await user.clear(editor)
     await user.type(editor, '改成码头重逢')
-    await user.click(screen.getByRole('button', { name: '保存已发送内容' }))
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
 
     expect(await screen.findByText('改成码头重逢')).toBeDefined()
     expect(screen.queryByText('旧请求文本')).toBeNull()
@@ -1272,7 +1272,7 @@ describe('生成停止与重试', () => {
     const editor = screen.getByRole('textbox', { name: '编辑已发送内容' })
     await user.clear(editor)
     await user.type(editor, '改成雨夜重逢')
-    await user.click(screen.getByRole('button', { name: '保存已发送内容' }))
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
     await waitFor(() => expect(databaseMocks.saveLatestUserMessageRevision).toHaveBeenCalledWith(project.id, 'user-1', '改成雨夜重逢'))
 
     await user.click(screen.getByRole('button', { name: '重新生成' }))

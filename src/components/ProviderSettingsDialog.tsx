@@ -4,10 +4,10 @@ import { Check, ChevronDown, Eye, EyeOff, LoaderCircle, PlugZap, Plus, Save, Sea
 import { createProviderConfig } from '../providers/config'
 import { browserTransport } from '../providers/browserTransport'
 import { listOpenAiModels } from '../providers/openAiCompatible'
-import { isModelKnown, lookupModelLimit, lookupReasoningCapabilities, withModelMetadata } from '../providers/modelLimits'
+import { isModelKnown, lookupModelLimit, withModelMetadata } from '../providers/modelLimits'
 import { capabilitiesForPreset, presetForCapabilities, resolveCapabilities, type CompatibilityPreset } from '../providers/providerCapabilities'
 import { resolveTextTransport } from '../providers/chatCompatibility'
-import { findEndpointReasoningAdapter } from '../providers/endpointReasoningAdapters'
+import { LEGACY_REASONING_EFFORT_OPTIONS, normalizeReasoningEffortSelection, resolveReasoningEffortOptions } from '../providers/endpointReasoningAdapters'
 import { secretStore } from '../providers/secretStore'
 import type { ImageEdits, ModelSummary, OutputTokenParameter, ProviderCapabilities, ProviderConfig, ProviderSettings, ProviderSlot, ReasoningEffortParameter, StructuredOutput, TextTransport, TokenizerStrategy, VisionInput } from '../providers/types'
 import { usePresence } from '../hooks/usePresence'
@@ -198,19 +198,12 @@ export default function ProviderSettingsDialog({ open, nested = false, settings,
     return `未能识别“${current.model}”的上下文窗口，将按 32K 保守估算；建议在上方手动填写窗口大小。`
   }, [current.model, current.manualContextLength])
 
-  const toggleOnlyReasoningHint = useMemo(() => {
-    if (activeSlot !== 'text' || !current.model) return undefined
-    const adapter = findEndpointReasoningAdapter(current.baseUrl)
-    if (!adapter?.providerId || adapter.capabilitiesSource !== 'models.dev') return undefined
-    const capabilities = lookupReasoningCapabilities(adapter.providerId, current.model)
-    if (!capabilities?.reasoning) return undefined
-    const hasToggle = capabilities.options.some((option) => option.type === 'toggle')
-    const hasEffort = capabilities.options.some((option) => option.type === 'effort')
-    const hasBudget = capabilities.options.some((option) => option.type === 'budget_tokens')
-    return hasToggle && !hasEffort && !hasBudget
-      ? '该模型仅支持开/关思考，低、中、高等级不生效。'
-      : undefined
-  }, [activeSlot, current.baseUrl, current.model])
+  const reasoningEffortResolution = useMemo(
+    () => activeSlot === 'text' ? resolveReasoningEffortOptions(current) : undefined,
+    [activeSlot, current.baseUrl, current.model],
+  )
+  const reasoningEffortOptions = reasoningEffortResolution?.options ?? LEGACY_REASONING_EFFORT_OPTIONS
+  const selectedReasoningEffort = normalizeReasoningEffortSelection(current.reasoningEffort, reasoningEffortOptions)
 
   if (!present) return null
 
@@ -572,12 +565,11 @@ export default function ProviderSettingsDialog({ open, nested = false, settings,
             <div className="field reasoning-effort-field">
               <span>思考等级</span>
               <div className="reasoning-effort-options" role="radiogroup" aria-label="文本模型思考等级">
-                {([['auto', '自动'], ['low', '低'], ['medium', '中'], ['high', '高']] as const).map(([value, label]) => (
-                  <button key={value} type="button" role="radio" aria-checked={(current.reasoningEffort ?? 'auto') === value} onClick={() => updateCurrent({ reasoningEffort: value })}>{label}</button>
+                {reasoningEffortOptions.map(({ value, label }) => (
+                  <button key={value} type="button" role="radio" aria-checked={selectedReasoningEffort === value} onClick={() => updateCurrent({ reasoningEffort: value })}>{label}</button>
                 ))}
               </div>
-              {toggleOnlyReasoningHint && <small className="field-hint reasoning-toggle-only-hint">{toggleOnlyReasoningHint}</small>}
-              <small className="field-hint">自动不会发送思考参数；低、中、高会传给兼容接口，是否支持由当前模型与供应商决定。</small>
+              <small className="field-hint">{reasoningEffortResolution?.hint ?? '自动不会发送思考参数；低、中、高会传给兼容接口，是否支持由当前模型与供应商决定。'}</small>
             </div>
           )}
 

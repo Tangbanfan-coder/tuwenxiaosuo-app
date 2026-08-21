@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { useState } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ProviderCapabilities, ProviderSettings } from '../providers/types'
@@ -110,11 +110,13 @@ describe('ProviderSettingsDialog layering', () => {
     await waitFor(() => expect(secretStoreMocks.get).toHaveBeenCalled())
   })
 
-  it('hands the first frame from settings to the nested provider page without exposing the app below', () => {
+  it('hands the first frame from settings to the nested provider page without exposing the app below', async () => {
     const { container } = render(<SettingsProviderHandoff />)
 
     fireEvent.click(screen.getByRole('button', { name: /模型服务/ }))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: '返回设置' })))
     fireEvent.click(screen.getByRole('button', { name: /文本模型/ }))
+    await screen.findByRole('dialog', { name: '模型接口' })
 
     const settingsDrawer = container.querySelector('.settings-drawer')
     const providerDialog = screen.getByRole('dialog', { name: '模型接口' })
@@ -301,7 +303,7 @@ describe('ProviderSettingsDialog Android streaming', () => {
 })
 
 describe('ProviderSettingsDialog compatibility presets', () => {
-  it('已识别官方 toggle-only 模型明确提示等级不生效', () => {
+  it('已识别官方 toggle-only 模型只显示自动/开启并提示原生开关', async () => {
     const withToggleOnlyModel: ProviderSettings = {
       ...settings,
       text: {
@@ -312,7 +314,96 @@ describe('ProviderSettingsDialog compatibility presets', () => {
     }
     render(<ProviderSettingsDialog open settings={withToggleOnlyModel} onClose={vi.fn()} onSave={vi.fn()} />)
 
-    expect(screen.getByText('该模型仅支持开/关思考，低、中、高等级不生效。')).toBeDefined()
+    const group = within(screen.getByRole('radiogroup', { name: '文本模型思考等级' }))
+    expect(group.getByRole('radio', { name: '自动' })).toBeDefined()
+    expect(group.getByRole('radio', { name: '开启' })).toBeDefined()
+    expect(group.queryByRole('radio', { name: '低' })).toBeNull()
+    expect(group.queryByRole('radio', { name: '中' })).toBeNull()
+    expect(group.queryByRole('radio', { name: '高' })).toBeNull()
+    expect(screen.getByText('当前模型仅支持开关思考；“开启”会按官方协议发送。')).toBeDefined()
+
+    await userEvent.setup().click(group.getByRole('radio', { name: '开启' }))
+    expect(group.getByRole('radio', { name: '开启' }).getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('DeepSeek 官方模型显示其原生 low/high/max 值并可保存 max', async () => {
+    const onSave = vi.fn()
+    const deepSeekSettings: ProviderSettings = {
+      ...settings,
+      text: {
+        ...settings.text,
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-v4-flash',
+      },
+    }
+    render(<ProviderSettingsDialog open settings={deepSeekSettings} onClose={vi.fn()} onSave={onSave} />)
+
+    const group = within(screen.getByRole('radiogroup', { name: '文本模型思考等级' }))
+    expect(group.getByRole('radio', { name: '低' })).toBeDefined()
+    expect(group.getByRole('radio', { name: '高' })).toBeDefined()
+    expect(group.getByRole('radio', { name: '最大' })).toBeDefined()
+    expect(group.queryByRole('radio', { name: '中' })).toBeNull()
+    await userEvent.setup().click(group.getByRole('radio', { name: '最大' }))
+    expect(group.getByRole('radio', { name: '最大' }).getAttribute('aria-checked')).toBe('true')
+    await userEvent.setup().click(screen.getByRole('button', { name: '保存配置' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.objectContaining({ reasoningEffort: 'max' }),
+    })))
+  })
+
+  it('智谱 GLM-5.2 官方模型只显示 high/max', () => {
+    const glmSettings: ProviderSettings = {
+      ...settings,
+      text: {
+        ...settings.text,
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+        model: 'glm-5.2',
+      },
+    }
+    render(<ProviderSettingsDialog open settings={glmSettings} onClose={vi.fn()} onSave={vi.fn()} />)
+
+    const group = within(screen.getByRole('radiogroup', { name: '文本模型思考等级' }))
+    expect(group.getByRole('radio', { name: '高' })).toBeDefined()
+    expect(group.getByRole('radio', { name: '最大' })).toBeDefined()
+    expect(group.queryByRole('radio', { name: '低' })).toBeNull()
+    expect(group.queryByRole('radio', { name: '中' })).toBeNull()
+  })
+
+  it('DashScope 预算模型保留低中高预算档位而不是退化为开启', () => {
+    const qwenSettings: ProviderSettings = {
+      ...settings,
+      text: {
+        ...settings.text,
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        model: 'qwen3.5-plus',
+      },
+    }
+    render(<ProviderSettingsDialog open settings={qwenSettings} onClose={vi.fn()} onSave={vi.fn()} />)
+
+    const group = within(screen.getByRole('radiogroup', { name: '文本模型思考等级' }))
+    expect(group.getByRole('radio', { name: '低' })).toBeDefined()
+    expect(group.getByRole('radio', { name: '中' })).toBeDefined()
+    expect(group.getByRole('radio', { name: '高' })).toBeDefined()
+    expect(group.queryByRole('radio', { name: '开启' })).toBeNull()
+  })
+
+  it('未知或中转端点保留自动/低/中/高旧选项', () => {
+    const relaySettings: ProviderSettings = {
+      ...settings,
+      text: {
+        ...settings.text,
+        baseUrl: 'https://relay.example.com/v1',
+        model: 'custom-reasoner',
+      },
+    }
+    render(<ProviderSettingsDialog open settings={relaySettings} onClose={vi.fn()} onSave={vi.fn()} />)
+
+    const group = within(screen.getByRole('radiogroup', { name: '文本模型思考等级' }))
+    expect(group.getByRole('radio', { name: '自动' })).toBeDefined()
+    expect(group.getByRole('radio', { name: '低' })).toBeDefined()
+    expect(group.getByRole('radio', { name: '中' })).toBeDefined()
+    expect(group.getByRole('radio', { name: '高' })).toBeDefined()
+    expect(group.queryByRole('radio', { name: '最大' })).toBeNull()
   })
 
   it('旧配置（无 capabilities）默认选中自动兼容，保存时不新增能力字段', async () => {

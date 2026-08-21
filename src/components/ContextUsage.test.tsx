@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -92,7 +92,7 @@ describe('ContextUsage', () => {
     expect(contextUsageStyles).toContain(`scaleX(var(${CONTEXT_USAGE_SECTION_SCALE_PROPERTY}))`)
 
     await user.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull())
   })
 
   it('keeps the compact trigger inside the composer and supports the close button', async () => {
@@ -101,7 +101,7 @@ describe('ContextUsage', () => {
 
     await user.click(screen.getByRole('button', { name: /查看本轮上下文用量明细/ }))
     await user.click(screen.getByRole('button', { name: '关闭上下文用量明细' }))
-    expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '本轮上下文用量' })).toBeNull())
     expect(container.querySelector('.context-usage-trigger')?.textContent).toContain('1.9k / 14.5k')
   })
 

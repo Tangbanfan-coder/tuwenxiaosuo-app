@@ -594,6 +594,7 @@ export default function App() {
         generationPhase={generationPhase}
         illustrationMode={resolveIllustrationMode(workspace.project)}
         reasoningEffort={providerSettings.text.reasoningEffort}
+        reasoningProvider={providerSettings.text}
         contextUsagePlan={activeContextUsagePlan}
         contextUsageState={activeContextUsageState}
         onSubmit={sendMessage}

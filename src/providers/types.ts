@@ -1,6 +1,10 @@
 export type ProviderSlot = 'text' | 'image'
 export type SecretRef = string
-export type ReasoningEffort = 'auto' | 'low' | 'medium' | 'high'
+export type ReasoningEffort = 'auto' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export interface ReasoningEffortOption {
+  value: ReasoningEffort
+  label: string
+}
 
 /**
  * Provider capability model. Each field is optional: an absent field keeps

@@ -25,7 +25,7 @@ describe('ComposerAssetsMenu', () => {
     await user.tab()
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '关闭素材菜单' }))
     await user.keyboard('{Escape}')
-    expect(screen.queryByRole('dialog', { name: '添加素材' })).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '添加素材' })).toBeNull())
     expect(document.activeElement).toBe(trigger)
 
     await user.click(trigger)

@@ -1,28 +1,24 @@
 import { Brain, Check, ChevronDown } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { ReasoningEffort } from '../providers/types'
+import { LEGACY_REASONING_EFFORT_OPTIONS, normalizeReasoningEffortSelection } from '../providers/endpointReasoningAdapters'
+import type { ReasoningEffort, ReasoningEffortOption } from '../providers/types'
 import { usePresence } from '../hooks/usePresence'
 
 interface Props {
   value: ReasoningEffort | undefined
   onChange: (value: ReasoningEffort) => void
+  options?: readonly ReasoningEffortOption[]
 }
 
-const OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
-  { value: 'auto', label: '自动' },
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
-]
-
-export default function ReasoningEffortQuickControl({ value, onChange }: Props) {
+export default function ReasoningEffortQuickControl({ value, onChange, options = LEGACY_REASONING_EFFORT_OPTIONS }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [open, setOpen] = useState(false)
   const { present: menuPresent, closing: menuClosing } = usePresence(open, () => {}, 150)
-  const current = value ?? 'auto'
-  const currentOption = OPTIONS.find((option) => option.value === current) ?? OPTIONS[0]
+  const effectiveOptions = options.length ? options : LEGACY_REASONING_EFFORT_OPTIONS
+  const current = normalizeReasoningEffortSelection(value, effectiveOptions)
+  const currentOption = effectiveOptions.find((option) => option.value === current) ?? effectiveOptions[0]
 
   useEffect(() => {
     if (!open) return
@@ -50,7 +46,7 @@ export default function ReasoningEffortQuickControl({ value, onChange }: Props) 
   function openMenu(focusCurrent = false) {
     setOpen(true)
     window.requestAnimationFrame(() => {
-      const index = focusCurrent ? OPTIONS.findIndex((option) => option.value === current) : 0
+      const index = focusCurrent ? effectiveOptions.findIndex((option) => option.value === current) : 0
       focusOption(Math.max(0, index))
     })
   }
@@ -79,7 +75,7 @@ export default function ReasoningEffortQuickControl({ value, onChange }: Props) 
           if (event.key === 'ArrowUp') {
             event.preventDefault()
             setOpen(true)
-            window.requestAnimationFrame(() => focusOption(OPTIONS.length - 1))
+            window.requestAnimationFrame(() => focusOption(effectiveOptions.length - 1))
           }
         }}
       >
@@ -90,7 +86,7 @@ export default function ReasoningEffortQuickControl({ value, onChange }: Props) 
       </button>
       {menuPresent && (
         <div className={`reasoning-effort-quick-menu${menuClosing ? ' closing' : ''}`} role="menu" aria-label="文本模型思考等级">
-          {OPTIONS.map((option, index) => {
+          {effectiveOptions.map((option, index) => {
             const selected = option.value === current
             return (
               <button
@@ -103,16 +99,16 @@ export default function ReasoningEffortQuickControl({ value, onChange }: Props) 
                 onKeyDown={(event) => {
                   if (event.key === 'ArrowDown') {
                     event.preventDefault()
-                    focusOption((index + 1) % OPTIONS.length)
+                    focusOption((index + 1) % effectiveOptions.length)
                   } else if (event.key === 'ArrowUp') {
                     event.preventDefault()
-                    focusOption((index - 1 + OPTIONS.length) % OPTIONS.length)
+                    focusOption((index - 1 + effectiveOptions.length) % effectiveOptions.length)
                   } else if (event.key === 'Home') {
                     event.preventDefault()
                     focusOption(0)
                   } else if (event.key === 'End') {
                     event.preventDefault()
-                    focusOption(OPTIONS.length - 1)
+                    focusOption(effectiveOptions.length - 1)
                   } else if (event.key === 'Escape') {
                     event.preventDefault()
                     setOpen(false)

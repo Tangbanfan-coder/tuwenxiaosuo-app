@@ -5,7 +5,8 @@ import ComposerAssetsMenu from './ComposerAssetsMenu'
 import ReasoningEffortQuickControl from './ReasoningEffortQuickControl'
 import type { ContextUsageState } from '../domain/contextUsage'
 import type { IllustrationMode } from '../domain/models'
-import type { ReasoningEffort } from '../providers/types'
+import { resolveReasoningEffortOptions } from '../providers/endpointReasoningAdapters'
+import type { ProviderConfig, ReasoningEffort } from '../providers/types'
 import type { ContextBudgetPlan } from '../providers/writing'
 import type { GenerationPhase } from '../hooks/useWritingTurnController'
 
@@ -13,6 +14,7 @@ interface ComposerProps {
   generationPhase: GenerationPhase
   illustrationMode: IllustrationMode
   reasoningEffort: ReasoningEffort | undefined
+  reasoningProvider?: Pick<ProviderConfig, 'baseUrl' | 'model'>
   contextUsagePlan?: ContextBudgetPlan
   contextUsageState: ContextUsageState
   onSubmit: (text: string) => Promise<boolean>
@@ -28,6 +30,7 @@ export default function Composer({
   generationPhase,
   illustrationMode,
   reasoningEffort,
+  reasoningProvider,
   contextUsagePlan,
   contextUsageState,
   onSubmit,
@@ -47,6 +50,7 @@ export default function Composer({
   const generating = generationPhase === 'starting' || generationPhase === 'running'
   const saving = generationPhase === 'saving'
   const cancelling = generationPhase === 'cancelling'
+  const reasoningOptions = resolveReasoningEffortOptions(reasoningProvider).options
 
   useEffect(() => {
     if (!illustrationModeOpen) return
@@ -107,7 +111,7 @@ export default function Composer({
         <div className="composer-toolbar">
           <div className="composer-tools">
             <ComposerAssetsMenu onOpenCharacterAssets={onOpenCharacterAssets} onOpenReferenceImage={onOpenReferenceImage} />
-            <ReasoningEffortQuickControl value={reasoningEffort} onChange={onReasoningEffortChange} />
+            <ReasoningEffortQuickControl value={reasoningEffort} options={reasoningOptions} onChange={onReasoningEffortChange} />
             <ContextUsage plan={contextUsagePlan} state={contextUsageState} compactLabel={contextUsageToolbarSummary(contextUsagePlan, contextUsageState)} detailsOpen={false} showDetails={false} onDetailsOpenChange={(open) => { if (open) onOpenContextUsage() }} />
             <div ref={illustrationModeControlRef} className="illustration-mode-control">
               <button ref={illustrationModeTriggerRef} className="composer-tool-button auto-illustrate-button" type="button" aria-expanded={illustrationModeOpen} aria-haspopup="menu" aria-label={`配图模式：${illustrationMode === 'none' ? '无图' : illustrationMode === 'manual' ? '按需' : '自动'}`} onClick={() => setIllustrationModeOpen((open) => !open)}>
