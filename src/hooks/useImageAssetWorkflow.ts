@@ -92,13 +92,21 @@ export function useImageAssetWorkflow({
       const storedImage = await persistImageAsset(imageUrl, sourceWorkspace.project.id, character.id)
       await setCharacterPortraitReady(character.id, storedImage.imageUrl, storedImage.localUri)
       await refreshWorkspace(sourceWorkspace.project.id)
-      showToast(`${character.name}的定妆照已生成；去角色资产确认后，相关插画会自动继续`)
+      // A queued portrait may finish after the user switched to another
+      // project; the toast names the owning project so the notice is actionable.
+      const crossProject = workspace !== null && workspace.project.id !== sourceWorkspace.project.id
+      showToast(crossProject
+        ? `《${sourceWorkspace.project.title}》中${character.name}的定妆照已生成；去角色资产确认后，相关插画会自动继续`
+        : `${character.name}的定妆照已生成；去角色资产确认后，相关插画会自动继续`)
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
       await setCharacterPortraitFailed(character.id, message)
       await refreshWorkspace(sourceWorkspace.project.id)
-      showToast(`${character.name}的定妆照生成失败`, 'error')
+      const crossProject = workspace !== null && workspace.project.id !== sourceWorkspace.project.id
+      showToast(crossProject
+        ? `《${sourceWorkspace.project.title}》中${character.name}的定妆照生成失败`
+        : `${character.name}的定妆照生成失败`, 'error')
       return false
     }
   }
@@ -227,7 +235,8 @@ export function useImageAssetWorkflow({
         usesReferences: referenceResolution.usesReferences,
         durationMs: Date.now() - pipelineStartedAt,
       })
-      showToast('剧情插画已生成')
+      const crossProject = workspace !== null && workspace.project.id !== sourceWorkspace.project.id
+      showToast(crossProject ? `《${sourceWorkspace.project.title}》的剧情插画已生成` : '剧情插画已生成')
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
       logImagePipeline('warn', {
@@ -239,7 +248,8 @@ export function useImageAssetWorkflow({
       })
       await setIllustrationFailed(illustration.id, message)
       await refreshWorkspace(sourceWorkspace.project.id)
-      showToast('剧情插画生成失败，没有自动重试', 'error')
+      const crossProject = workspace !== null && workspace.project.id !== sourceWorkspace.project.id
+      showToast(crossProject ? `《${sourceWorkspace.project.title}》的剧情插画生成失败，没有自动重试` : '剧情插画生成失败，没有自动重试', 'error')
     } finally {
       setIllustrationGenerationStages((current) => {
         const { [illustration.id]: _finished, ...remaining } = current
